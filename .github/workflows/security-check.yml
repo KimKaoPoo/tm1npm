@@ -1,0 +1,29 @@
+name: Security Check
+
+on:
+  create:
+  release:
+    types: [published, created, edited, deleted]
+
+env:
+  ALLOWED_MAINTAINER: KimKaoPoo
+
+jobs:
+  verify-permissions:
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag' || github.event_name == 'release'
+    
+    steps:
+      - name: Verify tag/release permissions
+        run: |
+          if [ "${{ github.actor }}" != "${{ env.ALLOWED_MAINTAINER }}" ]; then
+            echo "❌ ERROR: Only ${{ env.ALLOWED_MAINTAINER }} can create tags and releases"
+            echo "Current actor: ${{ github.actor }}"
+            echo "Event: ${{ github.event_name }}"
+            echo "Ref type: ${{ github.ref_type }}"
+            
+            # Log the unauthorized attempt
+            echo "⚠️  SECURITY ALERT: Unauthorized attempt to create tag/release by ${{ github.actor }}"
+            exit 1
+          fi
+          echo "✅ Tag/release permissions verified for ${{ github.actor }}"

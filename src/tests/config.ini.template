@@ -1,0 +1,23 @@
+# TM1 Test Configuration Template
+# Copy this file to config.ini and fill in your TM1 server details
+
+[tm1srv01]
+address=localhost
+port=8001
+user=admin
+password=apple
+ssl=true
+namespace=
+gateway=
+
+# Environment variables can also be used:
+# TM1_ADDRESS=localhost
+# TM1_PORT=8001
+# TM1_USER=admin
+# TM1_PASSWORD=apple
+# TM1_SSL=true
+# TM1_NAMESPACE=
+# TM1_GATEWAY=
+
+# For CI/CD environments, use environment variables
+# For local development, use the config.ini file

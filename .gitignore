@@ -1,0 +1,214 @@
+# ======================
+# Dependencies
+# ======================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+# package-lock.json should be committed for reproducible CI builds
+# yarn.lock
+# pnpm-lock.yaml
+
+# ======================
+# Build Outputs
+# ======================
+lib/
+dist/
+build/
+out/
+*.tsbuildinfo
+*.js.map
+
+# ======================
+# Test Coverage
+# ======================
+coverage/
+*.lcov
+.nyc_output/
+test-results/
+test-reports/
+
+# ======================
+# Environment Files
+# ======================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.test
+.env.production
+
+# ======================
+# IDE and Editor Files
+# ======================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# ======================
+# Operating System Files
+# ======================
+# macOS
+.DS_Store
+.DS_Store?
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+Icon
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# ======================
+# Logs and Runtime Data
+# ======================
+logs/
+*.log
+lerna-debug.log*
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# ======================
+# Temporary Files
+# ======================
+.tmp/
+.temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.old
+
+# ======================
+# NPM/Yarn Cache
+# ======================
+.npm
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.yarn-integrity
+.pnp.*
+
+# ======================
+# Optional Tool Caches
+# ======================
+.eslintcache
+.node_repl_history
+.cache
+.parcel-cache
+
+# ======================
+# Build Tool Outputs
+# ======================
+.next
+.nuxt
+.out
+.storybook-out
+.grunt
+bower_components
+jspm_packages/
+web_modules/
+
+# ======================
+# Diagnostic Reports
+# ======================
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+*.tgz
+
+# ======================
+# TM1 Specific Files
+# ======================
+# TM1 system files
+}*.rux
+}stats
+}Stats
+}Capabilities
+}ClientProperties
+}Threads
+}Groups
+}Clients
+}Applications
+
+# Data files
+*.csv
+*.xlsx
+*.xls
+*.txt
+
+# Rules files
+rules.*.rux
+
+# ======================
+# Security & Credentials
+# ======================
+*credentials*
+*password*
+*secret*
+*key*
+*.pem
+*.key
+*.crt
+
+# Test connection files with sensitive data
+*-connection-test.ts
+test-connection-*.ts
+connection-config.json
+
+# ======================
+# Local Configuration
+# ======================
+config.local.json
+config.local.js
+local.json
+
+# ======================
+# Python (if any Python tools are used)
+# ======================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+.ipynb_checkpoints
+
+# ======================
+# Compiled Binary Addons
+# ======================
+build/Release
+.lock-wscript
+
+
+.claude/

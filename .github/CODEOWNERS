@@ -1,0 +1,9 @@
+# Global code owners - require review from KimKaoPoo for all changes
+* @KimKaoPoo
+
+# Workflow files - require review for CI/CD changes
+/.github/ @KimKaoPoo
+
+# Package configuration - require review for publishing settings
+/package.json @KimKaoPoo
+/package-lock.json @KimKaoPoo

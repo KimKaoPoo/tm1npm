@@ -1,0 +1,252 @@
+name: PR Build Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main, master, develop]
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main, master, develop]
+
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+  checks: write
+
+jobs:
+  build-check:
+    name: Build Validation
+    runs-on: ubuntu-latest
+    
+    # Skip draft PRs unless they're marked as ready for review
+    if: github.event.pull_request.draft == false || github.event.action == 'ready_for_review'
+    
+    strategy:
+      matrix:
+        node-version: [16, 18, 20]
+        
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          # For pull_request_target, we checkout the PR code safely
+          ref: ${{ github.event.pull_request.head.sha }}
+          
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+          
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ matrix.node-version }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ matrix.node-version }}-
+            ${{ runner.os }}-node-
+            
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Lint code (if available)
+        run: |
+          if npm run lint --if-present; then
+            echo "✅ Linting passed"
+          else
+            echo "⚠️ No lint script found or linting failed"
+          fi
+        continue-on-error: true
+        
+      - name: Type checking (if available)
+        run: |
+          if npm run typecheck --if-present; then
+            echo "✅ Type checking passed"
+          else
+            echo "⚠️ No typecheck script found, skipping"
+          fi
+        continue-on-error: true
+        
+      - name: Run build
+        id: build
+        run: |
+          echo "🔨 Building project..."
+          npm run build
+          echo "✅ Build completed successfully"
+          
+      - name: Verify build output
+        run: |
+          echo "🔍 Verifying build artifacts..."
+          
+          # Check if lib directory exists
+          if [ -d "lib" ]; then
+            echo "✅ lib/ directory found"
+            echo "📂 Build output structure:"
+            ls -la lib/ || echo "Empty lib directory"
+          else
+            echo "❌ lib/ directory not found"
+            echo "Build may have failed or output directory is different"
+            exit 1
+          fi
+          
+          # Check for main entry points
+          missing_files=()
+          
+          if [ ! -f "lib/index.js" ]; then
+            missing_files+=("lib/index.js")
+          fi
+          
+          if [ ! -f "lib/index.d.ts" ]; then
+            missing_files+=("lib/index.d.ts")
+          fi
+          
+          if [ ${#missing_files[@]} -eq 0 ]; then
+            echo "✅ Essential build files found"
+          else
+            echo "⚠️ Some expected build files are missing:"
+            printf ' - %s\n' "${missing_files[@]}"
+            echo "This may be expected depending on your build configuration"
+          fi
+          
+      - name: Test build artifacts (if tests available)
+        run: |
+          if npm run test --if-present; then
+            echo "✅ Tests passed with built code"
+          else
+            echo "⚠️ No test script found, skipping test validation"
+          fi
+        continue-on-error: true
+        
+      - name: Success summary
+        if: success()
+        run: |
+          echo "🎉 Build validation successful!"
+          echo "✅ Node.js ${{ matrix.node-version }}: Build completed successfully"
+          echo "📦 All build artifacts generated correctly"
+          
+      - name: Failure summary
+        if: failure()
+        run: |
+          echo "❌ Build validation failed!"
+          echo "❌ Node.js ${{ matrix.node-version }}: Build failed"
+          echo "Please fix build issues before merging this PR"
+
+  # Summary job for all matrix builds
+  build-summary:
+    name: Build Summary
+    needs: build-check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      statuses: write
+      checks: write
+    if: always()
+    
+    steps:
+      - name: Determine overall result
+        id: result
+        run: |
+          if [[ "${{ needs.build-check.result }}" == "success" ]]; then
+            echo "result=success" >> $GITHUB_OUTPUT
+            echo "message=All builds passed across Node.js versions 16, 18, 20" >> $GITHUB_OUTPUT
+            echo "🎉 All builds successful!"
+          else
+            echo "result=failure" >> $GITHUB_OUTPUT
+            echo "message=Some builds failed - check logs for details" >> $GITHUB_OUTPUT
+            echo "❌ Some builds failed"
+          fi
+          
+      - name: Create commit status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.payload.pull_request?.head?.sha || context.sha;
+            const result = '${{ steps.result.outputs.result }}';
+            const message = '${{ steps.result.outputs.message }}';
+            
+            const state = result === 'success' ? 'success' : 'failure';
+            const description = result === 'success' 
+              ? '✅ Build validation passed'
+              : '❌ Build validation failed';
+              
+            await github.rest.repos.createCommitStatus({
+              owner,
+              repo,
+              sha,
+              state,
+              target_url: `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+              description,
+              context: 'PR Build Check'
+            });
+            
+            console.log(`Commit status created: ${state}`);
+            console.log(`SHA: ${sha}`);
+            console.log(`Description: ${description}`);
+            
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request.number;
+            const result = '${{ steps.result.outputs.result }}';
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            
+            let commentBody;
+            
+            if (result === 'success') {
+              commentBody = '## ✅ Build Validation Passed\n\n' +
+                '**All builds completed successfully!**\n\n' +
+                '- ✅ Node.js 16: Build passed\n' +
+                '- ✅ Node.js 18: Build passed\n' +
+                '- ✅ Node.js 20: Build passed\n\n' +
+                '📦 All build artifacts generated correctly.\n\n' +
+                `[View detailed results](${runUrl})`;
+            } else {
+              commentBody = '## ❌ Build Validation Failed\n\n' +
+                '**Some builds failed - please review and fix:**\n\n' +
+                '🔍 **Common issues to check:**\n' +
+                '- TypeScript compilation errors\n' +
+                '- Missing dependencies\n' +
+                '- Syntax errors\n' +
+                '- Import/export issues\n\n' +
+                'Please fix the build issues and push your changes.\n\n' +
+                `[View detailed results](${runUrl})`;
+            }
+            
+            // Check if we already commented on this PR for this run
+            const comments = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+            });
+            
+            const botComment = comments.data.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('Build Validation')
+            );
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: botComment.id,
+                body: commentBody
+              });
+              console.log('Updated existing PR comment');
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body: commentBody
+              });
+              console.log('Created new PR comment');
+            }

@@ -1,0 +1,172 @@
+name: Test and Build on Tag
+
+on:
+  push:
+    tags:
+      - 'v*'      # Triggers on version tags like v1.0.0
+      - '*.*.*'   # Triggers on semver tags like 1.0.0
+      - 'release-*' # Triggers on release tags like release-1.0.0
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write # Required for creating commit status checks
+    strategy:
+      matrix:
+        node-version: [16, 18, 20] # Test on multiple Node.js versions
+        
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.npm
+          key: ${{ runner.os }}-node-${{ matrix.node-version }}-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ matrix.node-version }}-
+            ${{ runner.os }}-node-
+            
+      - name: Install dependencies
+        run: npm ci
+        
+      - name: Lint code
+        run: |
+          if npm run lint --if-present; then
+            echo "✅ Linting passed"
+          else
+            echo "⚠️ No lint script found, skipping"
+          fi
+          
+      - name: Type checking
+        run: |
+          if npm run typecheck --if-present; then
+            echo "✅ Type checking passed"
+          else
+            echo "⚠️ No typecheck script found, skipping"
+          fi
+          
+      - name: Run build
+        run: npm run build
+        
+      - name: Verify build artifacts
+        run: |
+          echo "🔍 Checking build output..."
+          if [ -d "lib" ]; then
+            echo "✅ lib/ directory exists"
+            ls -la lib/
+          else
+            echo "❌ lib/ directory not found"
+            exit 1
+          fi
+          
+          # Check for essential files
+          if [ -f "lib/index.js" ] && [ -f "lib/index.d.ts" ]; then
+            echo "✅ Essential build files found"
+          else
+            echo "❌ Missing essential build files"
+            exit 1
+          fi
+          
+      - name: Run all tests
+        run: npm run test:ci
+        env:
+          NODE_ENV: 'test'
+          CI: 'true'
+          
+      - name: Generate test coverage
+        run: |
+          if npm run test:coverage:ci --if-present; then
+            echo "✅ Coverage report generated"
+          else
+            echo "⚠️ No coverage script found, skipping"
+          fi
+          
+      - name: Upload coverage to Codecov (Node 18 only)
+        if: matrix.node-version == 18
+        uses: codecov/codecov-action@v3
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+          verbose: true
+          
+      - name: Package verification
+        run: |
+          echo "📦 Verifying package contents..."
+          npm pack --dry-run
+          
+      - name: Tag validation
+        run: |
+          echo "🏷️ Tag information:"
+          echo "Tag name: ${GITHUB_REF#refs/tags/}"
+          echo "Repository: ${{ github.repository }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          
+      - name: Success notification
+        if: success()
+        run: |
+          echo "🎉 All tests and build passed for tag: ${GITHUB_REF#refs/tags/}"
+          echo "✅ Node.js ${{ matrix.node-version }}: SUCCESS"
+          
+      - name: Failure notification
+        if: failure()
+        run: |
+          echo "❌ Tests or build failed for tag: ${GITHUB_REF#refs/tags/}"
+          echo "❌ Node.js ${{ matrix.node-version }}: FAILED"
+          echo "Please check the logs and fix issues before releasing"
+
+  # Summary job that depends on all matrix jobs
+  test-summary:
+    needs: test-and-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      statuses: write # Required for creating commit status checks
+    if: always()
+    
+    steps:
+      - name: Check test results
+        run: |
+          if [[ "${{ needs.test-and-build.result }}" == "success" ]]; then
+            echo "🎉 All tests passed across all Node.js versions!"
+            echo "✅ Tag ${GITHUB_REF#refs/tags/} is ready for release"
+          else
+            echo "❌ Some tests failed"
+            echo "Tag ${GITHUB_REF#refs/tags/} is NOT ready for release"
+            exit 1
+          fi
+          
+      - name: Create status check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = context.sha;
+            const tag = context.ref.replace('refs/tags/', '');
+            
+            const state = '${{ needs.test-and-build.result }}' === 'success' ? 'success' : 'failure';
+            const description = state === 'success' 
+              ? `All tests passed for tag ${tag}`
+              : `Some tests failed for tag ${tag}`;
+              
+            await github.rest.repos.createCommitStatus({
+              owner,
+              repo,
+              sha,
+              state,
+              target_url: `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`,
+              description,
+              context: 'Tag Validation'
+            });
+            
+            console.log(`Status check created: ${state}`);
+            console.log(`Description: ${description}`);
