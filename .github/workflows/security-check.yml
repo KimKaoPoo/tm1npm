@@ -6,7 +6,7 @@ on:
     types: [published, created, edited, deleted]
 
 env:
-  ALLOWED_MAINTAINER: KimKaoPoo
+  ALLOWED_MAINTAINER: hsubebe89
 
 jobs:
   verify-permissions:

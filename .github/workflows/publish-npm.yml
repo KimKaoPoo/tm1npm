@@ -5,7 +5,7 @@ on:
     types: [published]
 
 env:
-  ALLOWED_PUBLISHER: KimKaoPoo
+  ALLOWED_PUBLISHER: hsubebe89
 
 jobs:
   publish:
