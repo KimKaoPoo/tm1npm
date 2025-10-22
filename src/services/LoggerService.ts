@@ -106,13 +106,4 @@ export class LoggerService extends ObjectService {
             throw new Error(`${level} is not a valid level`);
         }
     }
-
-    private async _exists(url: string): Promise<boolean> {
-        try {
-            await this.rest.get(url);
-            return true;
-        } catch (error) {
-            return false;
-        }
-    }
 }

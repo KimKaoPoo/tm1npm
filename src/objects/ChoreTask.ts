@@ -68,6 +68,10 @@ export class ChoreTask extends TM1Object {
         return this._step;
     }
 
+    public set step(value: number) {
+        this._step = value;
+    }
+
     public get processName(): string {
         return this._processName;
     }

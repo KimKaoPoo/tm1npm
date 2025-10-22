@@ -42,7 +42,7 @@ export class ViewAxisSelection extends TM1Object {
         return this.constructBody();
     }
 
-    public static fromDict(data: Record<string, any>): ViewAxisSelection {
+    public static fromDict(_data: Record<string, any>): ViewAxisSelection {
         // Basic implementation - would need actual data structure
         return new ViewAxisSelection('', new AnonymousSubset('', ''));
     }
@@ -112,7 +112,7 @@ export class ViewTitleSelection {
         return this.constructBody();
     }
 
-    public static fromDict(data: Record<string, any>): ViewTitleSelection {
+    public static fromDict(_data: Record<string, any>): ViewTitleSelection {
         // Basic implementation - would need actual data structure
         return new ViewTitleSelection('', new AnonymousSubset('', ''), '');
     }

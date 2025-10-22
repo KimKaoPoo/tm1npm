@@ -5,6 +5,7 @@ import { User } from '../objects/User';
 import { ThreadService } from './ThreadService';
 import { SessionService } from './SessionService';
 import { UserService } from './UserService';
+import { requireAdmin } from '../utils/Utils';
 
 export class MonitoringService extends ObjectService {
     /** Service to Query and Cancel Threads in TM1
@@ -87,6 +88,7 @@ export class MonitoringService extends ObjectService {
         return await this.session.getAll(includeUser, includeThreads);
     }
 
+    @requireAdmin
     public async disconnectAllUsers(): Promise<string[]> {
         return await this.users.disconnectAll();
     }
@@ -95,6 +97,7 @@ export class MonitoringService extends ObjectService {
         return await this.session.close(sessionId);
     }
 
+    @requireAdmin
     public async closeAllSessions(): Promise<any[]> {
         return await this.session.closeAll();
     }

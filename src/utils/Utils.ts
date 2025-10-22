@@ -215,32 +215,47 @@ export function requireAdmin(target: any, propertyKey: string, descriptor: Prope
     };
 }
 
+/**
+ * Decorator to require data admin privileges
+ */
 export function requireDataAdmin(target: any, propertyKey: string, descriptor: PropertyDescriptor): void {
     const originalMethod = descriptor.value;
-    
-    descriptor.value = function (this: any, ...args: any[]) {
-        // Data admin check would be implemented here
-        // For now, just call the original method
+
+    descriptor.value = async function (this: any, ...args: any[]) {
+        // Check data admin privileges
+        if (this.rest) {
+            await checkAdminPrivileges(this.rest, 'DATA');
+        }
         return originalMethod.apply(this, args);
     };
 }
 
+/**
+ * Decorator to require security admin privileges
+ */
 export function requireSecurityAdmin(target: any, propertyKey: string, descriptor: PropertyDescriptor): void {
     const originalMethod = descriptor.value;
-    
-    descriptor.value = function (this: any, ...args: any[]) {
-        // Security admin check would be implemented here
-        // For now, just call the original method
+
+    descriptor.value = async function (this: any, ...args: any[]) {
+        // Check security admin privileges
+        if (this.rest) {
+            await checkAdminPrivileges(this.rest, 'SECURITY');
+        }
         return originalMethod.apply(this, args);
     };
 }
 
+/**
+ * Decorator to require operations admin privileges
+ */
 export function requireOpsAdmin(target: any, propertyKey: string, descriptor: PropertyDescriptor): void {
     const originalMethod = descriptor.value;
-    
-    descriptor.value = function (this: any, ...args: any[]) {
-        // Ops admin check would be implemented here
-        // For now, just call the original method
+
+    descriptor.value = async function (this: any, ...args: any[]) {
+        // Check operations admin privileges
+        if (this.rest) {
+            await checkAdminPrivileges(this.rest, 'OPERATIONS');
+        }
         return originalMethod.apply(this, args);
     };
 }
@@ -393,3 +408,162 @@ export const Utils = {
     utcLocalizeTime,
     decohints
 };
+
+
+/**
+ * Decorator for transaction management - manages changesets
+ */
+export function manageChangeset(target: any, propertyKey: string, descriptor: PropertyDescriptor): void {
+    const originalMethod = descriptor.value;
+
+    descriptor.value = async function (this: any, ...args: any[]) {
+        let changesetStarted = false;
+
+        try {
+            // Start changeset if cellService is available and not already in changeset
+            if (this.cellService && typeof this.cellService.beginChangeset === 'function') {
+                await this.cellService.beginChangeset();
+                changesetStarted = true;
+            }
+
+            const result = await originalMethod.apply(this, args);
+
+            // Commit changeset on success
+            if (changesetStarted && this.cellService.endChangeset) {
+                await this.cellService.endChangeset();
+            }
+
+            return result;
+        } catch (error) {
+            // Rollback changeset on error
+            if (changesetStarted && this.cellService.undoChangeset) {
+                try {
+                    await this.cellService.undoChangeset();
+                } catch (rollbackError) {
+                    console.warn('Failed to rollback changeset:', rollbackError);
+                }
+            }
+            throw error;
+        }
+    };
+}
+
+/**
+ * Decorator for transaction log management
+ */
+export function manageTransactionLog(deactivate: boolean = true, reactivate: boolean = true) {
+    return function (target: any, propertyKey: string, descriptor: PropertyDescriptor): void {
+        const originalMethod = descriptor.value;
+
+        descriptor.value = async function (this: any, ...args: any[]) {
+            let wasActive = false;
+
+            try {
+                // Check and manage transaction log
+                if (this.cellService) {
+                    if (deactivate && typeof this.cellService.transactionLogIsActive === 'function') {
+                        wasActive = await this.cellService.transactionLogIsActive();
+                        if (wasActive) {
+                            await this.cellService.deactivateTransactionLog();
+                        }
+                    }
+                }
+
+                const result = await originalMethod.apply(this, args);
+
+                // Reactivate transaction log if it was active before
+                if (reactivate && wasActive && this.cellService.activateTransactionLog) {
+                    await this.cellService.activateTransactionLog();
+                }
+
+                return result;
+            } catch (error) {
+                // Ensure transaction log is restored on error
+                if (reactivate && wasActive && this.cellService.activateTransactionLog) {
+                    try {
+                        await this.cellService.activateTransactionLog();
+                    } catch (restoreError) {
+                        console.warn('Failed to restore transaction log:', restoreError);
+                    }
+                }
+                throw error;
+            }
+        };
+    };
+}
+
+/**
+ * Decorator for automatic retry with exponential backoff
+ */
+export function autoRetry(maxRetries: number = 3, baseDelay: number = 1000) {
+    return function (target: any, propertyKey: string, descriptor: PropertyDescriptor): void {
+        const originalMethod = descriptor.value;
+
+        descriptor.value = async function (this: any, ...args: any[]) {
+            let lastError: any;
+
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+                try {
+                    return await originalMethod.apply(this, args);
+                } catch (error: any) {
+                    lastError = error;
+
+                    // Don't retry on client errors (4xx) except 401, 429
+                    if (error.response && error.response.status >= 400 && error.response.status < 500) {
+                        if (error.response.status !== 401 && error.response.status !== 429) {
+                            throw error;
+                        }
+                    }
+
+                    // If this is the last attempt, throw the error
+                    if (attempt === maxRetries) {
+                        throw error;
+                    }
+
+                    // Calculate delay with exponential backoff
+                    const delay = baseDelay * Math.pow(2, attempt);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+
+            throw lastError;
+        };
+    };
+}
+
+/**
+ * Check admin privileges for the current user
+ */
+async function checkAdminPrivileges(rest: any, privilegeType: 'DATA' | 'SECURITY' | 'OPERATIONS'): Promise<void> {
+    try {
+        // Check if SecurityService is available
+        const SecurityService = require('../services/SecurityService').SecurityService;
+        const securityService = new SecurityService(rest);
+
+        const currentUser = await securityService.getCurrentUser();
+
+        // Check user groups for admin privileges
+        const userGroups = await securityService.getGroupsFromUser(currentUser.name);
+
+        const adminGroups: Record<string, string[]> = {
+            'DATA': ['ADMIN', 'DataAdmin'],
+            'SECURITY': ['ADMIN', 'SecurityAdmin'],
+            'OPERATIONS': ['ADMIN', 'OperationsAdmin', 'OpsAdmin']
+        };
+
+        const requiredGroups = adminGroups[privilegeType] || [];
+        const hasRequiredPrivilege = userGroups.some((group: string) =>
+            requiredGroups.some(adminGroup =>
+                group.toLowerCase().includes(adminGroup.toLowerCase())
+            )
+        );
+
+        if (!hasRequiredPrivilege) {
+            throw new Error(`${privilegeType} admin privileges required for this operation`);
+        }
+
+    } catch (error) {
+        // If we can't check privileges, log a warning but allow the operation
+        console.warn(`Unable to verify ${privilegeType} admin privileges:`, error);
+    }
+}

@@ -5,7 +5,8 @@ import { Cube } from '../objects/Cube';
 import { Rules } from '../objects/Rules';
 import { CellService } from './CellService';
 import { ViewService } from './ViewService';
-import { formatUrl, requireVersion, requireDataAdmin, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
+import { formatUrl, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
+import { TM1RestException } from '../exceptions/TM1Exception';
 
 export class CubeService extends ObjectService {
     /** Service to handle Object Updates for TM1 Cubes
@@ -35,6 +36,18 @@ export class CubeService extends ObjectService {
         return await this.rest.post(url, cube.body);
     }
 
+    public async update(cube: Cube): Promise<AxiosResponse> {
+        const url = formatUrl("/Cubes('{}')", cube.name);
+        return await this.rest.patch(url, cube.body);
+    }
+
+    public async updateOrCreate(cube: Cube): Promise<AxiosResponse> {
+        if (await this.exists(cube.name)) {
+            return await this.update(cube);
+        }
+        return await this.create(cube);
+    }
+
     public async get(cubeName: string): Promise<Cube> {
         /** get cube from TM1 Server
          *
@@ -49,6 +62,11 @@ export class CubeService extends ObjectService {
             cube.dimensions = cube.dimensions.slice(1);
         }
         return cube;
+    }
+
+    public async delete(cubeName: string): Promise<AxiosResponse> {
+        const url = formatUrl("/Cubes('{}')", cubeName);
+        return await this.rest.delete(url);
     }
 
     public async getLastDataUpdate(cubeName: string): Promise<string> {
@@ -104,6 +122,19 @@ export class CubeService extends ObjectService {
 
         const response = await this.rest.get(url);
         return response.data.value.map((cube: any) => cube.Name);
+    }
+
+    public async exists(cubeName: string): Promise<boolean> {
+        const url = formatUrl("/Cubes('{}')", cubeName);
+        try {
+            await this.rest.get(url);
+            return true;
+        } catch (error) {
+            if (error instanceof TM1RestException && error.statusCode === 404) {
+                return false;
+            }
+            throw error;
+        }
     }
 
     public async getNumberOfCubes(skipControlCubes: boolean = false): Promise<number> {
@@ -311,6 +342,21 @@ export class CubeService extends ObjectService {
         const url = formatUrl("/Cubes('{}')/ViewStorageMinTime", cubeName);
         const body = { Value: vmt };
         return await this.rest.patch(url, body);
+    }
+
+    public async getDimensionNames(
+        cubeName: string,
+        skipSandboxDimension: boolean = true
+    ): Promise<string[]> {
+        const url = formatUrl("/Cubes('{}')/Dimensions?$select=Name", cubeName);
+        const response = await this.rest.get(url);
+        let dimensionNames = response.data.value.map((dim: any) => dim.Name);
+
+        if (skipSandboxDimension && dimensionNames.length > 0 && dimensionNames[0] === 'Sandboxes') {
+            dimensionNames = dimensionNames.slice(1);
+        }
+
+        return dimensionNames;
     }
 
     // Rules Management Functions

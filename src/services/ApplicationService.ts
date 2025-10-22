@@ -1,66 +1,46 @@
-import { AxiosResponse } from 'axios';
+import { AxiosRequestConfig, AxiosResponse } from 'axios';
+import { promises as fs } from 'fs';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
-import { 
-    DocumentApplication,
+import {
+    Application,
     ApplicationTypes,
     CubeApplication,
     ChoreApplication,
+    DimensionApplication,
+    DocumentApplication,
     FolderApplication,
     LinkApplication,
     ProcessApplication,
-    DimensionApplication,
     SubsetApplication,
     ViewApplication,
-    Application
+    getApplicationMetadata
 } from '../objects/Application';
 import { formatUrl, verifyVersion } from '../utils/Utils';
 
 export class ApplicationService extends ObjectService {
-    /** Service to Read and Write TM1 Applications
-     */
-
-    constructor(tm1Rest: RestService) {
-        /**
-         *
-         * :param tm1_rest:
-         */
-        super(tm1Rest);
+    constructor(rest: RestService) {
+        super(rest);
     }
 
     public async getAllPublicRootNames(): Promise<string[]> {
         const url = "/Contents('Applications')/Contents";
         const response = await this.rest.get(url);
-        const applications = response.data.value.map((application: any) => application.Name);
-        return applications;
+        return response.data.value.map((application: any) => application.Name);
     }
 
     public async getAllPrivateRootNames(): Promise<string[]> {
         const url = "/Contents('Applications')/PrivateContents";
         const response = await this.rest.get(url);
-        const applications = response.data.value.map((application: any) => application.Name);
-        return applications;
+        return response.data.value.map((application: any) => application.Name);
     }
 
     public async getNames(path: string, isPrivate: boolean = false): Promise<string[]> {
-        /** Retrieve Planning Analytics Application names in given path
-         *
-         * :param path: path with forward slashes
-         * :param private: boolean
-         * :return: list of application names
-         */
-        const contents = isPrivate ? 'PrivateContents' : 'Contents';
-        let mid = "";
-        if (path.trim() !== '') {
-            mid = path.split('/').map(element => 
-                formatUrl("/Contents('{}')", element)).join('');
-        }
+        const contents = this.getContentsCollection(isPrivate);
+        const mid = this.buildPathSegments(path);
         const baseUrl = "/api/v1/Contents('Applications')" + mid + "/" + contents;
-
         const response = await this.rest.get(baseUrl);
-        const applications = response.data.value.map((application: any) => application.Name);
-        
-        return applications;
+        return response.data.value.map((application: any) => application.Name);
     }
 
     public async get(
@@ -69,211 +49,299 @@ export class ApplicationService extends ObjectService {
         name: string,
         isPrivate: boolean = false
     ): Promise<Application> {
-        /** Retrieve Planning Analytics Application
-         *
-         * :param path: path with forward slashes
-         * :param application_type: str or ApplicationType from Enum
-         * :param name:
-         * :param private:
-         * :return:
-         */
-        // Parse application type if string
-        let appType: ApplicationTypes;
-        if (typeof applicationType === 'string') {
-            appType = ApplicationTypes[applicationType as keyof typeof ApplicationTypes];
-            if (appType === undefined) {
-                throw new Error(`Invalid application type: ${applicationType}`);
-            }
-        } else {
-            appType = applicationType;
-        }
+        const appType = this.parseApplicationType(applicationType);
 
-        // documents require special treatment
         if (appType === ApplicationTypes.DOCUMENT) {
             return await this.getDocument(path, name, isPrivate);
         }
 
-        if (appType !== ApplicationTypes.FOLDER && !verifyVersion('12', this.version)) {
-            name += this.getApplicationTypeSuffix(appType);
-        }
+        const requestName = this.withLegacySuffix(name, appType);
+        const baseUrl = this.buildApplicationUrl(path, isPrivate, requestName);
 
-        const contents = isPrivate ? 'PrivateContents' : 'Contents';
-        let mid = "";
-        if (path.trim() !== '') {
-            mid = path.split('/').map(element => 
-                formatUrl("/Contents('{}')", element)).join('');
-        }
-
-        const baseUrl = formatUrl(
-            "/Contents('Applications')" + mid + "/" + contents + "('{}')",
-            name);
-
-        if (appType === ApplicationTypes.CUBE) {
-            const response = await this.rest.get(baseUrl + "?$expand=Cube($select=Name)");
-            return new CubeApplication(name, path);
-
-        } else if (appType === ApplicationTypes.CHORE) {
-            const response = await this.rest.get(baseUrl + "?$expand=Chore($select=Name)");
-            return new ChoreApplication(name, path);
-
-        } else if (appType === ApplicationTypes.DIMENSION) {
-            const response = await this.rest.get(baseUrl + "?$expand=Dimension($select=Name)");
-            return new DimensionApplication(name, path);
-
-        } else if (appType === ApplicationTypes.FOLDER) {
-            const response = await this.rest.get(baseUrl);
-            return new FolderApplication(name, path);
-
-        } else if (appType === ApplicationTypes.LINK) {
-            const response = await this.rest.get(baseUrl);
-            return new LinkApplication(name, path);
-
-        } else if (appType === ApplicationTypes.PROCESS) {
-            const response = await this.rest.get(baseUrl + "?$expand=Process($select=Name)");
-            return new ProcessApplication(name, path);
-
-        } else if (appType === ApplicationTypes.SUBSET) {
-            const response = await this.rest.get(baseUrl + "?$expand=Subset($select=Name;$expand=Hierarchy($select=Name;$expand=Dimension($select=Name)))");
-            const subset = response.data.Subset;
-            return new SubsetApplication(name, path);
-
-        } else if (appType === ApplicationTypes.VIEW) {
-            const response = await this.rest.get(baseUrl + "?$expand=View($select=Name;$expand=Cube($select=Name))");
-            const view = response.data.View;
-            return new ViewApplication(name, path);
-
-        } else {
-            throw new Error(`Unsupported application type: ${appType}`);
+        switch (appType) {
+            case ApplicationTypes.CUBE: {
+                const response = await this.rest.get(baseUrl + "?$expand=Cube($select=Name)");
+                const cubeName = response.data?.Cube?.Name || response.data?.Name || name;
+                return new CubeApplication(path, response.data?.Name || name, cubeName);
+            }
+            case ApplicationTypes.CHORE: {
+                const response = await this.rest.get(baseUrl + "?$expand=Chore($select=Name)");
+                const choreName = response.data?.Chore?.Name || response.data?.Name || name;
+                return new ChoreApplication(path, response.data?.Name || name, choreName);
+            }
+            case ApplicationTypes.DIMENSION: {
+                const response = await this.rest.get(baseUrl + "?$expand=Dimension($select=Name)");
+                const dimensionName = response.data?.Dimension?.Name || response.data?.Name || name;
+                return new DimensionApplication(path, response.data?.Name || name, dimensionName);
+            }
+            case ApplicationTypes.FOLDER: {
+                await this.rest.get(baseUrl);
+                return new FolderApplication(path, name);
+            }
+            case ApplicationTypes.LINK: {
+                await this.rest.get(baseUrl);
+                const response = await this.rest.get(baseUrl + "?$expand=*");
+                return new LinkApplication(path, response.data?.Name || name, response.data?.URL || '');
+            }
+            case ApplicationTypes.PROCESS: {
+                const response = await this.rest.get(baseUrl + "?$expand=Process($select=Name)");
+                const processName = response.data?.Process?.Name || response.data?.Name || name;
+                return new ProcessApplication(path, response.data?.Name || name, processName);
+            }
+            case ApplicationTypes.SUBSET: {
+                const response = await this.rest.get(
+                    baseUrl + "?$expand=Subset($select=Name;$expand=Hierarchy($select=Name;$expand=Dimension($select=Name)))"
+                );
+                const subset = response.data?.Subset;
+                return new SubsetApplication(
+                    path,
+                    response.data?.Name || name,
+                    subset?.Hierarchy?.Dimension?.Name || '',
+                    subset?.Hierarchy?.Name || '',
+                    subset?.Name || ''
+                );
+            }
+            case ApplicationTypes.VIEW: {
+                const response = await this.rest.get(
+                    baseUrl + "?$expand=View($select=Name;$expand=Cube($select=Name))"
+                );
+                const view = response.data?.View;
+                return new ViewApplication(
+                    path,
+                    response.data?.Name || name,
+                    view?.Cube?.Name || '',
+                    view?.Name || ''
+                );
+            }
+            default:
+                throw new Error(`Unsupported application type: ${appType}`);
         }
     }
 
     public async getDocument(path: string, name: string, isPrivate: boolean = false): Promise<DocumentApplication> {
-        /** Get Document Application
-         *
-         * :param path: path with forward slashes
-         * :param name: name of the document
-         * :param private: boolean
-         * :return: DocumentApplication instance
-         */
-        const contents = isPrivate ? 'PrivateContents' : 'Contents';
-        let mid = "";
-        if (path.trim() !== '') {
-            mid = path.split('/').map(element => 
-                formatUrl("/Contents('{}')", element)).join('');
-        }
+        const requestName = this.withLegacySuffix(name, ApplicationTypes.DOCUMENT);
+        const mid = this.buildPathSegments(path);
+        const contents = this.getContentsCollection(isPrivate);
 
-        const baseUrl = formatUrl(
-            "/Contents('Applications')" + mid + "/" + contents + "('{}')",
-            name);
+        const contentUrl = formatUrl(
+            "/Contents('Applications')" + mid + "/" + contents + "('{}')/Document/Content",
+            requestName
+        );
+        const metadataUrl = formatUrl(
+            "/Contents('Applications')" + mid + "/" + contents + "('{}')/Document",
+            requestName
+        );
 
-        const response = await this.rest.get(baseUrl);
-        return new DocumentApplication(name, path);
+        const arrayBufferResponse = await this.rest.get(contentUrl, { responseType: 'arraybuffer' } as AxiosRequestConfig);
+        const metadataResponse = await this.rest.get(metadataUrl);
+
+        const buffer = Buffer.from(arrayBufferResponse.data);
+        const metadata = metadataResponse.data;
+
+        return new DocumentApplication(
+            path,
+            metadata?.Name || name,
+            buffer,
+            metadata?.ID,
+            metadata?.Name,
+            metadata?.LastUpdated
+        );
     }
 
     public async create(application: Application, isPrivate: boolean = false): Promise<AxiosResponse> {
-        /** Create Planning Analytics Application
-         *
-         * :param application: instance of Application
-         * :param private: boolean
-         * :return: response
-         */
-        const contents = isPrivate ? 'PrivateContents' : 'Contents';
-        let mid = "";
-        if (application.path.trim() !== '') {
-            mid = application.path.split('/').map(element => 
-                formatUrl("/Contents('{}')", element)).join('');
+        const contents = this.getContentsCollection(isPrivate);
+        const mid = this.buildPathSegments(application.path);
+        const url = "/Contents('Applications')" + mid + "/" + contents;
+
+        const response = await this.rest.post(url, application.body);
+
+        if (application instanceof DocumentApplication && application.content) {
+            const requestName = this.withLegacySuffix(application.name, ApplicationTypes.DOCUMENT);
+            const contentUrl = formatUrl(
+                "/Contents('Applications')" + mid + "/" + contents + "('{}')/Document/Content",
+                requestName
+            );
+            await this.rest.put(contentUrl, application.content, {
+                headers: this.binaryHttpHeader
+            } as AxiosRequestConfig);
         }
 
-        const url = "/Contents('Applications')" + mid + "/" + contents;
-        return await this.rest.post(url, application.body);
+        return response;
     }
 
     public async update(application: Application, isPrivate: boolean = false): Promise<AxiosResponse> {
-        /** Update Planning Analytics Application
-         *
-         * :param application: instance of Application
-         * :param private: boolean
-         * :return: response
-         */
-        const contents = isPrivate ? 'PrivateContents' : 'Contents';
-        let mid = "";
-        if (application.path.trim() !== '') {
-            mid = application.path.split('/').map(element => 
-                formatUrl("/Contents('{}')", element)).join('');
+        const contents = this.getContentsCollection(isPrivate);
+        const mid = this.buildPathSegments(application.path);
+        const requestName = this.withLegacySuffix(application.name, application.applicationType);
+
+        if (application instanceof DocumentApplication) {
+            if (!application.content) {
+                throw new Error('Document application requires content for update');
+            }
+            const url = formatUrl(
+                "/Contents('Applications')" + mid + "/" + contents + "('{}')/Document/Content",
+                requestName
+            );
+            return await this.rest.patch(url, application.content, {
+                headers: this.binaryHttpHeader
+            } as AxiosRequestConfig);
         }
 
         const url = formatUrl(
             "/Contents('Applications')" + mid + "/" + contents + "('{}')",
-            application.name);
+            requestName
+        );
         return await this.rest.patch(url, application.body);
     }
 
-    public async delete(path: string, applicationType: ApplicationTypes, name: string, isPrivate: boolean = false): Promise<AxiosResponse> {
-        /** Delete Planning Analytics Application
-         *
-         * :param path: path with forward slashes
-         * :param application_type: ApplicationType from Enum
-         * :param name: name of the application
-         * :param private: boolean
-         * :return: response
-         */
-        if (applicationType !== ApplicationTypes.FOLDER && !verifyVersion('12', this.version)) {
-            name += this.getApplicationTypeSuffix(applicationType);
-        }
-
-        const contents = isPrivate ? 'PrivateContents' : 'Contents';
-        let mid = "";
-        if (path.trim() !== '') {
-            mid = path.split('/').map(element => 
-                formatUrl("/Contents('{}')", element)).join('');
-        }
-
+    public async delete(
+        path: string,
+        applicationType: ApplicationTypes,
+        name: string,
+        isPrivate: boolean = false
+    ): Promise<AxiosResponse> {
+        const contents = this.getContentsCollection(isPrivate);
+        const mid = this.buildPathSegments(path);
+        const requestName = this.withLegacySuffix(name, applicationType);
         const url = formatUrl(
             "/Contents('Applications')" + mid + "/" + contents + "('{}')",
-            name);
+            requestName
+        );
         return await this.rest.delete(url);
     }
 
-    public async exists(path: string, applicationType: ApplicationTypes, name: string, isPrivate: boolean = false): Promise<boolean> {
-        /** Check if Planning Analytics Application exists
-         *
-         * :param path: path with forward slashes
-         * :param application_type: ApplicationType from Enum
-         * :param name: name of the application
-         * :param private: boolean
-         * :return: boolean
-         */
-        try {
-            await this.get(path, applicationType, name, isPrivate);
-            return true;
-        } catch {
+    public async rename(
+        path: string,
+        applicationType: ApplicationTypes,
+        currentName: string,
+        newName: string,
+        isPrivate: boolean = false
+    ): Promise<AxiosResponse> {
+        const contents = this.getContentsCollection(isPrivate);
+        const mid = this.buildPathSegments(path);
+        const requestName = this.withLegacySuffix(currentName, applicationType);
+        const url = formatUrl(
+            "/Contents('Applications')" + mid + "/" + contents + "('{}')/tm1.Move",
+            requestName
+        );
+        const payload = { Name: newName };
+        return await this.rest.post(url, JSON.stringify(payload));
+    }
+
+    public async exists(
+        path: string,
+        applicationType: ApplicationTypes,
+        name: string,
+        isPrivate: boolean = false
+    ): Promise<boolean> {
+        const contents = this.getContentsCollection(isPrivate);
+        const mid = this.buildPathSegments(path);
+        const requestName = this.withLegacySuffix(name, applicationType);
+        const url = formatUrl(
+            "/Contents('Applications')" + mid + "/" + contents + "('{}')",
+            requestName
+        );
+        return await this._exists(url);
+    }
+
+    public async updateOrCreate(application: Application, isPrivate: boolean = false): Promise<AxiosResponse> {
+        const exists = await this.exists(application.path, application.applicationType, application.name, isPrivate);
+        if (exists) {
+            return await this.update(application, isPrivate);
+        }
+        return await this.create(application, isPrivate);
+    }
+
+    public async updateOrCreateDocumentFromFile(
+        path: string,
+        name: string,
+        filePath: string,
+        isPrivate: boolean = false
+    ): Promise<AxiosResponse> {
+        const exists = await this.exists(path, ApplicationTypes.DOCUMENT, name, isPrivate);
+        if (exists) {
+            return await this.updateDocumentFromFile(filePath, path, name, isPrivate);
+        }
+        return await this.createDocumentFromFile(filePath, path, name, isPrivate);
+    }
+
+    public async createDocumentFromFile(
+        filePath: string,
+        applicationPath: string,
+        applicationName: string,
+        isPrivate: boolean = false
+    ): Promise<AxiosResponse> {
+        const content = await fs.readFile(filePath);
+        const document = new DocumentApplication(applicationPath, applicationName, content);
+        return await this.create(document, isPrivate);
+    }
+
+    public async updateDocumentFromFile(
+        filePath: string,
+        applicationPath: string,
+        applicationName: string,
+        isPrivate: boolean = false
+    ): Promise<AxiosResponse> {
+        const content = await fs.readFile(filePath);
+        const document = new DocumentApplication(applicationPath, applicationName, content);
+        return await this.update(document, isPrivate);
+    }
+
+    private parseApplicationType(applicationType: string | ApplicationTypes): ApplicationTypes {
+        if (typeof applicationType === 'string') {
+            const upper = applicationType.toUpperCase();
+            if ((ApplicationTypes as any)[upper]) {
+                return (ApplicationTypes as any)[upper] as ApplicationTypes;
+            }
+            throw new Error(`Invalid application type: ${applicationType}`);
+        }
+        return applicationType;
+    }
+
+    private buildPathSegments(path: string): string {
+        if (!path || !path.trim()) {
+            return '';
+        }
+        return path
+            .split('/')
+            .filter(segment => segment.trim().length > 0)
+            .map(segment => formatUrl("/Contents('{}')", segment))
+            .join('');
+    }
+
+    private getContentsCollection(isPrivate: boolean): string {
+        return isPrivate ? 'PrivateContents' : 'Contents';
+    }
+
+    private buildApplicationUrl(path: string, isPrivate: boolean, name: string): string {
+        const contents = this.getContentsCollection(isPrivate);
+        const mid = this.buildPathSegments(path);
+        return formatUrl(
+            "/Contents('Applications')" + mid + "/" + contents + "('{}')",
+            name
+        );
+    }
+
+    private withLegacySuffix(name: string, applicationType: ApplicationTypes): string {
+        if (applicationType === ApplicationTypes.FOLDER) {
+            return name;
+        }
+        const metadata = getApplicationMetadata(applicationType);
+        if (!metadata.suffix) {
+            return name;
+        }
+
+        if (this.isLegacyVersion() && !name.endsWith(metadata.suffix)) {
+            return `${name}${metadata.suffix}`;
+        }
+        return name;
+    }
+
+    private isLegacyVersion(): boolean {
+        const version = this.rest.version;
+        if (!version) {
             return false;
         }
-    }
-
-    private getApplicationTypeSuffix(applicationType: ApplicationTypes): string {
-        switch (applicationType) {
-            case ApplicationTypes.CUBE:
-                return '.cube';
-            case ApplicationTypes.CHORE:
-                return '.chore';
-            case ApplicationTypes.DIMENSION:
-                return '.dimension';
-            case ApplicationTypes.PROCESS:
-                return '.process';
-            case ApplicationTypes.SUBSET:
-                return '.subset';
-            case ApplicationTypes.VIEW:
-                return '.view';
-            case ApplicationTypes.LINK:
-                return '.url';
-            default:
-                return '';
-        }
-    }
-
-    private get version(): string {
-        // This would need to be implemented to get TM1 server version
-        return '12.0.0'; // Default to v12 for now
+        return !verifyVersion(version, '12.0.0');
     }
 }

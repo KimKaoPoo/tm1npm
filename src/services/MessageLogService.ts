@@ -1,17 +1,15 @@
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
-import { Process } from '../objects/Process';
 import { ProcessService } from './ProcessService';
-import { 
-    verifyVersion, 
-    deprecatedInVersion, 
-    odataTrackChangesHeader, 
+import {
+    verifyVersion,
+    deprecatedInVersion,
+    odataTrackChangesHeader,
     requireOpsAdmin,
     requireDataAdmin,
     formatUrl,
     CaseAndSpaceInsensitiveDict,
-    CaseAndSpaceInsensitiveSet,
-    utcLocalizeTime
+    CaseAndSpaceInsensitiveSet
 } from '../utils/Utils';
 
 export class MessageLogService extends ObjectService {
@@ -33,13 +31,11 @@ export class MessageLogService extends ObjectService {
         if (filter) {
             url += `?$filter=${filter}`;
         }
-        const response = await this.rest.get(url);
-        // Read the next delta-request-url from the response
-        const responseText = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-        this.lastDeltaRequest = responseText.substring(
-            responseText.lastIndexOf("MessageLogEntries/!delta('"),
-            responseText.length - 2
-        );
+        const response = await this.rest.get(url, {
+            headers: odataTrackChangesHeader(),
+            responseType: 'text'
+        });
+        this.lastDeltaRequest = this.extractDeltaUrl(response.data);
     }
 
     @deprecatedInVersion("12.0.0")
@@ -47,18 +43,17 @@ export class MessageLogService extends ObjectService {
         if (!this.lastDeltaRequest) {
             throw new Error("Delta request not initialized. Call initializeDeltaRequests first.");
         }
-        
-        const response = await this.rest.get("/" + this.lastDeltaRequest);
-        const responseText = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-        this.lastDeltaRequest = responseText.substring(
-            responseText.lastIndexOf("MessageLogEntries/!delta('"),
-            responseText.length - 2
-        );
-        return response.data.value;
+        const response = await this.rest.get(`/${this.lastDeltaRequest}`, {
+            headers: odataTrackChangesHeader(),
+            responseType: 'text'
+        });
+        this.lastDeltaRequest = this.extractDeltaUrl(response.data);
+        const payload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        return payload.value || [];
     }
 
     @deprecatedInVersion("12.0.0")
-    
+    @requireOpsAdmin
     public async getEntries(
         reverse: boolean = true,
         since?: Date,
@@ -148,7 +143,7 @@ export class MessageLogService extends ObjectService {
         return response.data.value;
     }
 
-    
+    @requireDataAdmin
     public async createEntry(level: string, message: string): Promise<void> {
         /**
          * :param level: string, FATAL, ERROR, WARN, INFO, DEBUG
@@ -168,17 +163,13 @@ export class MessageLogService extends ObjectService {
         // Execute TI code directly instead of creating a process
         const tiCode = `LogOutput('${level}', '${message}');`;
         const response = await processService.executeTiCode([tiCode]);
-        const success = response.status === 200;
-
-        if (!success) {
-            throw new Error(
-                `Failed to write to TM1 Message Log through unbound process. Status: '${response.status}'`
-            );
+        if (response.status !== 200) {
+            throw new Error(`Failed to write to TM1 Message Log. Status: '${response.status}'`);
         }
     }
 
-    
     @deprecatedInVersion("12.0.0")
+    @requireOpsAdmin
     public async getLastProcessMessage(processName: string): Promise<string | null> {
         /** Get the latest message log entry for a process
          *
@@ -198,14 +189,45 @@ export class MessageLogService extends ObjectService {
         return null;
     }
 
+    public async initialize_delta_requests(filter?: string): Promise<void> {
+        return this.initializeDeltaRequests(filter);
+    }
+
+    public async execute_delta_request(): Promise<any[]> {
+        return this.executeDeltaRequest();
+    }
+
+    public async get_entries(
+        reverse: boolean = true,
+        since?: Date,
+        until?: Date,
+        top?: number,
+        logger?: string,
+        level?: string,
+        msgContains?: string | string[],
+        msgContainsOperator: string = 'and'
+    ): Promise<any[]> {
+        return this.getEntries(reverse, since, until, top, logger, level, msgContains, msgContainsOperator);
+    }
+
+    public async create_entry(level: string, message: string): Promise<void> {
+        return this.createEntry(level, message);
+    }
+
+    public async get_last_process_message(processName: string): Promise<string | null> {
+        return this.getLastProcessMessage(processName);
+    }
+
     private ensureUtc(date: Date): Date {
-        /** Ensure date is treated as UTC if no timezone info
-         *
-         * :param date: Date object
-         * :return: Date object with UTC timezone
-         */
-        // In JavaScript, Date objects are always timezone-aware (local timezone)
-        // To treat as UTC, we need to adjust for the timezone offset
         return new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
+    }
+
+    private extractDeltaUrl(raw: string): string {
+        const payload = typeof raw === 'string' ? raw : JSON.stringify(raw);
+        const match = payload.match(/MessageLogEntries\/!delta\('([^']+)'\)/);
+        if (!match) {
+            throw new Error('Unable to determine next delta request URL from response');
+        }
+        return `MessageLogEntries/!delta('${match[1]}')`;
     }
 }

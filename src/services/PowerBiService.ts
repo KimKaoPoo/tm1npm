@@ -76,10 +76,35 @@ export class PowerBiService {
             throw new Error("dimensionName is required");
         }
 
-        return await this.elements.getElementsDataframe(
+        const dataframe = await this.elements.getElementsDataframe(
             dimensionName,
-            hierarchyName || dimensionName,
-            attributes
+            hierarchyName,
+            memberSelection,
+            {
+                skip_consolidations: skipConsolidations,
+                attributes,
+                skip_parents: skipParents,
+                level_names: levelNames,
+                parent_attribute: parentAttribute,
+                skip_weights: skipWeights,
+                use_blob: useBlob
+            }
         );
+
+        // Convert DataFrame to array format for PowerBI compatibility
+        const result: any[] = [];
+
+        // Add headers as first row
+        if (dataframe.columns) {
+            result.push(dataframe.columns);
+        }
+
+        // Add data rows
+        if (dataframe.data) {
+            result.push(...dataframe.data);
+        }
+
+        return result;
     }
+
 }

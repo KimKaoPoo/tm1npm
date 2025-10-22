@@ -31,25 +31,20 @@ export class GitService extends ObjectService {
     }
         
     public async tm1projectGet(): Promise<TM1Project | null> {
-        /**_summary_
-         */
         const url = '/!tm1project';
         const response = await this.rest.get(url);
-        
-        if (!response.data) {
+        const data = this.toJson(response.data);
+        if (!data || Object.keys(data).length === 0) {
             return null;
         }
-
-        return TM1Project.fromDict(response.data);
+        return TM1Project.fromDict(data);
     }
-    
+
     public async tm1projectDelete(): Promise<TM1Project> {
         const url = '/!tm1project';
         const emptyDict = {};
-        const bodyJson = JSON.stringify(emptyDict);
-        
-        const response = await this.rest.put(url, bodyJson);
-        return TM1Project.fromDict(response.data);
+        const response = await this.rest.put(url, JSON.stringify(emptyDict));
+        return TM1Project.fromDict(this.toJson(response.data));
     }
         
     public async tm1projectPut(tm1Project: TM1Project): Promise<TM1Project> {
@@ -62,7 +57,7 @@ export class GitService extends ObjectService {
             // Disable async mode for this specific request
             headers: { 'TM1-Async': 'false' }
         });
-        return TM1Project.fromDict(response.data);
+        return TM1Project.fromDict(this.toJson(response.data));
     }
 
     public async gitInit(
@@ -104,7 +99,7 @@ export class GitService extends ObjectService {
         const bodyJson = JSON.stringify(body);
         const response = await this.rest.post(url, bodyJson);
 
-        return Git.fromDict(response.data);
+        return Git.fromDict(this.toJson(response.data));
     }
 
     public async gitUninit(force: boolean = false): Promise<AxiosResponse> {
@@ -146,7 +141,7 @@ export class GitService extends ObjectService {
 
         const response = await this.rest.post(url, JSON.stringify(body));
 
-        return Git.fromDict(response.data);
+        return Git.fromDict(this.toJson(response.data));
     }
 
     public async gitPush(
@@ -196,7 +191,7 @@ export class GitService extends ObjectService {
         const response = await this.rest.post(url, JSON.stringify(body));
 
         if (execute) {
-            const planId = JSON.parse(response.data).ID;
+            const planId = this.toJson(response.data)?.ID;
             await this.gitExecutePlan(planId);
         }
 
@@ -240,7 +235,7 @@ export class GitService extends ObjectService {
         const response = await this.rest.post(url, bodyJson);
 
         if (execute) {
-            const planId = JSON.parse(response.data).ID;
+            const planId = this.toJson(response.data)?.ID;
             await this.gitExecutePlan(planId);
         }
 
@@ -262,9 +257,11 @@ export class GitService extends ObjectService {
         const plans: GitPlan[] = [];
 
         const response = await this.rest.get(url);
+        const payload = this.toJson(response.data);
+        const values = Array.isArray(payload?.value) ? payload.value : [];
 
         // Every individual plan is wrapped in a "value" parent, iterate through those to get the actual plans
-        for (const plan of response.data.value) {
+        for (const plan of values) {
             const planId = plan.ID;
             // Check if plan has an ID, sometimes there's a null in the mix that we don't want
             if (planId === null || planId === undefined) {
@@ -280,15 +277,15 @@ export class GitService extends ObjectService {
                 const planSourceFiles = plan.SourceFiles;
 
                 const newCommit = new GitCommit(
-                    plan.NewCommit.ID,
-                    plan.NewCommit.Summary,
-                    plan.NewCommit.Author
+                    plan.NewCommit?.ID,
+                    plan.NewCommit?.Summary,
+                    plan.NewCommit?.Author
                 );
 
                 const parentCommit = new GitCommit(
-                    plan.ParentCommit.ID,
-                    plan.ParentCommit.Summary,
-                    plan.ParentCommit.Author
+                    plan.ParentCommit?.ID,
+                    plan.ParentCommit?.Summary,
+                    plan.ParentCommit?.Author
                 );
 
                 const currentPlan = new GitPushPlan(
@@ -302,9 +299,9 @@ export class GitService extends ObjectService {
             } else if (plan['@odata.type'] === '#ibm.tm1.api.v1.GitPullPlan') {
 
                 const planCommit = new GitCommit(
-                    plan.Commit.ID,
-                    plan.Commit.Summary,
-                    plan.Commit.Author
+                    plan.Commit?.ID,
+                    plan.Commit?.Summary,
+                    plan.Commit?.Author
                 );
 
                 const planOperations = plan.Operations;
@@ -320,5 +317,18 @@ export class GitService extends ObjectService {
         }
 
         return plans;
+    }
+    private toJson(data: any): any {
+        if (data === undefined || data === null || data === '') {
+            return undefined;
+        }
+        if (typeof data === 'string') {
+            try {
+                return JSON.parse(data);
+            } catch {
+                return undefined;
+            }
+        }
+        return data;
     }
 }

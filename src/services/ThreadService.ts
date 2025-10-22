@@ -7,12 +7,9 @@ export class ThreadService extends ObjectService {
     /** Service to work with Threads in TM1
      * Deprecated as of TM1 Server v12
      */
-    public version?: string;
-
     constructor(rest: RestService) {
         super(rest);
-        this.version = rest.version;
-        if (verifyVersion("12.0.0", this.version || "11.0.0")) {
+        if (rest.version && verifyVersion(rest.version, '12.0.0')) {
             // warn only due to use in Monitoring Service
             console.warn("Threads not available in this version of TM1, removed as of 12.0.0");
         }

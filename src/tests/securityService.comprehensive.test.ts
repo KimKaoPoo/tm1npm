@@ -120,6 +120,9 @@ describe('SecurityService - Comprehensive Tests', () => {
             const mockUserFromDict = jest.fn().mockReturnValue(mockUser);
             (User as any).fromDict = mockUserFromDict;
 
+            // Mock determineActualUserName to return the input name
+            jest.spyOn(securityService as any, 'determineActualUserName').mockResolvedValue('testuser');
+
             const result = await securityService.getUser('testuser');
             
             expect(mockUserFromDict).toHaveBeenCalledWith(userData);
@@ -197,6 +200,9 @@ describe('SecurityService - Comprehensive Tests', () => {
             // Mock User.fromDict
             const mockUserFromDict = jest.fn().mockReturnValue(mockUser);
             (User as any).fromDict = mockUserFromDict;
+
+            // Mock determineActualUserName to return the input name
+            jest.spyOn(securityService as any, 'determineActualUserName').mockResolvedValue('testuser');
 
             const result = await securityService.userExists('testuser');
             
@@ -463,6 +469,9 @@ describe('SecurityService - Comprehensive Tests', () => {
     describe('Edge Cases and Special Scenarios', () => {
         test('should handle empty results gracefully', async () => {
             mockRestService.get.mockResolvedValue(mockResponse({ value: [] }));
+
+            // Mock determineActualGroupName to return the input name
+            jest.spyOn(securityService as any, 'determineActualGroupName').mockResolvedValue('EmptyGroup');
 
             const userNames = await securityService.getUserNames();
             const groupNames = await securityService.getGroupNames();

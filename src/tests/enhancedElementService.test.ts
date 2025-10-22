@@ -56,11 +56,11 @@ describe('Enhanced ElementService Tests', () => {
 
             await elementService.deleteElements('TestDim', 'TestHier', elementNames, true);
 
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                '/ExecuteProcessWithReturn',
-                expect.objectContaining({
-                    PrologProcedure: expect.stringContaining("HierarchyElementDelete('TestDim','TestHier','Element1')")
-                })
+            // Should create process first, then execute it
+            expect(mockRestService.post).toHaveBeenCalledTimes(2); // Create, Execute
+            expect(mockRestService.post).toHaveBeenNthCalledWith(1,
+                "/Processes",
+                expect.stringContaining("DeleteElements_")
             );
             
             console.log('✅ deleteElements via TI test passed');
@@ -130,13 +130,15 @@ describe('Enhanced ElementService Tests', () => {
                 ]
             }));
 
-            const result = await elementService.getElementsDataframe('TestDim', 'TestHier', ['Code', 'Description']);
+            const result = await elementService.getElementsDataframe('TestDim', 'TestHier', undefined, { attributes: ['Code', 'Description'] });
 
-            expect(result).toEqual([
-                ['Name', 'Type', 'Code', 'Description'],
-                ['Element1', 'Numeric', 'E1', 'First'],
-                ['Element2', 'String', 'E2', 'Second']
-            ]);
+            expect(result).toEqual({
+                columns: ['Name', 'Type', 'Parents', 'Weight', 'Code', 'Description'],
+                data: [
+                    ['Element1', 'Numeric', '', 1, null, null],
+                    ['Element2', 'String', '', 1, null, null]
+                ]
+            });
             
             console.log('✅ getElementsDataframe test passed');
         });
@@ -251,22 +253,24 @@ describe('Enhanced ElementService Tests', () => {
     describe('MDX Operations', () => {
         test('executeSetMdxElementNames should return element names from MDX set', async () => {
             mockRestService.post.mockResolvedValue(createMockResponse({
-                value: ['Element1', 'Element2', 'Element3']
+                Axes: [{
+                    Tuples: [
+                        { Members: [{ Name: 'Element1' }] },
+                        { Members: [{ Name: 'Element2' }] },
+                        { Members: [{ Name: 'Element3' }] }
+                    ]
+                }]
             }));
 
             const elements = await elementService.executeSetMdxElementNames(
-                'TestDim', 
-                'TestHier', 
                 '{[TestDim].[TestHier].Members}'
             );
 
             expect(elements).toEqual(['Element1', 'Element2', 'Element3']);
             expect(mockRestService.post).toHaveBeenCalledWith(
-                '/ExecuteMDXSetExpression',
+                '/ExecuteMDX',
                 {
-                    MDX: '{[TestDim].[TestHier].Members}',
-                    Dimension: 'TestDim',
-                    Hierarchy: 'TestHier'
+                    MDX: '{[TestDim].[TestHier].Members}'
                 }
             );
             

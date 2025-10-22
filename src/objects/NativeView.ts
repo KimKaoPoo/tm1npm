@@ -1,7 +1,7 @@
 import { View } from './View';
 import { ViewAxisSelection, ViewTitleSelection } from './Axis';
-import { Subset, AnonymousSubset } from './Subset';
-import { caseAndSpaceInsensitiveEquals, readObjectNameFromUrl } from '../utils/Utils';
+import { AnonymousSubset } from './Subset';
+import { caseAndSpaceInsensitiveEquals } from '../utils/Utils';
 
 export class NativeView extends View {
     /** Abstraction of TM1 NativeView (classic cube view)

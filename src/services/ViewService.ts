@@ -114,7 +114,7 @@ export class ViewService extends ObjectService {
          * :return: Response
          */
         const viewType = isPrivate ? "PrivateViews" : "Views";
-        const url = formatUrl("/Cubes('{}')/{}/('{}')}", view.cube, viewType, view.name);
+        const url = formatUrl("/Cubes('{}')/{}('{}')", view.cube, viewType, view.name);
         return await this.rest.patch(url, view.body);
     }
 
@@ -191,16 +191,82 @@ export class ViewService extends ObjectService {
         return response.data.value.map((view: any) => view.Name);
     }
 
-    private async _exists(url: string): Promise<boolean> {
-        try {
-            await this.rest.get(url);
-            return true;
-        } catch (error) {
-            if (error instanceof TM1RestException && error.statusCode === 404) {
-                return false;
+    public async getMdxView(
+        cubeName: string,
+        viewName: string,
+        isPrivate: boolean = false
+    ): Promise<MDXView> {
+        const viewType = isPrivate ? 'PrivateViews' : 'Views';
+        const url = formatUrl("/Cubes('{}')/{}('{}')?$expand=*", cubeName, viewType, viewName);
+        const response = await this.rest.get(url);
+        return MDXView.fromDict(response.data, cubeName);
+    }
+
+    public async searchSubsetInNativeViews(
+        dimensionName: string,
+        subsetName: string,
+        cubeName?: string,
+        includeElements: boolean = false
+    ): Promise<[NativeView[], NativeView[]]> {
+        const normalizedDimension = dimensionName.toLowerCase().replace(/\s+/g, '');
+        const normalizedSubset = subsetName.toLowerCase().replace(/\s+/g, '');
+        const elementFilter = includeElements ? '' : ';$top=0';
+
+        const baseUrl = cubeName
+            ? formatUrl(
+                "/Cubes?$select=Name&$filter=replace(tolower(Name),' ', '') eq '{}'",
+                cubeName.toLowerCase().replace(/\s+/g, '')
+            )
+            : "/Cubes?$select=Name";
+
+        const privateViews: NativeView[] = [];
+        const publicViews: NativeView[] = [];
+
+        for (const viewType of ['PrivateViews', 'Views']) {
+            const query = baseUrl + formatUrl(
+                "&$expand={}($filter=isof(tm1.NativeView) and" +
+                "((tm1.NativeView/Rows/any (r: replace(tolower(r/Subset/Name), ' ', '') eq '{}' " +
+                "and replace(tolower(r/Subset/Hierarchy/Dimension/Name), ' ', '') eq '{}'))" +
+                " or (tm1.NativeView/Columns/any (c: replace(tolower(c/Subset/Name), ' ', '') eq '{}' " +
+                "and replace(tolower(c/Subset/Hierarchy/Dimension/Name), ' ', '') eq '{}'))" +
+                " or (tm1.NativeView/Titles/any (t: replace(tolower(t/Subset/Name), ' ', '') eq '{}' " +
+                "and replace(tolower(t/Subset/Hierarchy/Dimension/Name), ' ', '') eq '{}')))" +
+                ";$expand=tm1.NativeView/Rows/Subset($expand=Hierarchy($select=Name;$expand=Dimension($select=Name)),Elements($select=Name{});" +
+                "$select=Expression,UniqueName,Name, Alias)," +
+                " tm1.NativeView/Columns/Subset($expand=Hierarchy($select=Name;$expand=Dimension($select=Name)),Elements($select=Name{});" +
+                "$select=Expression,UniqueName,Name,Alias)," +
+                " tm1.NativeView/Titles/Subset($expand=Hierarchy($select=Name;$expand=Dimension($select=Name)),Elements($select=Name{});" +
+                "$select=Expression,UniqueName,Name,Alias)," +
+                " tm1.NativeView/Titles/Selected($select=Name))",
+                viewType,
+                normalizedSubset,
+                normalizedDimension,
+                normalizedSubset,
+                normalizedDimension,
+                normalizedSubset,
+                normalizedDimension,
+                elementFilter,
+                elementFilter,
+                elementFilter
+            );
+
+            const response = await this.rest.get(query);
+            const cubes = response.data.value || [];
+
+            for (const cube of cubes) {
+                const viewList = cube[viewType] || [];
+                for (const viewDict of viewList) {
+                    const nativeView = NativeView.fromDict(viewDict, cube.Name);
+                    if (viewType === 'PrivateViews') {
+                        privateViews.push(nativeView);
+                    } else {
+                        publicViews.push(nativeView);
+                    }
+                }
             }
-            throw error;
         }
+
+        return [privateViews, publicViews];
     }
 
     public async searchStringInName(
