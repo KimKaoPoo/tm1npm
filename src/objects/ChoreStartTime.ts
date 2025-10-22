@@ -5,17 +5,32 @@ export class ChoreStartTime {
     private _datetime: Date;
     public tz?: string;
 
-    constructor(year: number, month: number, day: number, hour: number, minute: number, second: number, tz?: string) {
-        /**
-         * :param year: year
-         * :param month: month
-         * :param day: day
-         * :param hour: hour or None
-         * :param minute: minute or None
-         * :param second: second or None
-         */
-        this._datetime = new Date(year, month - 1, day, hour, minute, second); // month is 0-indexed in JS
-        this.tz = tz;
+    constructor(year: number, month: number, day: number, hour: number, minute: number, second: number, tz?: string);
+    constructor(datetime: Date, tz?: string);
+    constructor(
+        yearOrDatetime: number | Date,
+        monthOrTz?: number | string,
+        day?: number,
+        hour?: number,
+        minute?: number,
+        second?: number,
+        tz?: string
+    ) {
+        if (yearOrDatetime instanceof Date) {
+            this._datetime = new Date(yearOrDatetime);
+            this.tz = monthOrTz as string;
+        } else {
+            /**
+             * :param year: year
+             * :param month: month
+             * :param day: day
+             * :param hour: hour or None
+             * :param minute: minute or None
+             * :param second: second or None
+             */
+            this._datetime = new Date(yearOrDatetime, (monthOrTz as number) - 1, day || 0, hour || 0, minute || 0, second || 0); // month is 0-indexed in JS
+            this.tz = tz;
+        }
     }
 
     public static fromString(startTimeString: string): ChoreStartTime {

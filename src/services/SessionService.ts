@@ -33,7 +33,7 @@ export class SessionService extends ObjectService {
         return response.data.value;
     }
 
-    public async getCurrent(): Promise<any[]> {
+    public async getCurrent(): Promise<any> {
         const url = "/ActiveSession";
         const response = await this.rest.get(url);
         return response.data.value;
@@ -54,7 +54,7 @@ export class SessionService extends ObjectService {
         return await this.rest.post(url);
     }
 
-    
+    @requireAdmin
     public async closeAll(): Promise<any[]> {
         const currentUser = await this.users.getCurrent();
         const sessions = await this.getAll();
@@ -78,4 +78,5 @@ export class SessionService extends ObjectService {
         }
         return closedSessions;
     }
+
 }

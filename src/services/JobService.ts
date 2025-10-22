@@ -56,4 +56,17 @@ export class JobService extends ObjectService {
         const jobs = await this.getAll();
         return jobs;
     }
+
+    // snake_case aliases for tm1py parity
+    public async get_all(): Promise<any[]> {
+        return this.getAll();
+    }
+
+    public async cancel_all(): Promise<any[]> {
+        return this.cancelAll();
+    }
+
+    public async get_as_dataframe(): Promise<any[]> {
+        return this.getAsDataFrame();
+    }
 }

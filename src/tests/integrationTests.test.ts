@@ -281,12 +281,14 @@ describe('TM1Service Integration Tests', () => {
                     );
                     
                     expect(dataframe).toBeDefined();
-                    expect(Array.isArray(dataframe)).toBe(true);
+                    expect(dataframe.columns).toBeDefined();
+                    expect(dataframe.data).toBeDefined();
+                    expect(Array.isArray(dataframe.data)).toBe(true);
                     
-                    if (dataframe.length > 0) {
-                        console.log('✅ Dataframe headers:', dataframe[0]);
-                        if (dataframe.length > 1) {
-                            console.log('✅ Sample data:', dataframe[1]);
+                    if (dataframe.data.length > 0) {
+                        console.log('✅ Dataframe headers:', dataframe.columns);
+                        if (dataframe.data.length > 0) {
+                            console.log('✅ Sample data:', dataframe.data[0]);
                         }
                     }
                 } else {

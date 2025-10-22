@@ -1,15 +1,12 @@
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { ConfigurationService } from './ConfigurationService';
-import { 
-    verifyVersion, 
-    deprecatedInVersion, 
-    odataTrackChangesHeader, 
-    requireDataAdmin,
+import {
+    verifyVersion,
+    deprecatedInVersion,
+    odataTrackChangesHeader,
     formatUrl,
-    requireVersion,
-    requireOpsAdmin,
-    utcLocalizeTime
+    requireVersion
 } from '../utils/Utils';
 
 export class AuditLogService extends ObjectService {
@@ -20,7 +17,7 @@ export class AuditLogService extends ObjectService {
     constructor(rest: RestService) {
         super(rest);
         
-        if (verifyVersion("12.0.0", rest.version || "11.0.0")) {
+        if (rest.version && verifyVersion(rest.version, '12.0.0')) {
             // warn only due to use in Monitoring Service
             console.warn("Audit Logs are not available in this version of TM1, removed as of 12.0.0");
         }
@@ -34,13 +31,11 @@ export class AuditLogService extends ObjectService {
         if (filter) {
             url += `?$filter=${filter}`;
         }
-        const response = await this.rest.get(url);
-        // Read the next delta-request-url from the response
-        const responseText = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-        this.lastDeltaRequest = responseText.substring(
-            responseText.lastIndexOf("AuditLogEntries/!delta('"),
-            responseText.length - 2
-        );
+        const response = await this.rest.get(url, {
+            headers: odataTrackChangesHeader(),
+            responseType: 'text'
+        });
+        this.lastDeltaRequest = this.extractDeltaUrl(response.data);
     }
 
     @deprecatedInVersion("12.0.0")
@@ -48,14 +43,13 @@ export class AuditLogService extends ObjectService {
         if (!this.lastDeltaRequest) {
             throw new Error("Delta request not initialized. Call initializeDeltaRequests first.");
         }
-        
-        const response = await this.rest.get("/" + this.lastDeltaRequest);
-        const responseText = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
-        this.lastDeltaRequest = responseText.substring(
-            responseText.lastIndexOf("AuditLogEntries/!delta('"),
-            responseText.length - 2
-        );
-        return response.data.value;
+        const response = await this.rest.get(`/${this.lastDeltaRequest}`, {
+            headers: odataTrackChangesHeader(),
+            responseType: 'text'
+        });
+        this.lastDeltaRequest = this.extractDeltaUrl(response.data);
+        const payload = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        return payload.value || [];
     }
 
     
@@ -104,12 +98,12 @@ export class AuditLogService extends ObjectService {
             }
             if (until) {
                 // If until doesn't have tz information, UTC is assumed
-                const untilUtc = this.ensureUtc(until);
-                logFilters.push(formatUrl(
-                    "TimeStamp le {}", 
-                    untilUtc.toISOString().replace(/\.\d{3}Z$/, 'Z')
-                ));
-            }
+            const untilUtc = this.ensureUtc(until);
+            logFilters.push(formatUrl(
+                "TimeStamp le {}", 
+                untilUtc.toISOString().replace(/\.\d{3}Z$/, 'Z')
+            ));
+        }
             url += `&$filter=${logFilters.join(" and ")}`;
         }
         
@@ -168,5 +162,14 @@ export class AuditLogService extends ObjectService {
         // In JavaScript, Date objects are always timezone-aware (local timezone)
         // To treat as UTC, we need to adjust for the timezone offset
         return new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
+    }
+
+    private extractDeltaUrl(raw: string): string {
+        const payload = typeof raw === 'string' ? raw : JSON.stringify(raw);
+        const match = payload.match(/AuditLogEntries\/!delta\('([^']+)'\)/);
+        if (!match) {
+            throw new Error('Unable to determine next delta request URL from response');
+        }
+        return `AuditLogEntries/!delta('${match[1]}')`;
     }
 }

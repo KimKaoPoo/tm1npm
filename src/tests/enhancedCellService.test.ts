@@ -6,9 +6,17 @@ import axios, { AxiosResponse } from 'axios';
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
+// Mock FileService
+jest.mock('../services/FileService', () => ({
+    FileService: jest.fn().mockImplementation(() => ({
+        create: jest.fn().mockResolvedValue({})
+    }))
+}));
+
 describe('Enhanced CellService Tests', () => {
     let cellService: CellService;
     let mockRestService: jest.Mocked<RestService>;
+    let mockProcessService: any;
 
     const createMockResponse = (data: any, status: number = 200): AxiosResponse => ({
         data,
@@ -27,7 +35,13 @@ describe('Enhanced CellService Tests', () => {
             put: jest.fn()
         } as any;
 
-        cellService = new CellService(mockRestService);
+        mockProcessService = {
+            create: jest.fn().mockResolvedValue({}),
+            execute: jest.fn().mockResolvedValue({}),
+            delete: jest.fn().mockResolvedValue({})
+        } as any;
+
+        cellService = new CellService(mockRestService, mockProcessService);
     });
 
     describe('Enhanced Data Writing Functions', () => {
@@ -101,23 +115,38 @@ describe('Enhanced CellService Tests', () => {
         });
 
         test('writeThroughBlob should upload CSV and load from blob', async () => {
-            const csvData = "Year,Version,Region,Value\\n2024,Actual,London,100";
+            const cellsetData = {
+                'Year,Version,Region': 100
+            };
 
+            // Mock the REST calls for process creation, execution, and deletion
             mockRestService.post
-                .mockResolvedValueOnce(createMockResponse({ ID: 'blob-123' })) // Blob upload
-                .mockResolvedValueOnce(createMockResponse({})); // Cube load
+                .mockResolvedValueOnce(createMockResponse({})) // Process creation
+                .mockResolvedValueOnce(createMockResponse({})); // Process execution
 
-            await cellService.writeThroughBlob('SalesCube', csvData);
+            mockRestService.delete
+                .mockResolvedValueOnce(createMockResponse({})); // Process deletion
 
+            await cellService.writeThroughBlob('SalesCube', cellsetData);
+
+            // Should create process, execute it, and delete it
             expect(mockRestService.post).toHaveBeenCalledTimes(2);
-            expect(mockRestService.post).toHaveBeenNthCalledWith(1, '/Blobs', csvData, {
-                headers: { 'Content-Type': 'text/csv' }
-            });
-            expect(mockRestService.post).toHaveBeenNthCalledWith(2, 
-                "/Cubes('SalesCube')/tm1.LoadFromBlob",
-                { BlobId: 'blob-123' }
+            expect(mockRestService.delete).toHaveBeenCalledTimes(1);
+
+            // Verify process creation call
+            expect(mockRestService.post).toHaveBeenNthCalledWith(1,
+                '/Processes',
+                expect.objectContaining({
+                    Name: expect.stringContaining('tm1npm_blob_import_')
+                })
             );
-            
+
+            // Verify process execution call
+            expect(mockRestService.post).toHaveBeenNthCalledWith(2,
+                expect.stringMatching(/\/Processes\(.*\)\/tm1\.ExecuteProcess/),
+                {}
+            );
+
             console.log('✅ writeThroughBlob test passed');
         });
     });
@@ -232,6 +261,165 @@ describe('Enhanced CellService Tests', () => {
             );
             
             console.log('✅ Sandbox operations test passed');
+        });
+    });
+
+    describe('New Critical Methods Tests', () => {
+        test('clear should clear cube data with sandbox support', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+
+            await cellService.clear('SalesCube', 'TestSandbox');
+
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/Cubes('SalesCube')/tm1.Clear?$sandbox=TestSandbox"
+            );
+
+            console.log('✅ clear test passed');
+        });
+
+        test('clear should clear cube data without sandbox', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+
+            await cellService.clear('SalesCube');
+
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/Cubes('SalesCube')/tm1.Clear"
+            );
+
+            console.log('✅ clear without sandbox test passed');
+        });
+
+        test('extractCellsetCsv should extract cellset as CSV with headers', async () => {
+            const mockCellset = {
+                Axes: [
+                    {
+                        Hierarchies: [
+                            { Dimension: { Name: 'Year' } },
+                            { Dimension: { Name: 'Region' } }
+                        ],
+                        Tuples: []
+                    },
+                    {
+                        Tuples: [
+                            { Members: [{ Name: '2024' }, { Name: 'London' }] },
+                            { Members: [{ Name: '2024' }, { Name: 'Paris' }] }
+                        ]
+                    }
+                ],
+                Cells: [
+                    { Value: 100 },
+                    { Value: 200 }
+                ]
+            };
+
+            mockRestService.get.mockResolvedValue(createMockResponse(mockCellset));
+
+            const csv = await cellService.extractCellsetCsv('cellset-123');
+
+            expect(csv).toContain('Year');
+            expect(csv).toContain('Region');
+            expect(csv).toContain('100');
+            expect(csv).toContain('200');
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                expect.stringContaining("Cellsets('cellset-123')")
+            );
+
+            console.log('✅ extractCellsetCsv test passed');
+        });
+
+        test('extractCellsetCsv should extract cellset as CSV without headers', async () => {
+            const mockCellset = {
+                Axes: [
+                    {
+                        Hierarchies: [{ Dimension: { Name: 'Year' } }],
+                        Tuples: []
+                    },
+                    {
+                        Tuples: [{ Members: [{ Name: '2024' }] }]
+                    }
+                ],
+                Cells: [{ Value: 100 }]
+            };
+
+            mockRestService.get.mockResolvedValue(createMockResponse(mockCellset));
+
+            const csv = await cellService.extractCellsetCsv('cellset-123', undefined, false);
+
+            expect(csv).not.toContain('Year');
+            expect(csv).toContain('100');
+
+            console.log('✅ extractCellsetCsv without headers test passed');
+        });
+
+        test('extractCellsetCsv should handle special characters in CSV', async () => {
+            const mockCellset = {
+                Axes: [
+                    { Hierarchies: [{ Dimension: { Name: 'Region' } }], Tuples: [] },
+                    { Tuples: [{ Members: [{ Name: 'London, UK' }] }] }
+                ],
+                Cells: [{ Value: 'Test, Value' }]
+            };
+
+            mockRestService.get.mockResolvedValue(createMockResponse(mockCellset));
+
+            const csv = await cellService.extractCellsetCsv('cellset-123');
+
+            expect(csv).toContain('"London, UK"');
+            expect(csv).toContain('"Test, Value"');
+
+            console.log('✅ extractCellsetCsv special characters test passed');
+        });
+
+        test('execute_view_async should execute view asynchronously', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({
+                ID: 'async-view-123'
+            }));
+
+            const asyncId = await cellService.execute_view_async('SalesCube', 'TestView');
+
+            expect(asyncId).toBe('async-view-123');
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/Cubes('SalesCube')/Views('TestView')/tm1.ExecuteAsync"
+            );
+
+            console.log('✅ execute_view_async test passed');
+        });
+
+        test('execute_view_async should support all options', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({
+                ID: 'async-view-456'
+            }));
+
+            const options = {
+                private: true,
+                sandbox_name: 'TestSandbox',
+                element_unique_names: true,
+                skip_zeros: true,
+                skip_consolidated: true,
+                skip_rule_derived: true
+            };
+
+            const asyncId = await cellService.execute_view_async('SalesCube', 'TestView', options);
+
+            expect(asyncId).toBe('async-view-456');
+
+            const callUrl = mockRestService.post.mock.calls[0][0];
+            expect(callUrl).toContain('/tm1.ExecuteAsync');
+            expect(callUrl).toContain('private=true');
+            expect(callUrl).toContain('sandbox=TestSandbox');
+            expect(callUrl).toContain('element_unique_names=true');
+
+            console.log('✅ execute_view_async with options test passed');
+        });
+
+        test('execute_view_async should return generated ID if no ID in response', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+
+            const asyncId = await cellService.execute_view_async('SalesCube', 'TestView');
+
+            expect(asyncId).toMatch(/^view_async_/);
+
+            console.log('✅ execute_view_async fallback ID test passed');
         });
     });
 });

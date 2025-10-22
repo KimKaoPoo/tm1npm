@@ -5,6 +5,7 @@ import { TM1RestException } from '../exceptions/TM1Exception';
 import { HierarchyService } from './HierarchyService';
 import { SubsetService } from './SubsetService';
 import { ObjectService } from './ObjectService';
+import { ProcessService } from './ProcessService';
 
 export class DimensionService extends ObjectService {
     private hierarchies: HierarchyService;
@@ -78,6 +79,17 @@ export class DimensionService extends ObjectService {
         }
     }
 
+    public async updateOrCreate(
+        dimension: Dimension,
+        keepExistingAttributes: boolean = false
+    ): Promise<void> {
+        if (await this.exists(dimension.name)) {
+            await this.update(dimension, keepExistingAttributes);
+        } else {
+            await this.create(dimension);
+        }
+    }
+
     public async delete(dimensionName: string): Promise<AxiosResponse> {
         const url = this.formatUrl("/Dimensions('{}')", dimensionName);
         return await this.rest.delete(url);
@@ -116,6 +128,17 @@ export class DimensionService extends ObjectService {
 
         const response = await this.rest.get(url);
         return response.data.value.map((dim: any) => Dimension.fromDict(dim));
+    }
+
+    public async getNumberOfDimensions(skipControlDimensions: boolean = false): Promise<number> {
+        if (skipControlDimensions) {
+            const response = await this.rest.get("/ModelDimensions()?$select=Name&$top=0&$count");
+            const count = response.data['@odata.count'];
+            return typeof count === 'number' ? count : parseInt(count, 10);
+        }
+
+        const response = await this.rest.get("/Dimensions/$count");
+        return parseInt(response.data, 10);
     }
 
     public async getDimensionNames(cubeName: string): Promise<string[]> {
@@ -163,6 +186,45 @@ export class DimensionService extends ObjectService {
         const url = this.formatUrl("/Dimensions('{}')/Hierarchies/$count", dimensionName);
         const response = await this.rest.get(url);
         return parseInt(response.data);
+    }
+
+    public async executeMdx(dimensionName: string, mdx: string): Promise<string[]> {
+        const mdxSkeleton = "SELECT {} ON ROWS, { [}ElementAttributes_" +
+            `${dimensionName}].DefaultMember } ON COLUMNS  FROM [}ElementAttributes_${dimensionName}]`;
+        const mdxStatement = mdxSkeleton.replace("{}", mdx);
+
+        const requestUrl = "/ExecuteMDX?$expand=Axes($filter=Ordinal eq 1;$expand=Tuples($expand=Members($select=Ordinal;$expand=Element($select=Name))))";
+        const payload = { MDX: mdxStatement };
+
+        const response = await this.rest.post(requestUrl, payload);
+        const axis = response.data?.Axes?.[0]?.Tuples || [];
+        return axis.map((tuple: any) => tuple.Members?.[0]?.Element?.Name).filter((name: string) => Boolean(name));
+    }
+
+    public async createElementAttributesThroughTi(dimension: Dimension): Promise<void> {
+        const processService = new ProcessService(this.rest);
+
+        for (const hierarchy of dimension) {
+            const statements = hierarchy.elementAttributes
+                .map(elementAttribute =>
+                    `AttrInsert('${dimension.name}', '', '${elementAttribute.name}', '${elementAttribute.attributeType[0]}');`
+                );
+
+            if (statements.length > 0) {
+                await processService.executeTiCode(statements);
+            }
+        }
+    }
+
+    public async usesAlternateHierarchies(dimensionName: string): Promise<boolean> {
+        const hierarchyNames = await this.hierarchies.getAllNames(dimensionName);
+        if (hierarchyNames.length === 0) {
+            return false;
+        }
+        if (hierarchyNames.length > 1) {
+            return true;
+        }
+        return !this.caseAndSpaceInsensitiveEquals(dimensionName, hierarchyNames[0]);
     }
 
 }

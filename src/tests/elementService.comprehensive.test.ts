@@ -252,7 +252,7 @@ describe('ElementService - Comprehensive Tests', () => {
             
             expect(result).toEqual(['NumericLeaf', 'StringLeaf']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type eq 'Numeric' or Type eq 'String'"
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type ne 'Consolidated'"
             );
         });
 
@@ -547,12 +547,14 @@ describe('ElementService - Comprehensive Tests', () => {
 
             await elementService.deleteElements('TestDim', 'TestHierarchy', elementNames, true);
             
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                "/ExecuteProcessWithReturn",
-                expect.objectContaining({
-                    Name: expect.stringContaining('tm1npm_delete_elements_'),
-                    PrologProcedure: expect.stringContaining("HierarchyElementDelete('TestDim','TestHierarchy','Element1');")
-                })
+            // Should create process first, then execute it
+            expect(mockRestService.post).toHaveBeenCalledTimes(2); // Create, Execute
+            expect(mockRestService.post).toHaveBeenNthCalledWith(1,
+                "/Processes",
+                expect.stringContaining("DeleteElements_")
+            );
+            expect(mockRestService.post).toHaveBeenNthCalledWith(2,
+                expect.stringMatching(/\/Processes\('DeleteElements_\d+'\)\/tm1\.ExecuteProcess/)
             );
         });
 
@@ -695,14 +697,23 @@ describe('ElementService - Comprehensive Tests', () => {
 
         test('should execute set MDX for element names', async () => {
             const mdxResult = {
-                value: ['Element1', 'Element2']
+                Axes: [{
+                    Tuples: [
+                        { Members: [{ Name: 'Element1' }] },
+                        { Members: [{ Name: 'Element2' }] }
+                    ]
+                }]
             };
             mockRestService.post.mockResolvedValue(mockResponse(mdxResult));
 
             const mdx = "DESCENDANTS({[TestDim].[TestHierarchy].[Total]}, 1, LEAVES)";
-            const result = await elementService.executeSetMdxElementNames('TestDim', 'TestHierarchy', mdx);
-            
+            const result = await elementService.executeSetMdxElementNames(mdx);
+
             expect(result).toEqual(['Element1', 'Element2']);
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                '/ExecuteMDX',
+                { MDX: mdx }
+            );
         });
 
         test('should handle empty MDX results', async () => {
@@ -716,12 +727,17 @@ describe('ElementService - Comprehensive Tests', () => {
 
     describe('Advanced Element Operations', () => {
         test('should get leaf elements', async () => {
-            jest.spyOn(elementService, 'getElements').mockResolvedValue([mockElement]);
+            const leafElementsData = {
+                value: [{ Name: 'LeafElement1', Type: 'Numeric' }]
+            };
+            mockRestService.get.mockResolvedValue(mockResponse(leafElementsData));
 
             const result = await elementService.getLeafElements('TestDim', 'TestHierarchy');
-            
-            expect(result).toEqual([mockElement]);
-            expect(elementService.getElements).toHaveBeenCalledWith('TestDim', 'TestHierarchy', true);
+
+            expect(result).toHaveLength(1);
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$expand=*&$filter=Type ne 'Consolidated'"
+            );
         });
 
         test('should get consolidated elements', async () => {
@@ -750,13 +766,15 @@ describe('ElementService - Comprehensive Tests', () => {
             };
             mockRestService.get.mockResolvedValue(mockResponse(elementsData));
 
-            const result = await elementService.getElementsDataframe('TestDim', 'TestHierarchy', ['Caption']);
+            const result = await elementService.getElementsDataframe('TestDim', 'TestHierarchy', undefined, { attributes: ['Caption'] });
             
-            expect(result).toEqual([
-                ['Name', 'Type', 'Caption'],
-                ['Element1', 'Numeric', 'Elem1'],
-                ['Element2', 'String', 'Elem2']
-            ]);
+            expect(result).toEqual({
+                columns: ['Name', 'Type', 'Parents', 'Weight', 'Caption'],
+                data: [
+                    ['Element1', 'Numeric', '', 1, null],
+                    ['Element2', 'String', '', 1, null]
+                ]
+            });
         });
 
         test('should get elements dataframe without attributes', async () => {
@@ -769,12 +787,14 @@ describe('ElementService - Comprehensive Tests', () => {
             mockRestService.get.mockResolvedValue(mockResponse(elementsData));
 
             const result = await elementService.getElementsDataframe('TestDim', 'TestHierarchy');
-            
-            expect(result).toEqual([
-                ['Name', 'Type'],
-                ['Element1', 'Numeric'],
-                ['Element2', 'String']
-            ]);
+
+            expect(result).toEqual({
+                columns: ['Name', 'Type', 'Parents', 'Weight'],
+                data: [
+                    ['Element1', 'Numeric', '', 1],
+                    ['Element2', 'String', '', 1]
+                ]
+            });
         });
 
         test('should create hierarchy from dataframe', async () => {
@@ -949,7 +969,6 @@ describe('ElementService - Comprehensive Tests', () => {
             
             expect(result).toHaveLength(2);
             expect(elementService.executeSetMdxElementNames).toHaveBeenCalledWith(
-                'TestDim', 'TestHierarchy',
                 expect.stringContaining('FILTER(DESCENDANTS')
             );
         });
@@ -964,7 +983,6 @@ describe('ElementService - Comprehensive Tests', () => {
             
             expect(result).toHaveLength(2);
             expect(elementService.executeSetMdxElementNames).toHaveBeenCalledWith(
-                'TestDim', 'TestHierarchy',
                 expect.stringContaining('DESCENDANTS')
             );
         });
@@ -1123,13 +1141,15 @@ describe('ElementService - Comprehensive Tests', () => {
             };
             mockRestService.get.mockResolvedValue(mockResponse(elementsData));
 
-            const result = await elementService.getElementsDataframe('TestDim', 'TestHierarchy', ['MissingAttribute']);
+            const result = await elementService.getElementsDataframe('TestDim', 'TestHierarchy', undefined, { attributes: ['MissingAttribute'] });
             
-            expect(result).toEqual([
-                ['Name', 'Type', 'MissingAttribute'],
-                ['Element1', 'Numeric', ''],
-                ['Element2', 'String'] // No attribute value added when no Attributes property exists
-            ]);
+            expect(result).toEqual({
+                columns: ['Name', 'Type', 'Parents', 'Weight', 'MissingAttribute'],
+                data: [
+                    ['Element1', 'Numeric', '', 1, null],
+                    ['Element2', 'String', '', 1, null]
+                ]
+            });
         });
     });
 

@@ -2,7 +2,8 @@ import { AxiosResponse } from 'axios';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { User } from '../objects/User';
-import { formatUrl, CaseAndSpaceInsensitiveSet, requireSecurityAdmin, requireAdmin } from '../utils/Utils';
+import { formatUrl, CaseAndSpaceInsensitiveSet } from '../utils/Utils';
+import { ProcessService } from './ProcessService';
 
 export class SecurityService extends ObjectService {
     /** Service to handle Security stuff
@@ -127,6 +128,10 @@ export class SecurityService extends ObjectService {
         return response.data.value.map((user: any) => user.Name);
     }
 
+    public async getAllUserNames(): Promise<string[]> {
+        return await this.getUserNames();
+    }
+
     public async getGroupNames(): Promise<string[]> {
         /** Get all group names
          *
@@ -135,6 +140,10 @@ export class SecurityService extends ObjectService {
         const url = "/Groups?$select=Name";
         const response = await this.rest.get(url);
         return response.data.value.map((group: any) => group.Name);
+    }
+
+    public async getAllGroups(): Promise<string[]> {
+        return await this.getGroupNames();
     }
 
     public async getAllUsers(): Promise<User[]> {
@@ -173,6 +182,10 @@ export class SecurityService extends ObjectService {
         const url = formatUrl("/Groups('{}')/Users?$select=Name", actualGroupName);
         const response = await this.rest.get(url);
         return response.data.value.map((user: any) => user.Name);
+    }
+
+    public async getUserNamesFromGroup(groupName: string): Promise<string[]> {
+        return await this.getUsersFromGroup(groupName);
     }
 
     
@@ -265,20 +278,49 @@ export class SecurityService extends ObjectService {
         }
     }
 
-    private async determineActualObjectName(objectClass: string, objectName: string): Promise<string> {
-        /** Determine the actual object name (case-sensitive) from TM1 Server
-         *
-         * :param object_class: 'Users' or 'Groups'
-         * :param object_name: name to look for
-         * :return: actual object name
-         */
-        const url = `/${objectClass}?$select=Name&$filter=tolower(Name) eq '${objectName.toLowerCase()}'`;
-        const response = await this.rest.get(url);
-        
-        if (response.data.value && response.data.value.length > 0) {
-            return response.data.value[0].Name;
-        }
-        
-        return objectName; // fallback to original name
+    public async securityRefresh(): Promise<any> {
+        const processService = new ProcessService(this.rest);
+        return await processService.executeTiCode(['SecurityRefresh;']);
     }
+
+    public async getCustomSecurityGroups(): Promise<string[]> {
+        const groups = new CaseAndSpaceInsensitiveSet(...await this.getGroupNames());
+        groups.delete('Admin');
+        groups.delete('DataAdmin');
+        groups.delete('SecurityAdmin');
+        groups.delete('OperationsAdmin');
+        groups.delete('}tp_Everyone');
+        return Array.from(groups);
+    }
+
+    public async getReadOnlyUsers(): Promise<string[]> {
+        const mdx = `
+        SELECT
+        {[}ClientProperties].[ReadOnlyUser]} ON COLUMNS,
+        NON EMPTY {[}Clients].MEMBERS} ON ROWS
+        FROM [}ClientProperties]
+        `;
+
+        const response = await this.rest.post('/ExecuteMDX', { MDX: mdx });
+        const axes = response.data?.Axes || [];
+        const rowsAxis = axes.length > 1 ? axes[1] : axes[0];
+        const tuples = rowsAxis?.Tuples || [];
+        const cells = response.data?.Cells || [];
+
+        const readOnlyUsers: string[] = [];
+
+        for (let i = 0; i < tuples.length; i++) {
+            const tuple = tuples[i];
+            const member = tuple?.Members?.[0];
+            const userName = member?.Name || member?.Element?.Name || member?.UniqueName;
+            const value = cells[i]?.Value;
+
+            if (userName && value) {
+                readOnlyUsers.push(userName);
+            }
+        }
+
+        return readOnlyUsers;
+    }
+
 }
