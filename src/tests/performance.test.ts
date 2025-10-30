@@ -265,14 +265,13 @@ describe('Performance Tests', () => {
                     await axiosInstance.get('/Configuration/ProductVersion');
                     times.push(Date.now() - startTime);
                 }
-                
+
                 // Later calls should generally be faster (connection reuse)
                 const firstCallTime = times[0];
-                const lastCallTime = times[times.length - 1];
                 const avgLaterCalls = times.slice(1).reduce((sum, time) => sum + time, 0) / (times.length - 1);
-                
+
                 console.log(`First call: ${firstCallTime}ms, Average later calls: ${avgLaterCalls.toFixed(2)}ms`);
-                
+
                 // Later calls should generally be faster or similar (but allow for reasonable variance)
                 // Network conditions can vary, so we'll be more lenient
                 expect(avgLaterCalls).toBeLessThanOrEqual(firstCallTime * 5); // Allow 5x variance

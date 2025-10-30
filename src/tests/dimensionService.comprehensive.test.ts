@@ -9,7 +9,6 @@ import { RestService } from '../services/RestService';
 import { HierarchyService } from '../services/HierarchyService';
 import { SubsetService } from '../services/SubsetService';
 import { Dimension } from '../objects/Dimension';
-import { Hierarchy } from '../objects/Hierarchy';
 import { TM1RestException } from '../exceptions/TM1Exception';
 
 // Mock dependencies
@@ -51,11 +50,6 @@ describe('DimensionService - Comprehensive Tests', () => {
         [Symbol.iterator]: function* () {
             yield* this.hierarchies;
         }
-    } as any;
-
-    const mockHierarchy = {
-        name: 'TestHierarchy',
-        dimensionName: 'TestDimension'
     } as any;
 
     beforeEach(() => {
@@ -672,8 +666,8 @@ describe('DimensionService - Comprehensive Tests', () => {
         });
 
         test('should handle hierarchy service initialization', () => {
-            const newService = new DimensionService(mockRestService);
-            
+            new DimensionService(mockRestService);
+
             expect(HierarchyService).toHaveBeenCalledWith(mockRestService);
             expect(SubsetService).toHaveBeenCalledWith(mockRestService);
         });

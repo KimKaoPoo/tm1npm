@@ -6,12 +6,11 @@
 
 import { Dimension } from '../objects/Dimension';
 import { Hierarchy } from '../objects/Hierarchy';
-import { Element, ElementType } from '../objects/Element';
-import { ElementAttribute, ElementAttributeType } from '../objects/ElementAttribute';
+import { Element } from '../objects/Element';
+import { ElementAttribute } from '../objects/ElementAttribute';
 import { Process } from '../objects/Process';
 import { Cube } from '../objects/Cube';
 import { User } from '../objects/User';
-import { View } from '../objects/View';
 
 describe('Object Model - Improved Coverage', () => {
     
@@ -355,12 +354,12 @@ describe('Object Model - Improved Coverage', () => {
         });
 
         test('should support cube with multiple dimensions', () => {
-            const timeDimension = new Dimension('Time');
-            const accountDimension = new Dimension('Account');
-            const versionDimension = new Dimension('Version');
-            
+            new Dimension('Time');
+            new Dimension('Account');
+            new Dimension('Version');
+
             const cube = new Cube('Sales', ['Time', 'Account', 'Version']);
-            
+
             expect(cube.dimensions).toHaveLength(3);
             expect(cube.dimensions.includes('Time')).toBe(true);
             expect(cube.dimensions.includes('NonExistent')).toBe(false);

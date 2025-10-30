@@ -12,7 +12,6 @@ import { ElementService } from '../services/ElementService';
 import { HierarchyService } from '../services/HierarchyService';
 import { CellService } from '../services/CellService';
 import { SubsetService } from '../services/SubsetService';
-import { loadTestConfig } from './testConfig';
 
 // Helper function to create mock AxiosResponse
 const createMockResponse = (data: any, status: number = 200) => ({

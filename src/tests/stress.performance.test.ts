@@ -58,14 +58,14 @@ describe('Stress Testing and Performance Tests', () => {
 
             const startTime = Date.now();
             const startMemory = getMemoryUsage();
-            
+
             // Create 10,000 concurrent requests
-            const requests = Array(10000).fill(null).map((_, i) => 
-                dimensionService.getAllNames().catch(e => ({ error: true, index: i }))
+            const requests = Array(10000).fill(null).map((_, i) =>
+                dimensionService.getAllNames().catch(() => ({ error: true, index: i }))
             );
-            
+
             const results = await Promise.allSettled(requests);
-            
+
             const endTime = Date.now();
             const endMemory = getMemoryUsage();
             const duration = endTime - startTime;
@@ -288,13 +288,12 @@ describe('Stress Testing and Performance Tests', () => {
             const startTime = Date.now();
             const results = await Promise.allSettled(concurrentOperations);
             const endTime = Date.now();
-            
+
             const successful = results.filter(r => r.status === 'fulfilled').length;
-            const failed = results.filter(r => r.status === 'rejected').length;
-            
+
             expect(successful).toBeGreaterThan(operationCount * 0.7); // At least 70% success (more lenient)
             expect(endTime - startTime).toBeLessThan(20000); // Complete within 20 seconds
-            
+
             console.log(`✅ Concurrent operations: ${successful}/${operationCount} successful in ${endTime - startTime}ms`);
         });
 
@@ -410,22 +409,21 @@ describe('Stress Testing and Performance Tests', () => {
 
             const attempts = 20;
             let successCount = 0;
-            let failureCount = 0;
-            
+
             for (let i = 0; i < attempts; i++) {
                 try {
                     await dimensionService.getAllNames();
                     successCount++;
                 } catch (error) {
-                    failureCount++;
+                    // Failure expected
                 }
             }
-            
+
             // Based on our pattern, we should have ~60% success rate
             const successRate = successCount / attempts;
             expect(successRate).toBeGreaterThan(0.5);
             expect(successRate).toBeLessThan(0.8);
-            
+
             console.log(`✅ Intermittent connection: ${successCount}/${attempts} successful (${(successRate * 100).toFixed(1)}%)`);
         });
     });

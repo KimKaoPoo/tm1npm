@@ -168,7 +168,7 @@ export class DataFrame {
      * Convert to JSON array
      */
     public toJson(): any[] {
-        return this._data.map((row, i) => {
+        return this._data.map((row) => {
             const obj: any = {};
             this._columns.forEach((col, j) => {
                 obj[col] = row[j];

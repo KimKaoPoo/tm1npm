@@ -1,12 +1,9 @@
 import { CubeService } from '../services/CubeService';
 import { RestService } from '../services/RestService';
-import { Cube } from '../objects/Cube';
-import { Rules } from '../objects/Rules';
-import axios, { AxiosResponse } from 'axios';
+import { AxiosResponse } from 'axios';
 
 // Mock axios
 jest.mock('axios');
-const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 describe('Enhanced CubeService Tests', () => {
     let cubeService: CubeService;
@@ -19,12 +16,6 @@ describe('Enhanced CubeService Tests', () => {
         headers: {},
         config: {} as any
     });
-
-    const mockCube = {
-        name: 'TestCube',
-        dimensions: ['Year', 'Region', 'Product'],
-        rules: { text: 'RULE; C: = 1; FEEDERS;' }
-    };
 
     beforeEach(() => {
         mockRestService = {

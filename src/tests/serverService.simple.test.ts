@@ -8,8 +8,6 @@ import { RestService } from '../services/RestService';
 import { TransactionLogService } from '../services/TransactionLogService';
 import { MessageLogService } from '../services/MessageLogService';
 import { AuditLogService } from '../services/AuditLogService';
-import { LoggerService } from '../services/LoggerService';
-import { ConfigurationService } from '../services/ConfigurationService';
 
 // Mock dependencies
 jest.mock('../services/TransactionLogService');
@@ -24,14 +22,6 @@ describe('ServerService - Simple Tests', () => {
     let mockTransactionLogService: jest.Mocked<TransactionLogService>;
     let mockMessageLogService: jest.Mocked<MessageLogService>;
     let mockAuditLogService: jest.Mocked<AuditLogService>;
-    
-    const mockResponse = (data: any) => ({
-        data: data,
-        status: 200,
-        statusText: 'OK',
-        headers: {},
-        config: { headers: {} }
-    } as any);
 
     beforeEach(() => {
         // Suppress console.warn for constructor

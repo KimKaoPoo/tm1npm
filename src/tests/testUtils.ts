@@ -10,8 +10,7 @@ export function skipIfNoPandas(target: any, propertyName: string, descriptor: Pr
      * Checks whether pandas equivalent exists and skips the test if not
      * Note: In JavaScript/TypeScript, we don't have pandas, so this always skips
      */
-    const method = descriptor.value;
-    descriptor.value = function (...args: any[]) {
+    descriptor.value = function (..._args: any[]) {
         // In JavaScript environment, we don't have pandas equivalent
         console.log(`Test '${propertyName}' requires pandas equivalent - skipping`);
         return;

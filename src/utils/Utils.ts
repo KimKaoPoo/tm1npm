@@ -193,10 +193,10 @@ export function deprecatedInVersion(version: string): (target: any, propertyKey:
     };
 }
 
-export function requireVersion(minVersion: string): (target: any, propertyKey: string, descriptor: PropertyDescriptor) => void {
+export function requireVersion(_minVersion: string): (target: any, propertyKey: string, descriptor: PropertyDescriptor) => void {
     return function (target: any, propertyKey: string, descriptor: PropertyDescriptor) {
         const originalMethod = descriptor.value;
-        
+
         descriptor.value = function (this: any, ...args: any[]) {
             // Version check would be implemented here
             // For now, just call the original method
@@ -537,6 +537,7 @@ export function autoRetry(maxRetries: number = 3, baseDelay: number = 1000) {
 async function checkAdminPrivileges(rest: any, privilegeType: 'DATA' | 'SECURITY' | 'OPERATIONS'): Promise<void> {
     try {
         // Check if SecurityService is available
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const SecurityService = require('../services/SecurityService').SecurityService;
         const securityService = new SecurityService(rest);
 
