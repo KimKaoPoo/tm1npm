@@ -1985,4 +1985,359 @@ END;
         
         throw new Error(`Async execution ${executionId} timed out after ${maxPollingAttempts} polling attempts`);
     }
+
+    /**
+     * Trace cell dependents (show what cells depend on this cell)
+     *
+     * @param cubeName - Name of the cube
+     * @param coordinates - Element coordinates for the cell
+     * @param sandbox_name - Optional sandbox name
+     * @returns Promise<any> - Dependent cells information
+     *
+     * @example
+     * ```typescript
+     * const dependents = await cellService.traceCellDependents(
+     *     'Sales',
+     *     ['2024', 'Q1', 'Revenue']
+     * );
+     * ```
+     */
+    public async traceCellDependents(
+        cubeName: string,
+        coordinates: string[],
+        sandbox_name?: string
+    ): Promise<any> {
+        const coordinateString = coordinates.map(c => `'${c}'`).join(',');
+        let url = `/Cubes('${cubeName}')/tm1.TraceCellDependents(coordinates=[${coordinateString}])`;
+
+        if (sandbox_name) {
+            url += `?$sandbox=${sandbox_name}`;
+        }
+
+        const response = await this.rest.get(url);
+        return response.data;
+    }
+
+    /**
+     * Trace cell precedents (show what cells this cell depends on)
+     *
+     * @param cubeName - Name of the cube
+     * @param coordinates - Element coordinates for the cell
+     * @param sandbox_name - Optional sandbox name
+     * @returns Promise<any> - Precedent cells information
+     *
+     * @example
+     * ```typescript
+     * const precedents = await cellService.traceCellPrecedents(
+     *     'Sales',
+     *     ['2024', 'Q1', 'Revenue']
+     * );
+     * ```
+     */
+    public async traceCellPrecedents(
+        cubeName: string,
+        coordinates: string[],
+        sandbox_name?: string
+    ): Promise<any> {
+        const coordinateString = coordinates.map(c => `'${c}'`).join(',');
+        let url = `/Cubes('${cubeName}')/tm1.TraceCellPrecedents(coordinates=[${coordinateString}])`;
+
+        if (sandbox_name) {
+            url += `?$sandbox=${sandbox_name}`;
+        }
+
+        const response = await this.rest.get(url);
+        return response.data;
+    }
+
+    /**
+     * Get drill-through information for a cell
+     *
+     * @param cubeName - Name of the cube
+     * @param coordinates - Element coordinates for the cell
+     * @param sandbox_name - Optional sandbox name
+     * @returns Promise<any> - Drill-through configuration and data
+     *
+     * @example
+     * ```typescript
+     * const drillInfo = await cellService.getCellDrillThroughInformation(
+     *     'Sales',
+     *     ['2024', 'Q1', 'Revenue']
+     * );
+     * ```
+     */
+    public async getCellDrillThroughInformation(
+        cubeName: string,
+        coordinates: string[],
+        sandbox_name?: string
+    ): Promise<any> {
+        const coordinateString = coordinates.map(c => `'${c}'`).join(',');
+        let url = `/Cubes('${cubeName}')/tm1.GetDrillThrough(coordinates=[${coordinateString}])`;
+
+        if (sandbox_name) {
+            url += `?$sandbox=${sandbox_name}`;
+        }
+
+        const response = await this.rest.get(url);
+        return response.data;
+    }
+
+    /**
+     * Get cell attributes (metadata about the cell)
+     *
+     * @param cubeName - Name of the cube
+     * @param coordinates - Element coordinates for the cell
+     * @param sandbox_name - Optional sandbox name
+     * @returns Promise<any> - Cell attributes and properties
+     *
+     * @example
+     * ```typescript
+     * const attributes = await cellService.getCellAttributes(
+     *     'Sales',
+     *     ['2024', 'Q1', 'Revenue']
+     * );
+     * console.log(attributes.RuleDerived, attributes.Updateable);
+     * ```
+     */
+    public async getCellAttributes(
+        cubeName: string,
+        coordinates: string[],
+        sandbox_name?: string
+    ): Promise<any> {
+        // Build the cell reference URL
+        const coordinateString = coordinates.map(c => `'${c}'`).join(',');
+        let url = `/Cubes('${cubeName}')/Cells(${coordinateString})`;
+
+        if (sandbox_name) {
+            url += `?$sandbox=${sandbox_name}`;
+        }
+
+        const response = await this.rest.get(url);
+        return {
+            Value: response.data.Value,
+            RuleDerived: response.data.RuleDerived || false,
+            Updateable: response.data.Updateable || false,
+            Consolidated: response.data.Consolidated || false,
+            Annotated: response.data.Annotated || false,
+            FormatString: response.data.FormatString || '',
+            HasPicklist: response.data.HasPicklist || false
+        };
+    }
+
+    /**
+     * Get cell annotation if it exists
+     *
+     * @param cubeName - Name of the cube
+     * @param coordinates - Element coordinates for the cell
+     * @param sandbox_name - Optional sandbox name
+     * @returns Promise<string | null> - Annotation text or null if no annotation
+     *
+     * @example
+     * ```typescript
+     * const annotation = await cellService.getCellAnnotation(
+     *     'Sales',
+     *     ['2024', 'Q1', 'Revenue']
+     * );
+     * if (annotation) {
+     *     console.log('Cell has annotation:', annotation);
+     * }
+     * ```
+     */
+    public async getCellAnnotation(
+        cubeName: string,
+        coordinates: string[],
+        sandbox_name?: string
+    ): Promise<string | null> {
+        try {
+            const coordinateString = coordinates.map(c => `'${c}'`).join(',');
+            let url = `/Cubes('${cubeName}')/Cells(${coordinateString})/Annotation`;
+
+            if (sandbox_name) {
+                url += `?$sandbox=${sandbox_name}`;
+            }
+
+            const response = await this.rest.get(url);
+            return response.data?.Text || response.data?.value || null;
+        } catch (error: any) {
+            // If 404, cell has no annotation
+            if (error.response?.status === 404) {
+                return null;
+            }
+            throw error;
+        }
+    }
+
+    /**
+     * Check cell security permissions for current user
+     *
+     * @param cubeName - Name of the cube
+     * @param coordinates - Element coordinates for the cell
+     * @param sandbox_name - Optional sandbox name
+     * @returns Promise<any> - Security permissions (READ, WRITE, RESERVE)
+     *
+     * @example
+     * ```typescript
+     * const security = await cellService.checkCellSecurity(
+     *     'Sales',
+     *     ['2024', 'Q1', 'Revenue']
+     * );
+     * console.log('Can write:', security.canWrite);
+     * ```
+     */
+    public async checkCellSecurity(
+        cubeName: string,
+        coordinates: string[],
+        sandbox_name?: string
+    ): Promise<any> {
+        // Get cell attributes which include updateability
+        const attributes = await this.getCellAttributes(cubeName, coordinates, sandbox_name);
+
+        // Check element security for each dimension
+        const dimensionNames = await this.getDimensionNamesForWriting(cubeName);
+        const elementSecurity: { [dimension: string]: string } = {};
+
+        for (let i = 0; i < dimensionNames.length && i < coordinates.length; i++) {
+            const dimension = dimensionNames[i];
+            const element = coordinates[i];
+
+            try {
+                // Check element security
+                const secUrl = `/Dimensions('${dimension}')/Hierarchies('${dimension}')/Elements('${element}')/Security`;
+                const secResponse = await this.rest.get(secUrl);
+                elementSecurity[dimension] = secResponse.data.Rights || 'READ';
+            } catch {
+                // If we can't get security, assume READ
+                elementSecurity[dimension] = 'READ';
+            }
+        }
+
+        // Determine overall access
+        const canWrite = attributes.Updateable &&
+                        Object.values(elementSecurity).every(right => right === 'WRITE' || right === 'RESERVE');
+        const canRead = true; // If we got here, we can read
+
+        return {
+            canRead,
+            canWrite,
+            canReserve: canWrite,
+            isUpdateable: attributes.Updateable,
+            isRuleDerived: attributes.RuleDerived,
+            elementSecurity
+        };
+    }
+
+    /**
+     * Get dimension elements for a specific cell
+     *
+     * @param cubeName - Name of the cube
+     * @param coordinates - Element coordinates for the cell
+     * @returns Promise<string[]> - Array of element names
+     *
+     * @example
+     * ```typescript
+     * const elements = await cellService.getCellDimensionElements(
+     *     'Sales',
+     *     ['2024', 'Q1', 'Revenue']
+     * );
+     * console.log('Dimensions:', elements); // ['2024', 'Q1', 'Revenue']
+     * ```
+     */
+    public async getCellDimensionElements(
+        cubeName: string,
+        coordinates: string[]
+    ): Promise<string[]> {
+        // Simply return the coordinates as they represent the elements
+        return [...coordinates];
+    }
+
+    /**
+     * Validate cell coordinates against cube dimensions
+     *
+     * @param cubeName - Name of the cube
+     * @param coordinates - Element coordinates to validate
+     * @returns Promise<boolean> - True if coordinates are valid
+     *
+     * @example
+     * ```typescript
+     * const isValid = await cellService.validateCellCoordinates(
+     *     'Sales',
+     *     ['2024', 'Q1', 'Revenue']
+     * );
+     * if (!isValid) {
+     *     console.error('Invalid coordinates');
+     * }
+     * ```
+     */
+    public async validateCellCoordinates(
+        cubeName: string,
+        coordinates: string[]
+    ): Promise<boolean> {
+        try {
+            // Get cube dimensions
+            const dimensionNames = await this.getDimensionNamesForWriting(cubeName);
+
+            // Check if coordinate count matches dimension count
+            if (coordinates.length !== dimensionNames.length) {
+                return false;
+            }
+
+            // Verify each element exists in its dimension
+            for (let i = 0; i < dimensionNames.length; i++) {
+                const dimension = dimensionNames[i];
+                const element = coordinates[i];
+
+                try {
+                    const elemUrl = `/Dimensions('${dimension}')/Hierarchies('${dimension}')/Elements('${element}')`;
+                    await this.rest.get(elemUrl);
+                } catch {
+                    // Element doesn't exist
+                    return false;
+                }
+            }
+
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    /**
+     * Get cell type (NUMERIC, STRING, or CONSOLIDATED)
+     *
+     * @param cubeName - Name of the cube
+     * @param coordinates - Element coordinates for the cell
+     * @param sandbox_name - Optional sandbox name
+     * @returns Promise<string> - Cell type
+     *
+     * @example
+     * ```typescript
+     * const type = await cellService.getCellType(
+     *     'Sales',
+     *     ['2024', 'Q1', 'Revenue']
+     * );
+     * console.log('Cell type:', type); // 'NUMERIC' or 'STRING' or 'CONSOLIDATED'
+     * ```
+     */
+    public async getCellType(
+        cubeName: string,
+        coordinates: string[],
+        sandbox_name?: string
+    ): Promise<string> {
+        const attributes = await this.getCellAttributes(cubeName, coordinates, sandbox_name);
+
+        if (attributes.Consolidated) {
+            return 'CONSOLIDATED';
+        }
+
+        // Check the value type
+        const value = attributes.Value;
+        if (typeof value === 'number') {
+            return 'NUMERIC';
+        } else if (typeof value === 'string') {
+            return 'STRING';
+        }
+
+        // Default to NUMERIC if we can't determine
+        return 'NUMERIC';
+    }
 }
