@@ -4,7 +4,6 @@
  */
 
 import axios from 'axios';
-import { TM1Exception } from '../exceptions/TM1Exception';
 import { formatUrl, verifyVersion } from '../utils/Utils';
 import { loadTestConfig } from './testConfig';
 

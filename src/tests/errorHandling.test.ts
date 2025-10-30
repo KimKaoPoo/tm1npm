@@ -3,7 +3,7 @@
  * Tests various error scenarios and edge cases
  */
 
-import axios, { AxiosError } from 'axios';
+import axios from 'axios';
 import { TM1Exception, TM1RestException, TM1TimeoutException } from '../exceptions/TM1Exception';
 import { formatUrl, verifyVersion, CaseAndSpaceInsensitiveMap } from '../utils/Utils';
 import { loadTestConfig } from './testConfig';

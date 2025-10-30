@@ -11,7 +11,14 @@ module.exports = {
   ],
   rules: {
     // Development-friendly configuration
-    '@typescript-eslint/no-unused-vars': 'warn',
+    '@typescript-eslint/no-unused-vars': [
+      'warn',
+      {
+        argsIgnorePattern: '^_', // Ignore unused parameters starting with underscore
+        varsIgnorePattern: '^_', // Ignore unused variables starting with underscore
+        caughtErrorsIgnorePattern: '^_', // Ignore unused caught errors starting with underscore
+      }
+    ],
     '@typescript-eslint/no-explicit-any': 'off', // Allow any for flexibility
     '@typescript-eslint/explicit-function-return-type': 'off',
     '@typescript-eslint/explicit-module-boundary-types': 'off',

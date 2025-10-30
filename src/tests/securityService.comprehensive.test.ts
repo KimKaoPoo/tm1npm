@@ -123,8 +123,8 @@ describe('SecurityService - Comprehensive Tests', () => {
             // Mock determineActualUserName to return the input name
             jest.spyOn(securityService as any, 'determineActualUserName').mockResolvedValue('testuser');
 
-            const result = await securityService.getUser('testuser');
-            
+            await securityService.getUser('testuser');
+
             expect(mockUserFromDict).toHaveBeenCalledWith(userData);
             expect(mockRestService.get).toHaveBeenCalledWith("/Users('testuser')?$select=Name,FriendlyName,Password,Type,Enabled&$expand=Groups");
         });
@@ -139,8 +139,8 @@ describe('SecurityService - Comprehensive Tests', () => {
             const mockUserFromDict = jest.fn().mockReturnValue(mockUser);
             (User as any).fromDict = mockUserFromDict;
 
-            const result = await securityService.getCurrentUser();
-            
+            await securityService.getCurrentUser();
+
             expect(mockUserFromDict).toHaveBeenCalledWith(currentUserData);
             expect(mockRestService.get).toHaveBeenCalledWith("/ActiveUser?$select=Name,FriendlyName,Password,Type,Enabled&$expand=Groups");
         });

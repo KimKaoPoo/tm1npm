@@ -1,11 +1,10 @@
-import { v4 as uuidv4 } from 'uuid';
 import { AxiosResponse } from 'axios';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { Process } from '../objects/Process';
 import { ProcessDebugBreakpoint } from '../objects/ProcessDebugBreakpoint';
 import { TM1RestException, TM1Exception } from '../exceptions/TM1Exception';
-import { formatUrl, requireDataAdmin, requireVersion, deprecatedInVersion } from '../utils/Utils';
+import { formatUrl } from '../utils/Utils';
 
 export class ProcessService extends ObjectService {
     /** Service to handle Object Updates for TI Processes
@@ -352,7 +351,7 @@ export class ProcessService extends ObjectService {
         return response.data;
     }
 
-    public async getLastMessageFromMessagelog(processName: string): Promise<string> {
+    public async getLastMessageFromMessagelog(_processName: string): Promise<string> {
         /** Get the last message from a process execution
          *
          * :param process_name: name of the process

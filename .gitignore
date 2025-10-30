@@ -210,5 +210,10 @@ venv.bak/
 build/Release
 .lock-wscript
 
+# ======================
+# Development & Internal Documentation
+# ======================
+# Internal analysis and development documents
+.internal-docs/
 
 .claude/

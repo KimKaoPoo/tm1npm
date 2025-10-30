@@ -6,7 +6,6 @@
 import { HierarchyService } from '../services/HierarchyService';
 import { RestService } from '../services/RestService';
 import { Hierarchy } from '../objects/Hierarchy';
-import { ElementAttribute } from '../objects/ElementAttribute';
 import { TM1RestException } from '../exceptions/TM1Exception';
 
 // Helper function to create mock AxiosResponse

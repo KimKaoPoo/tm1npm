@@ -1,7 +1,7 @@
 import { AxiosResponse } from 'axios';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
-import { formatUrl, CaseAndSpaceInsensitiveDict, requireOpsAdmin } from '../utils/Utils';
+import { formatUrl, CaseAndSpaceInsensitiveDict } from '../utils/Utils';
 
 export class LoggerService extends ObjectService {
     /** Service to query and update loggers

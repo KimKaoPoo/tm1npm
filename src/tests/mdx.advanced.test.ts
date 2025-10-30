@@ -5,8 +5,6 @@
 
 import { RestService } from '../services/RestService';
 import { CellService } from '../services/CellService';
-import { ViewService } from '../services/ViewService';
-import { CubeService } from '../services/CubeService';
 
 // Helper function to create mock AxiosResponse
 const createMockResponse = (data: any, status: number = 200) => ({

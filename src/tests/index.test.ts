@@ -363,12 +363,12 @@ describe('Main Module Exports', () => {
                 password: 'password',
                 ssl: false
             };
-            
-            const tm1 = new tm1npm.TM1Service(config);
-            
+
+            new tm1npm.TM1Service(config);
+
             const memoryAfter = process.memoryUsage();
             const memoryIncrease = memoryAfter.heapUsed - memoryBefore.heapUsed;
-            
+
             // Memory increase should be reasonable (less than 10MB)
             expect(memoryIncrease).toBeLessThan(10 * 1024 * 1024);
         });

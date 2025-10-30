@@ -1,12 +1,9 @@
 import { ViewService } from '../services/ViewService';
 import { RestService } from '../services/RestService';
-import { NativeView } from '../objects/NativeView';
-import { MDXView } from '../objects/MDXView';
-import axios, { AxiosResponse } from 'axios';
+import { AxiosResponse } from 'axios';
 
 // Mock axios
 jest.mock('axios');
-const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 describe('Enhanced ViewService Tests', () => {
     let viewService: ViewService;

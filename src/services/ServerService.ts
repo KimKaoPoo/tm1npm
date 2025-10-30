@@ -7,12 +7,9 @@ import { AuditLogService } from './AuditLogService';
 import { LoggerService } from './LoggerService';
 import { ConfigurationService } from './ConfigurationService';
 import { ProcessService } from './ProcessService';
-import { 
-    requireAdmin, 
-    requireVersion, 
-    deprecatedInVersion,
-    requireDataAdmin,
-    requireOpsAdmin
+import {
+    requireVersion,
+    deprecatedInVersion
 } from '../utils/Utils';
 
 export enum LogLevel {

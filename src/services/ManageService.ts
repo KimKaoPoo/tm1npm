@@ -313,7 +313,7 @@ export class ManageService {
     public async unsubscribeFromDataChanges(
         instanceName: string,
         databaseName: string,
-        targetUrl: string
+        _targetUrl: string
     ): Promise<AxiosResponse> {
         const url = `${this._rootUrl}/Instances('${instanceName}')/Databases('${databaseName}')/tm1.Unsubscribe`;
         const response = await axios.post(url, this._authConfig);

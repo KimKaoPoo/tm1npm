@@ -1,10 +1,9 @@
 import { CellService } from '../services/CellService';
 import { RestService } from '../services/RestService';
-import axios, { AxiosResponse } from 'axios';
+import { AxiosResponse } from 'axios';
 
 // Mock axios
 jest.mock('axios');
-const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 // Mock FileService
 jest.mock('../services/FileService', () => ({
@@ -102,7 +101,7 @@ describe('Enhanced CellService Tests', () => {
                 ProcessExecuteStatusCode: 'CompletedSuccessfully'
             }));
 
-            const result = await cellService.writeThroughUnboundProcess('SalesCube', cellset);
+            await cellService.writeThroughUnboundProcess('SalesCube', cellset);
 
             expect(mockRestService.post).toHaveBeenCalledWith(
                 '/ExecuteProcessWithReturn',
@@ -110,7 +109,7 @@ describe('Enhanced CellService Tests', () => {
                     PrologProcedure: expect.stringContaining("CubeDataSet('SalesCube'")
                 })
             );
-            
+
             console.log('✅ writeThroughUnboundProcess test passed');
         });
 

@@ -1,11 +1,9 @@
 import { ElementService } from '../services/ElementService';
 import { RestService } from '../services/RestService';
-import { Element } from '../objects/Element';
-import axios, { AxiosResponse } from 'axios';
+import { AxiosResponse } from 'axios';
 
 // Mock axios
 jest.mock('axios');
-const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 describe('Enhanced ElementService Tests', () => {
     let elementService: ElementService;

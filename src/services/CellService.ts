@@ -1324,7 +1324,7 @@ export class CellService {
             const cellUpdates = [];
             let ordinal = 0;
 
-            for (const [_coord, value] of Object.entries(cellsetAsDict)) {
+            for (const [, value] of Object.entries(cellsetAsDict)) {
                 cellUpdates.push({ ordinal, value });
                 ordinal++;
             }
@@ -1605,7 +1605,7 @@ export class CellService {
         options: WriteOptions = {}
     ): string {
         const dimensionVars = dimensions.map((_, index) => `v${index + 1}`).join(', ');
-        const elementAssignments = dimensions.map((dim, _index) =>
+        const elementAssignments = dimensions.map((dim) =>
             `ItemReject('${cubeName}:${fileName}');
              ${dim} = CellGetS('${cubeName}', ${dimensionVars});`
         ).join('\n');

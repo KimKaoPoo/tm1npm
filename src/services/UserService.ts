@@ -2,7 +2,7 @@ import { AxiosResponse } from 'axios';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { User } from '../objects/User';
-import { formatUrl, caseAndSpaceInsensitiveEquals, requireAdmin } from '../utils/Utils';
+import { formatUrl, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
 
 export class UserService extends ObjectService {
 

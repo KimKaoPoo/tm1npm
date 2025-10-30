@@ -379,7 +379,7 @@ export class ElementService extends ObjectService {
 
             // Attributes (would need additional API calls for full implementation)
             if (attributes.length > 0) {
-                for (const attr of attributes) {
+                for (const _attr of attributes) {
                     // Placeholder - full implementation would fetch attribute values
                     row.push(null);
                 }
