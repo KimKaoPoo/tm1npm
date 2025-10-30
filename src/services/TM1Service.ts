@@ -2,7 +2,8 @@ import { RestService, RestServiceConfig } from './RestService';
 import { DimensionService } from './DimensionService';
 import { HierarchyService } from './HierarchyService';
 import { SubsetService } from './SubsetService';
-import { 
+import { DataFrameService } from './DataFrameService';
+import {
     CubeService,
     ElementService,
     CellService,
@@ -12,7 +13,7 @@ import {
     FileService,
     SessionService,
     ServerService,
-    MonitoringService 
+    MonitoringService
 } from './index';
 
 export class TM1Service {
@@ -31,10 +32,11 @@ export class TM1Service {
     public security: SecurityService;
     public files: FileService;
     public sessions: SessionService;
+    public dataframes: DataFrameService;
 
     constructor(config: RestServiceConfig) {
         this._tm1Rest = new RestService(config);
-        
+
         // Initialize all services
         this.dimensions = new DimensionService(this._tm1Rest);
         this.hierarchies = new HierarchyService(this._tm1Rest);
@@ -47,6 +49,7 @@ export class TM1Service {
         this.security = new SecurityService(this._tm1Rest);
         this.files = new FileService(this._tm1Rest);
         this.sessions = new SessionService(this._tm1Rest);
+        this.dataframes = new DataFrameService(this._tm1Rest);
     }
 
     public async connect(): Promise<void> {

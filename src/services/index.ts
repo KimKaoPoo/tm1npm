@@ -10,6 +10,7 @@ export { SessionService } from './SessionService';
 export { ConfigurationService } from './ConfigurationService';
 export { ServerService } from './ServerService';
 export { MonitoringService } from './MonitoringService';
+export { DataFrameService } from './DataFrameService';
 
 // Additional services
 export { AnnotationService } from './AnnotationService';
