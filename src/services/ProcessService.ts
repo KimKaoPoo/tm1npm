@@ -686,4 +686,166 @@ export class ProcessService extends ObjectService {
             throw error;
         }
     }
+
+    /**
+     * Analyze process dependencies (what cubes/dimensions/processes it uses)
+     *
+     * @param processName - Name of the process
+     * @returns Promise<any> - Dependency information
+     *
+     * @example
+     * ```typescript
+     * const deps = await processService.analyzeProcessDependencies('ImportData');
+     * console.log('Cubes used:', deps.cubes);
+     * console.log('Dimensions used:', deps.dimensions);
+     * ```
+     */
+    public async analyzeProcessDependencies(processName: string): Promise<any> {
+        // Get process code
+        const process = await this.get(processName);
+
+        const dependencies = {
+            cubes: [] as string[],
+            dimensions: [] as string[],
+            processes: [] as string[],
+            subsets: [] as string[]
+        };
+
+        // Extract all code sections
+        const allCode = [
+            process.prologProcedure || '',
+            process.metadataProcedure || '',
+            process.dataProcedure || '',
+            process.epilogProcedure || ''
+        ].join('\n');
+
+        // Cube references (CellGetN, CellPutN, CubeExists, etc.)
+        const cubeMatches = allCode.match(/(?:CellGetN|CellPutN|CubeExists|CubeClear|CubeCreate|CubeDestroy)\s*\(\s*['"]([^'"]+)['"]/gi);
+        if (cubeMatches) {
+            cubeMatches.forEach(match => {
+                const cubeMatch = match.match(/['"]([^'"]+)['"]/);
+                if (cubeMatch && cubeMatch[1]) {
+                    if (!dependencies.cubes.includes(cubeMatch[1])) {
+                        dependencies.cubes.push(cubeMatch[1]);
+                    }
+                }
+            });
+        }
+
+        // Dimension references
+        const dimMatches = allCode.match(/(?:DimensionCreate|DimensionExists|DimIx)\s*\(\s*['"]([^'"]+)['"]/gi);
+        if (dimMatches) {
+            dimMatches.forEach(match => {
+                const dimMatch = match.match(/['"]([^'"]+)['"]/);
+                if (dimMatch && dimMatch[1]) {
+                    if (!dependencies.dimensions.includes(dimMatch[1])) {
+                        dependencies.dimensions.push(dimMatch[1]);
+                    }
+                }
+            });
+        }
+
+        // Process references (ExecuteProcess)
+        const processMatches = allCode.match(/ExecuteProcess\s*\(\s*['"]([^'"]+)['"]/gi);
+        if (processMatches) {
+            processMatches.forEach(match => {
+                const procMatch = match.match(/['"]([^'"]+)['"]/);
+                if (procMatch && procMatch[1]) {
+                    if (!dependencies.processes.includes(procMatch[1])) {
+                        dependencies.processes.push(procMatch[1]);
+                    }
+                }
+            });
+        }
+
+        return dependencies;
+    }
+
+    /**
+     * Validate process syntax without executing it
+     *
+     * @param processName - Name of the process
+     * @returns Promise<{isValid: boolean, errors: any[]}> - Validation result
+     *
+     * @example
+     * ```typescript
+     * const result = await processService.validateProcessSyntax('MyProcess');
+     * if (!result.isValid) {
+     *     console.error('Errors:', result.errors);
+     * }
+     * ```
+     */
+    public async validateProcessSyntax(processName: string): Promise<{isValid: boolean, errors: any[]}> {
+        try {
+            const result = await this.compileProcess(processName);
+            return {
+                isValid: result.success,
+                errors: result.errors.map((error, index) => ({
+                    line: index + 1,
+                    message: error,
+                    severity: 'Error'
+                }))
+            };
+        } catch (error: any) {
+            return {
+                isValid: false,
+                errors: [{
+                    line: 0,
+                    message: error.message || 'Validation failed',
+                    severity: 'Error'
+                }]
+            };
+        }
+    }
+
+    /**
+     * Get process execution plan (estimated resource usage)
+     *
+     * @param processName - Name of the process
+     * @returns Promise<any> - Execution plan information
+     *
+     * @example
+     * ```typescript
+     * const plan = await processService.getProcessExecutionPlan('ImportData');
+     * console.log('Estimated execution time:', plan.estimatedTime);
+     * ```
+     */
+    public async getProcessExecutionPlan(processName: string): Promise<any> {
+        const process = await this.get(processName);
+
+        // Analyze process characteristics
+        const plan = {
+            processName: process.name,
+            hasDataSource: !!(process as any).dataSource,
+            dataSourceType: (process as any).dataSource?.type || 'None',
+            hasParameters: process.parameters && process.parameters.length > 0,
+            parameterCount: process.parameters ? process.parameters.length : 0,
+            hasVariables: process.variables && process.variables.length > 0,
+            variableCount: process.variables ? process.variables.length : 0,
+            procedures: {
+                hasPrologProcedure: !!(process.prologProcedure && process.prologProcedure.trim()),
+                hasMetadataProcedure: !!(process.metadataProcedure && process.metadataProcedure.trim()),
+                hasDataProcedure: !!(process.dataProcedure && process.dataProcedure.trim()),
+                hasEpilogProcedure: !!(process.epilogProcedure && process.epilogProcedure.trim())
+            },
+            estimatedComplexity: 'Unknown'
+        };
+
+        // Estimate complexity
+        const totalCodeLength =
+            (process.prologProcedure?.length || 0) +
+            (process.metadataProcedure?.length || 0) +
+            (process.dataProcedure?.length || 0) +
+            (process.epilogProcedure?.length || 0);
+
+        if (totalCodeLength < 500) {
+            plan.estimatedComplexity = 'Low';
+        } else if (totalCodeLength < 2000) {
+            plan.estimatedComplexity = 'Medium';
+        } else {
+            plan.estimatedComplexity = 'High';
+        }
+
+        return plan;
+    }
 }
