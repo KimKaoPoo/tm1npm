@@ -4,6 +4,7 @@ import { HierarchyService } from './HierarchyService';
 import { SubsetService } from './SubsetService';
 import { DataFrameService } from './DataFrameService';
 import { DebuggerService } from './DebuggerService';
+import { BulkService } from './BulkService';
 import {
     CubeService,
     ElementService,
@@ -35,6 +36,7 @@ export class TM1Service {
     public sessions: SessionService;
     public dataframes: DataFrameService;
     public debugger: DebuggerService;
+    public bulk: BulkService;
 
     constructor(config: RestServiceConfig) {
         this._tm1Rest = new RestService(config);
@@ -53,6 +55,7 @@ export class TM1Service {
         this.sessions = new SessionService(this._tm1Rest);
         this.dataframes = new DataFrameService(this._tm1Rest);
         this.debugger = new DebuggerService(this._tm1Rest);
+        this.bulk = new BulkService(this._tm1Rest, this.cells, this.views);
     }
 
     public async connect(): Promise<void> {
