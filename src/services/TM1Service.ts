@@ -3,6 +3,7 @@ import { DimensionService } from './DimensionService';
 import { HierarchyService } from './HierarchyService';
 import { SubsetService } from './SubsetService';
 import { DataFrameService } from './DataFrameService';
+import { DebuggerService } from './DebuggerService';
 import {
     CubeService,
     ElementService,
@@ -33,6 +34,7 @@ export class TM1Service {
     public files: FileService;
     public sessions: SessionService;
     public dataframes: DataFrameService;
+    public debugger: DebuggerService;
 
     constructor(config: RestServiceConfig) {
         this._tm1Rest = new RestService(config);
@@ -50,6 +52,7 @@ export class TM1Service {
         this.files = new FileService(this._tm1Rest);
         this.sessions = new SessionService(this._tm1Rest);
         this.dataframes = new DataFrameService(this._tm1Rest);
+        this.debugger = new DebuggerService(this._tm1Rest);
     }
 
     public async connect(): Promise<void> {
