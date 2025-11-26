@@ -5,6 +5,7 @@ import { SubsetService } from './SubsetService';
 import { DataFrameService } from './DataFrameService';
 import { DebuggerService } from './DebuggerService';
 import { BulkService } from './BulkService';
+import { PowerBiService } from './PowerBiService';
 import {
     CubeService,
     ElementService,
@@ -37,6 +38,7 @@ export class TM1Service {
     public dataframes: DataFrameService;
     public debugger: DebuggerService;
     public bulk: BulkService;
+    public powerbi: PowerBiService;
 
     constructor(config: RestServiceConfig) {
         this._tm1Rest = new RestService(config);
@@ -56,6 +58,7 @@ export class TM1Service {
         this.dataframes = new DataFrameService(this._tm1Rest);
         this.debugger = new DebuggerService(this._tm1Rest);
         this.bulk = new BulkService(this._tm1Rest, this.cells, this.views);
+        this.powerbi = new PowerBiService(this._tm1Rest);
     }
 
     public async connect(): Promise<void> {
