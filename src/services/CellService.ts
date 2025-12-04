@@ -7,6 +7,8 @@
 import { RestService } from './RestService';
 import { ProcessService } from './ProcessService';
 import { ViewService } from './ViewService';
+import { OperationStatus, OperationType } from './AsyncOperationService';
+import { TM1Exception } from '../exceptions/TM1Exception';
 
 export interface CellsetDict {
     [coordinates: string]: any;
@@ -2339,5 +2341,135 @@ END;
 
         // Default to NUMERIC if we can't determine
         return 'NUMERIC';
+    }
+
+    /**
+     * Execute an MDX query asynchronously with AsyncOperationService
+     *
+     * @param mdx - The MDX query string
+     * @param options - Optional query options
+     * @returns Promise<string> - Operation ID for tracking
+     *
+     * @example
+     * ```typescript
+     * const operationId = await cellService.executeMdxWithAsyncTracking(
+     *     'SELECT {[Product].[Product1]} ON 0 FROM [SalesCube]'
+     * );
+     * // Use AsyncOperationService to poll for completion
+     * ```
+     */
+    public async executeMdxWithAsyncTracking(mdx: string, options?: any): Promise<string> {
+        const asyncOps = (this.rest as any).asyncOperationService;
+        if (!asyncOps) {
+            throw new TM1Exception('AsyncOperationService not available. Please ensure TM1Service is properly initialized.');
+        }
+
+        // Create async operation tracking
+        const operationId = await asyncOps.createAsyncOperation({
+            type: OperationType.MDX_QUERY,
+            name: 'MDX Query',
+            parameters: { mdx, options }
+        });
+
+        // Start the MDX execution
+        asyncOps.updateOperationStatus(operationId, OperationStatus.RUNNING);
+
+        // Execute MDX asynchronously
+        this.executeMdx(mdx)
+            .then((result: any) => {
+                asyncOps.updateOperationStatus(
+                    operationId,
+                    OperationStatus.COMPLETED,
+                    result
+                );
+            })
+            .catch((error: any) => {
+                asyncOps.updateOperationStatus(
+                    operationId,
+                    OperationStatus.FAILED,
+                    undefined,
+                    error.message || String(error)
+                );
+            });
+
+        return operationId;
+    }
+
+    /**
+     * Execute a view asynchronously with AsyncOperationService
+     *
+     * @param cubeName - Name of the cube
+     * @param viewName - Name of the view
+     * @param options - Optional execution options
+     * @returns Promise<string> - Operation ID for tracking
+     *
+     * @example
+     * ```typescript
+     * const operationId = await cellService.executeViewWithAsyncTracking('SalesCube', 'DefaultView');
+     * // Use AsyncOperationService to poll for completion
+     * ```
+     */
+    public async executeViewWithAsyncTracking(
+        cubeName: string,
+        viewName: string,
+        options?: any
+    ): Promise<string> {
+        const asyncOps = (this.rest as any).asyncOperationService;
+        if (!asyncOps) {
+            throw new TM1Exception('AsyncOperationService not available');
+        }
+
+        // Create async operation tracking
+        const operationId = await asyncOps.createAsyncOperation({
+            type: OperationType.VIEW_EXECUTION,
+            name: `${cubeName}/${viewName}`,
+            parameters: { cubeName, viewName, options }
+        });
+
+        // Start the view execution
+        asyncOps.updateOperationStatus(operationId, OperationStatus.RUNNING);
+
+        // Execute view asynchronously
+        this.executeView(cubeName, viewName, options || {})
+            .then((result: any) => {
+                asyncOps.updateOperationStatus(
+                    operationId,
+                    OperationStatus.COMPLETED,
+                    result
+                );
+            })
+            .catch((error: any) => {
+                asyncOps.updateOperationStatus(
+                    operationId,
+                    OperationStatus.FAILED,
+                    undefined,
+                    error.message || String(error)
+                );
+            });
+
+        return operationId;
+    }
+
+    /**
+     * Poll the execution status of a data operation
+     *
+     * @param operationId - The operation ID returned from async methods
+     * @returns Promise<OperationStatus> - Current status of the operation
+     *
+     * @example
+     * ```typescript
+     * const status = await cellService.pollDataExecution(operationId);
+     * if (status === OperationStatus.COMPLETED) {
+     *     console.log('Data operation completed!');
+     * }
+     * ```
+     */
+    public async pollDataExecution(operationId: string): Promise<OperationStatus> {
+        const asyncOps = (this.rest as any).asyncOperationService;
+        if (!asyncOps) {
+            throw new TM1Exception('AsyncOperationService not available');
+        }
+
+        return await asyncOps.getAsyncOperationStatus(operationId);
     }
 }

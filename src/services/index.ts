@@ -13,6 +13,7 @@ export { MonitoringService } from './MonitoringService';
 export { DataFrameService } from './DataFrameService';
 export { DebuggerService } from './DebuggerService';
 export { BulkService } from './BulkService';
+export { AsyncOperationService } from './AsyncOperationService';
 
 // Additional services
 export { AnnotationService } from './AnnotationService';
