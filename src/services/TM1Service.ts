@@ -6,6 +6,7 @@ import { DataFrameService } from './DataFrameService';
 import { DebuggerService } from './DebuggerService';
 import { BulkService } from './BulkService';
 import { AsyncOperationService } from './AsyncOperationService';
+import { PowerBiService } from './PowerBiService';
 import {
     CubeService,
     ElementService,
@@ -39,6 +40,7 @@ export class TM1Service {
     public debugger: DebuggerService;
     public bulk: BulkService;
     public asyncOperations: AsyncOperationService;
+    public powerbi: PowerBiService;
 
     constructor(config: RestServiceConfig) {
         this._tm1Rest = new RestService(config);
@@ -64,6 +66,7 @@ export class TM1Service {
         this.dataframes = new DataFrameService(this._tm1Rest);
         this.debugger = new DebuggerService(this._tm1Rest);
         this.bulk = new BulkService(this._tm1Rest, this.cells, this.views);
+        this.powerbi = new PowerBiService(this._tm1Rest);
     }
 
     public async connect(): Promise<void> {
