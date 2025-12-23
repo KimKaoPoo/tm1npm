@@ -5,6 +5,7 @@ import { SubsetService } from './SubsetService';
 import { DataFrameService } from './DataFrameService';
 import { DebuggerService } from './DebuggerService';
 import { BulkService } from './BulkService';
+import { AsyncOperationService } from './AsyncOperationService';
 import { PowerBiService } from './PowerBiService';
 import {
     CubeService,
@@ -38,10 +39,17 @@ export class TM1Service {
     public dataframes: DataFrameService;
     public debugger: DebuggerService;
     public bulk: BulkService;
+    public asyncOperations: AsyncOperationService;
     public powerbi: PowerBiService;
 
     constructor(config: RestServiceConfig) {
         this._tm1Rest = new RestService(config);
+
+        // Initialize AsyncOperationService first
+        this.asyncOperations = new AsyncOperationService(this._tm1Rest);
+
+        // Attach to RestService for access by other services
+        (this._tm1Rest as any).asyncOperationService = this.asyncOperations;
 
         // Initialize all services
         this.dimensions = new DimensionService(this._tm1Rest);

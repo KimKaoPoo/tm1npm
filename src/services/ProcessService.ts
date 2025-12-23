@@ -5,6 +5,7 @@ import { Process } from '../objects/Process';
 import { ProcessDebugBreakpoint } from '../objects/ProcessDebugBreakpoint';
 import { TM1RestException, TM1Exception } from '../exceptions/TM1Exception';
 import { formatUrl } from '../utils/Utils';
+import { OperationStatus, OperationType } from './AsyncOperationService';
 
 export class ProcessService extends ObjectService {
     /** Service to handle Object Updates for TI Processes
@@ -847,5 +848,106 @@ export class ProcessService extends ObjectService {
         }
 
         return plan;
+    }
+
+    /**
+     * Execute a process asynchronously with return values
+     *
+     * @param processName - Name of the process
+     * @param parameters - Optional process parameters
+     * @returns Promise<string> - Operation ID for tracking
+     *
+     * @example
+     * ```typescript
+     * const operationId = await processService.executeWithReturnAsync('MyProcess', {
+     *     pParam1: 'value1',
+     *     pParam2: 100
+     * });
+     * // Use AsyncOperationService to poll for completion
+     * ```
+     */
+    public async executeWithReturnAsync(
+        processName: string,
+        parameters?: Record<string, any>
+    ): Promise<string> {
+        // Import AsyncOperationService at runtime to avoid circular dependency
+        const asyncOps = (this.rest as any).asyncOperationService;
+        if (!asyncOps) {
+            throw new TM1Exception('AsyncOperationService not available. Please ensure TM1Service is properly initialized.');
+        }
+
+        // Create async operation tracking
+        const operationId = await asyncOps.createAsyncOperation({
+            type: OperationType.PROCESS_EXECUTION,
+            name: processName,
+            parameters
+        });
+
+        // Start the process execution
+        asyncOps.updateOperationStatus(operationId, OperationStatus.RUNNING);
+
+        // Execute process asynchronously
+        this.executeWithReturn(processName, parameters)
+            .then((result: any) => {
+                asyncOps.updateOperationStatus(
+                    operationId,
+                    OperationStatus.COMPLETED,
+                    result
+                );
+            })
+            .catch((error: any) => {
+                asyncOps.updateOperationStatus(
+                    operationId,
+                    OperationStatus.FAILED,
+                    undefined,
+                    error.message || String(error)
+                );
+            });
+
+        return operationId;
+    }
+
+    /**
+     * Poll the execution status of a process
+     *
+     * @param operationId - The operation ID returned from executeWithReturnAsync
+     * @returns Promise<OperationStatus> - Current status of the operation
+     *
+     * @example
+     * ```typescript
+     * const status = await processService.pollProcessExecution(operationId);
+     * if (status === OperationStatus.COMPLETED) {
+     *     console.log('Process completed!');
+     * }
+     * ```
+     */
+    public async pollProcessExecution(operationId: string): Promise<OperationStatus> {
+        const asyncOps = (this.rest as any).asyncOperationService;
+        if (!asyncOps) {
+            throw new TM1Exception('AsyncOperationService not available');
+        }
+
+        return await asyncOps.pollProcessExecution(operationId);
+    }
+
+    /**
+     * Cancel a running process execution
+     *
+     * @param operationId - The operation ID to cancel
+     * @returns Promise<void>
+     *
+     * @example
+     * ```typescript
+     * await processService.cancelProcessExecution(operationId);
+     * console.log('Process execution cancelled');
+     * ```
+     */
+    public async cancelProcessExecution(operationId: string): Promise<void> {
+        const asyncOps = (this.rest as any).asyncOperationService;
+        if (!asyncOps) {
+            throw new TM1Exception('AsyncOperationService not available');
+        }
+
+        await asyncOps.cancelAsyncOperation(operationId);
     }
 }
