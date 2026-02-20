@@ -847,78 +847,32 @@ export class ProcessService extends ObjectService {
     }
 
     /**
-     * Evaluate a boolean TI expression
+     * Evaluate a boolean TI expression using the ProcessQuit approach
+     *
+     * Uses ProcessQuit to determine boolean result: if expression is false,
+     * ProcessQuit is called (status=QuitCalled), otherwise completes successfully.
      */
     public async evaluateBooleanTiExpression(expression: string): Promise<boolean> {
-        /** Evaluate a boolean TI expression and return the result
-         *
-         * :param expression: TI expression to evaluate
-         * :return: boolean result of the expression
-         */
-        const tiCode = `
-            # Evaluate boolean expression
-            nResult = ${expression};
-            CellPutN(nResult, 'TempCube', 'Result');
-        `;
+        const formula = expression.replace(/;$/, '');
+        const prologProcedure = `if (~${formula});\n  ProcessQuit;\nendif;`;
 
-        // Create temporary cube for result
-        const cubeName = `TempEvalCube_${Date.now()}`;
-        const dimensionName = `TempEvalDim_${Date.now()}`;
-        
-        try {
-            // Create temporary dimension
-            const dimBody = {
-                Name: dimensionName,
-                Hierarchies: [{
-                    Name: dimensionName,
-                    Elements: [{
-                        Name: 'Result',
-                        Type: 'Numeric'
-                    }]
-                }]
-            };
-            await this.rest.post('/Dimensions', dimBody);
-
-            // Create temporary cube
-            const cubeBody = {
-                Name: cubeName,
-                Dimensions: [dimensionName]
-            };
-            await this.rest.post('/Cubes', cubeBody);
-
-            // Execute TI code
-            const processBody = {
-                Name: `EvalProcess_${Date.now()}`,
-                PrologProcedure: tiCode,
-                HasSecurityAccess: false
-            };
-
-            await this.rest.post('/Processes', processBody);
-            
-            const executeUrl = `/Processes('${processBody.Name}')/tm1.ExecuteProcess`;
-            await this.rest.post(executeUrl, {});
-
-            // Get result
-            const cellUrl = `/Cubes('${cubeName}')/Views/~Native/tm1.Execute?$select=Value&$filter=Members('${dimensionName}','Result')`;
-            const response = await this.rest.get(cellUrl);
-            const result = response.data.Cells?.[0]?.Value || 0;
-
-            // Clean up
-            await this.rest.delete(`/Processes('${processBody.Name}')`);
-            await this.rest.delete(`/Cubes('${cubeName}')`);
-            await this.rest.delete(`/Dimensions('${dimensionName}')`);
-
-            return Boolean(result);
-
-        } catch (error) {
-            // Clean up on error
-            try {
-                await this.rest.delete(`/Cubes('${cubeName}')`);
-                await this.rest.delete(`/Dimensions('${dimensionName}')`);
-            } catch (cleanupError) {
-                // Ignore cleanup errors
+        const url = '/ExecuteProcessWithReturn?$expand=*';
+        const payload = {
+            Process: {
+                PrologProcedure: prologProcedure,
+                Parameters: []
             }
-            throw error;
+        };
+
+        const response = await this.rest.post(url, JSON.stringify(payload));
+        const status = response.data.ProcessExecuteStatusCode;
+
+        if (status === 'QuitCalled') {
+            return false;
+        } else if (status === 'CompletedSuccessfully') {
+            return true;
+        } else {
+            throw new TM1Exception(`Unexpected TI return status: '${status}' for expression: '${expression}'`);
         }
     }
 
