@@ -363,43 +363,157 @@ export class ProcessService extends ObjectService {
         return '';
     }
 
-    public async getProcessDebugBreakpoints(processName: string): Promise<ProcessDebugBreakpoint[]> {
-        /** Get debug breakpoints for a process
+    public async getProcessDebugBreakpoints(debugId: string): Promise<ProcessDebugBreakpoint[]> {
+        /** Get debug breakpoints for a debug context
          *
-         * :param process_name: name of the process
+         * :param debugId: debug session ID
          * :return: list of ProcessDebugBreakpoint objects
          */
-        const url = formatUrl("/Processes('{}')/Breakpoints", processName);
+        const url = formatUrl("/ProcessDebugContexts('{}')/Breakpoints", debugId);
         const response = await this.rest.get(url);
         return response.data.value.map((bp: any) => ProcessDebugBreakpoint.fromDict(bp));
     }
 
     public async createProcessDebugBreakpoint(
-        processName: string,
+        debugId: string,
         breakpoint: ProcessDebugBreakpoint
     ): Promise<AxiosResponse> {
-        /** Create a debug breakpoint for a process
+        /** Create a debug breakpoint in a debug context
          *
-         * :param process_name: name of the process
+         * :param debugId: debug session ID
          * :param breakpoint: ProcessDebugBreakpoint object
          * :return: response
          */
-        const url = formatUrl("/Processes('{}')/Breakpoints", processName);
+        const url = formatUrl("/ProcessDebugContexts('{}')/Breakpoints", debugId);
         return await this.rest.post(url, breakpoint.body);
     }
 
     public async deleteProcessDebugBreakpoint(
-        processName: string,
-        lineNumber: number
+        debugId: string,
+        breakpointId: number
     ): Promise<AxiosResponse> {
-        /** Delete a debug breakpoint from a process
+        /** Delete a debug breakpoint from a debug context
          *
-         * :param process_name: name of the process
-         * :param line_number: line number of the breakpoint
+         * :param debugId: debug session ID
+         * :param breakpointId: ID of the breakpoint
          * :return: response
          */
-        const url = formatUrl("/Processes('{}')/Breakpoints({})", processName, lineNumber.toString());
+        const url = formatUrl("/ProcessDebugContexts('{}')/Breakpoints('{}')", debugId, breakpointId.toString());
         return await this.rest.delete(url);
+    }
+
+    /**
+     * Add multiple breakpoints to a debug context
+     */
+    public async debugAddBreakpoints(
+        debugId: string,
+        breakpoints: ProcessDebugBreakpoint[]
+    ): Promise<AxiosResponse> {
+        const url = formatUrl("/ProcessDebugContexts('{}')/Breakpoints", debugId);
+        const body = JSON.stringify(breakpoints.map(bp => bp.bodyAsDict));
+        return await this.rest.post(url, body);
+    }
+
+    /**
+     * Update an existing breakpoint in a debug context
+     */
+    public async debugUpdateBreakpoint(
+        debugId: string,
+        breakpoint: ProcessDebugBreakpoint
+    ): Promise<AxiosResponse> {
+        const url = formatUrl(
+            "/ProcessDebugContexts('{}')/Breakpoints('{}')",
+            debugId,
+            breakpoint.breakpointId.toString()
+        );
+        return await this.rest.patch(url, breakpoint.body);
+    }
+
+    /**
+     * Get all variable values from the current debug call stack
+     */
+    public async debugGetVariableValues(debugId: string): Promise<Record<string, string>> {
+        const url = formatUrl(
+            "/ProcessDebugContexts('{}')?$expand=CallStack($expand=Variables)",
+            debugId
+        );
+        const response = await this.rest.get(url);
+        const result = response.data;
+        const callStack = result.CallStack && result.CallStack.length > 0
+            ? result.CallStack[0].Variables
+            : [];
+
+        const variables: Record<string, string> = {};
+        for (const entry of callStack) {
+            variables[entry.Name] = entry.Value;
+        }
+        return variables;
+    }
+
+    /**
+     * Get a single variable value from the current debug call stack
+     */
+    public async debugGetSingleVariableValue(debugId: string, variableName: string): Promise<string> {
+        const url = formatUrl(
+            "/ProcessDebugContexts('{}')?$expand=" +
+            "CallStack($expand=Variables($filter=tolower(Name) eq '{}';$select=Value))",
+            debugId,
+            variableName.toLowerCase()
+        );
+        const response = await this.rest.get(url);
+        try {
+            return response.data.CallStack[0].Variables[0].Value;
+        } catch {
+            throw new Error(`'${variableName}' not found in collection`);
+        }
+    }
+
+    /**
+     * Get the current procedure name from the debug call stack
+     */
+    public async debugGetProcessProcedure(debugId: string): Promise<string> {
+        const url = formatUrl(
+            "/ProcessDebugContexts('{}')?$expand=CallStack($select=Procedure)",
+            debugId
+        );
+        const response = await this.rest.get(url);
+        return response.data.CallStack[0].Procedure;
+    }
+
+    /**
+     * Get the current line number from the debug call stack
+     */
+    public async debugGetProcessLineNumber(debugId: string): Promise<number> {
+        const url = formatUrl(
+            "/ProcessDebugContexts('{}')?$expand=CallStack($select=LineNumber)",
+            debugId
+        );
+        const response = await this.rest.get(url);
+        return response.data.CallStack[0].LineNumber;
+    }
+
+    /**
+     * Get the current record number from the debug call stack
+     */
+    public async debugGetRecordNumber(debugId: string): Promise<number> {
+        const url = formatUrl(
+            "/ProcessDebugContexts('{}')?$expand=CallStack($select=RecordNumber)",
+            debugId
+        );
+        const response = await this.rest.get(url);
+        return response.data.CallStack[0].RecordNumber;
+    }
+
+    /**
+     * Get the current breakpoint from the debug context
+     */
+    public async debugGetCurrentBreakpoint(debugId: string): Promise<ProcessDebugBreakpoint> {
+        const url = formatUrl(
+            "/ProcessDebugContexts('{}')?$expand=CurrentBreakpoint",
+            debugId
+        );
+        const response = await this.rest.get(url);
+        return ProcessDebugBreakpoint.fromDict(response.data.CurrentBreakpoint);
     }
 
     public async executeTiCode(
@@ -558,58 +672,115 @@ export class ProcessService extends ObjectService {
         return await this.create(sourceProcess);
     }
 
-    // ===== NEW DEBUGGING FUNCTIONS FOR 100% TM1PY PARITY =====
+    // ===== DEBUG FUNCTIONS =====
 
     /**
-     * Step over in process debugging
+     * Start debug session for specified process; debug session id is returned in response
      */
-    public async debugStepOver(processName: string): Promise<void> {
-        /** Step over the current line during process debugging
-         *
-         * :param process_name: name of the process being debugged
-         * :return: void
-         */
-        const url = formatUrl("/Processes('{}')/tm1.DebugStepOver", processName);
-        await this.rest.post(url, {});
+    public async debugProcess(
+        processName: string,
+        timeout?: number,
+        parameters?: Record<string, any>
+    ): Promise<any> {
+        const url = formatUrl(
+            "/Processes('{}')/tm1.Debug?$expand=Breakpoints," +
+            "Thread,CallStack($expand=Variables,Process($select=Name))",
+            processName
+        );
+
+        const body: any = {};
+        if (parameters && Object.keys(parameters).length > 0) {
+            body.Parameters = Object.entries(parameters).map(([name, value]) => ({
+                Name: name,
+                Value: value
+            }));
+        }
+
+        const config: any = {};
+        if (timeout) {
+            config.timeout = timeout * 1000;
+        }
+
+        const response = await this.rest.post(url, JSON.stringify(body), config);
+        return response.data;
     }
 
     /**
-     * Step into in process debugging
+     * Runs a single statement in the process.
+     * If ExecuteProcess is next function, will NOT debug child process.
      */
-    public async debugStepIn(processName: string): Promise<void> {
-        /** Step into the current line during process debugging
-         *
-         * :param process_name: name of the process being debugged
-         * :return: void
-         */
-        const url = formatUrl("/Processes('{}')/tm1.DebugStepIn", processName);
-        await this.rest.post(url, {});
+    public async debugStepOver(debugId: string): Promise<any> {
+        const url = formatUrl("/ProcessDebugContexts('{}')/tm1.StepOver", debugId);
+        await this.rest.post(url, '{}');
+
+        // digest time necessary for TM1 <= 11.8
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        const getUrl = formatUrl(
+            "/ProcessDebugContexts('{}')?$expand=Breakpoints," +
+            "Thread,CallStack($expand=Variables,Process($select=Name))",
+            debugId
+        );
+        const response = await this.rest.get(getUrl);
+        return response.data;
     }
 
     /**
-     * Step out in process debugging
+     * Runs a single statement in the process.
+     * If ExecuteProcess is next function, will pause at first statement inside child process.
      */
-    public async debugStepOut(processName: string): Promise<void> {
-        /** Step out of the current procedure during process debugging
-         *
-         * :param process_name: name of the process being debugged
-         * :return: void
-         */
-        const url = formatUrl("/Processes('{}')/tm1.DebugStepOut", processName);
-        await this.rest.post(url, {});
+    public async debugStepIn(debugId: string): Promise<any> {
+        const url = formatUrl("/ProcessDebugContexts('{}')/tm1.StepIn", debugId);
+        await this.rest.post(url, '{}');
+
+        // digest time necessary for TM1 <= 11.8
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        const getUrl = formatUrl(
+            "/ProcessDebugContexts('{}')?$expand=Breakpoints," +
+            "Thread,CallStack($expand=Variables,Process($select=Name))",
+            debugId
+        );
+        const response = await this.rest.get(getUrl);
+        return response.data;
     }
 
     /**
-     * Continue execution in process debugging
+     * Resumes execution and runs until current process has finished.
      */
-    public async debugContinue(processName: string): Promise<void> {
-        /** Continue execution during process debugging
-         *
-         * :param process_name: name of the process being debugged
-         * :return: void
-         */
-        const url = formatUrl("/Processes('{}')/tm1.DebugContinue", processName);
-        await this.rest.post(url, {});
+    public async debugStepOut(debugId: string): Promise<any> {
+        const url = formatUrl("/ProcessDebugContexts('{}')/tm1.StepOut", debugId);
+        await this.rest.post(url, '{}');
+
+        // digest time necessary for TM1 <= 11.8
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        const getUrl = formatUrl(
+            "/ProcessDebugContexts('{}')?$expand=Breakpoints," +
+            "Thread,CallStack($expand=Variables,Process($select=Name))",
+            debugId
+        );
+        const response = await this.rest.get(getUrl);
+        return response.data;
+    }
+
+    /**
+     * Resumes execution until next breakpoint
+     */
+    public async debugContinue(debugId: string): Promise<any> {
+        const url = formatUrl("/ProcessDebugContexts('{}')/tm1.Continue", debugId);
+        await this.rest.post(url, '{}');
+
+        // digest time necessary for TM1 <= 11.8
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        const getUrl = formatUrl(
+            "/ProcessDebugContexts('{}')?$expand=Breakpoints," +
+            "Thread,CallStack($expand=Variables,Process($select=Name))",
+            debugId
+        );
+        const response = await this.rest.get(getUrl);
+        return response.data;
     }
 
     /**
