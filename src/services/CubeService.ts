@@ -212,26 +212,28 @@ export class CubeService extends ObjectService {
     }
 
     public async getStorageDimensionOrder(cubeName: string): Promise<string[]> {
-        /** Get storage dimension order for a cube
+        /** Get the storage dimension order of a cube
          *
          * :param cube_name: name of the cube
-         * :return: ordered list of dimension names
+         * :return: List of dimension names in storage order
          */
-        const url = formatUrl("/Cubes('{}')/Dimensions?$select=Name", cubeName);
+        const url = formatUrl("/Cubes('{}')/tm1.DimensionsStorageOrder()?$select=Name", cubeName);
         const response = await this.rest.get(url);
         return response.data.value.map((dim: any) => dim.Name);
     }
 
-    public async updateStorageDimensionOrder(cubeName: string, dimensionNames: string[]): Promise<AxiosResponse> {
-        /** Update storage dimension order for a cube
+    public async updateStorageDimensionOrder(cubeName: string, dimensionNames: string[]): Promise<number> {
+        /** Update the storage dimension order of a cube
          *
          * :param cube_name: name of the cube
          * :param dimension_names: ordered list of dimension names
-         * :return: response
+         * :return: Float - percent change in memory usage
          */
-        const url = formatUrl("/Cubes('{}')/tm1.UpdateStorageOrder", cubeName);
-        const body = { Dimensions: dimensionNames };
-        return await this.rest.post(url, body);
+        const url = formatUrl("/Cubes('{}')/tm1.ReorderDimensions", cubeName);
+        const payload: any = {};
+        payload['Dimensions@odata.bind'] = dimensionNames.map(d => formatUrl("Dimensions('{}')", d));
+        const response = await this.rest.post(url, JSON.stringify(payload));
+        return response.data.value;
     }
 
     public async getRandomIntersection(cubeName: string, uniqueNames: boolean = false): Promise<string[]> {
