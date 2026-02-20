@@ -27,14 +27,15 @@ export class HierarchyService extends ObjectService {
     }
 
     public async update(hierarchy: Hierarchy, keepExistingAttributes: boolean = false): Promise<void> {
-        // Update elements first
-        await this.updateElements(hierarchy);
-        
-        // Update element attributes
+        /** Update a hierarchy. Two step process:
+         * 1. PATCH Hierarchy (elements, edges, structure)
+         * 2. Update Element Attributes
+         */
+        const url = this.formatUrl("/Dimensions('{}')/Hierarchies('{}')", hierarchy.dimensionName, hierarchy.name);
+        const hierarchyBody = hierarchy.bodyAsDict;
+        await this.rest.patch(url, JSON.stringify(hierarchyBody));
+
         await this.updateElementAttributes(hierarchy, keepExistingAttributes);
-        
-        // Update edges
-        await this.updateEdges(hierarchy);
     }
 
     public async delete(dimensionName: string, hierarchyName: string): Promise<AxiosResponse> {
@@ -64,37 +65,6 @@ export class HierarchyService extends ObjectService {
         const url = this.formatUrl("/Dimensions('{}')/Hierarchies?$expand=*", dimensionName);
         const response = await this.rest.get(url);
         return response.data.value.map((h: any) => Hierarchy.fromDict(h, dimensionName));
-    }
-
-    public async updateElements(hierarchy: Hierarchy): Promise<void> {
-        // Remove all existing elements first
-        await this.removeAllElements(hierarchy.dimensionName, hierarchy.name);
-        
-        // Add all elements from hierarchy
-        for (const element of hierarchy.elements) {
-            const url = this.formatUrl("/Dimensions('{}')/Hierarchies('{}')/Elements", 
-                hierarchy.dimensionName, hierarchy.name);
-            await this.rest.post(url, element.body);
-        }
-    }
-
-    public async updateEdges(hierarchy: Hierarchy): Promise<void> {
-        // Remove all existing edges
-        await this.removeAllEdges(hierarchy.dimensionName, hierarchy.name);
-        
-        // Add all edges from hierarchy
-        for (const [key, weight] of hierarchy.edges) {
-            const [parentName, componentName] = key.split(':');
-            const edgeBody = {
-                ParentName: parentName,
-                ComponentName: componentName,
-                Weight: weight
-            };
-            
-            const url = this.formatUrl("/Dimensions('{}')/Hierarchies('{}')/Edges", 
-                hierarchy.dimensionName, hierarchy.name);
-            await this.rest.post(url, JSON.stringify(edgeBody));
-        }
     }
 
     public async updateElementAttributes(hierarchy: Hierarchy, keepExisting: boolean = false): Promise<void> {
