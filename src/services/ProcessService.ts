@@ -574,30 +574,66 @@ export class ProcessService extends ObjectService {
     }
 
     public async getErrorLogFileContent(fileName: string): Promise<string> {
-        /** Get the content of a process error log file
+        /** Get content of error log file
          *
-         * :param file_name: name of the error log file
-         * :return: file content as string
+         * :param file_name: name of the error log file in the TM1 log directory
+         * :return: String, content of the file
          */
-        const url = formatUrl("/Contents('Logs/{}')", fileName);
+        const url = formatUrl("/ErrorLogFiles('{}')/Content", fileName);
         const response = await this.rest.get(url);
         return response.data;
     }
 
-    public async getErrorLogFilenames(top?: number): Promise<string[]> {
-        /** Get list of error log file names
+    public async searchErrorLogFilenames(
+        searchString: string,
+        top: number = 0,
+        descending: boolean = false
+    ): Promise<string[]> {
+        /** Search error log filenames for given search string
          *
-         * :param top: optional limit on number of files to return
-         * :return: list of error log file names
+         * :param searchString: substring to contain in file names
+         * :param top: top n filenames
+         * :param descending: sort descending (most recent first)
+         * :return: list of filenames
          */
-        let url = "/Contents('Logs')?$select=Name&$filter=endswith(Name,'.log')";
-        
-        if (top) {
+        let url = formatUrl(
+            "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), tolower('{}'))",
+            searchString
+        );
+
+        if (top > 0) {
             url += `&$top=${top}`;
         }
 
+        if (descending) {
+            url += '&$orderby=Filename desc';
+        }
+
         const response = await this.rest.get(url);
-        return response.data.value.map((file: any) => file.Name);
+        return response.data.value.map((log: any) => log.Filename);
+    }
+
+    public async getErrorLogFilenames(
+        processName?: string,
+        top: number = 0,
+        descending: boolean = false
+    ): Promise<string[]> {
+        /** Get error log filenames for specified TI process
+         *
+         * :param processName: valid TI name, leave blank to return all error log filenames
+         * :param top: top n filenames
+         * :param descending: sort descending (most recent first)
+         * :return: list of filenames
+         */
+        let searchString = '';
+        if (processName) {
+            if (!(await this.exists(processName))) {
+                throw new Error(`'${processName}' is not a valid process`);
+            }
+            searchString = processName;
+        }
+
+        return this.searchErrorLogFilenames(searchString, top, descending);
     }
 
     public async deleteErrorLogFile(fileName: string): Promise<AxiosResponse> {
@@ -606,8 +642,35 @@ export class ProcessService extends ObjectService {
          * :param file_name: name of the error log file to delete
          * :return: response
          */
-        const url = formatUrl("/Contents('Logs/{}')", fileName);
+        const url = formatUrl("/ErrorLogFiles('{}')", fileName);
         return await this.rest.delete(url);
+    }
+
+    public async getProcessErrorLogs(processName: string): Promise<any[]> {
+        /** Get all ProcessErrorLog entries for a process
+         *
+         * :param processName: name of the process
+         * :return: list - Collection of ProcessErrorLogs
+         */
+        const url = formatUrl("/Processes('{}')/ErrorLogs", processName);
+        const response = await this.rest.get(url);
+        return response.data.value;
+    }
+
+    public async getLastMessageFromProcessErrorLog(processName: string): Promise<string | undefined> {
+        /** Get the latest ProcessErrorLog from a process entity
+         *
+         * :param processName: name of the process
+         * :return: String - the error log content, or undefined if no logs exist
+         */
+        const logs = await this.getProcessErrorLogs(processName);
+        if (logs.length > 0) {
+            const timestamp = logs[logs.length - 1].Timestamp;
+            const url = formatUrl("/Processes('{}')/ErrorLogs('{}')/Content", processName, timestamp);
+            const response = await this.rest.get(url);
+            return response.data;
+        }
+        return undefined;
     }
 
     public async searchStringInName(
