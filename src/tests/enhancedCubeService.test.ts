@@ -87,7 +87,7 @@ describe('Enhanced CubeService Tests', () => {
 
             expect(result).toEqual(['Year', 'Region', 'Product']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Cubes('TestCube')/Dimensions?$select=Name"
+                "/Cubes('TestCube')/tm1.DimensionsStorageOrder()?$select=Name"
             );
             
             console.log('✅ getStorageDimensionOrder test passed');
@@ -96,15 +96,22 @@ describe('Enhanced CubeService Tests', () => {
         test('updateStorageDimensionOrder should reorder dimensions', async () => {
             const newOrder = ['Product', 'Region', 'Year'];
 
-            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            mockRestService.post.mockResolvedValue(createMockResponse({ value: -23.07 }));
 
-            await cubeService.updateStorageDimensionOrder('TestCube', newOrder);
+            const result = await cubeService.updateStorageDimensionOrder('TestCube', newOrder);
 
             expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Cubes('TestCube')/tm1.UpdateStorageOrder",
-                { Dimensions: newOrder }
+                "/Cubes('TestCube')/tm1.ReorderDimensions",
+                JSON.stringify({
+                    'Dimensions@odata.bind': [
+                        "Dimensions('Product')",
+                        "Dimensions('Region')",
+                        "Dimensions('Year')"
+                    ]
+                })
             );
-            
+            expect(result).toBe(-23.07);
+
             console.log('✅ updateStorageDimensionOrder test passed');
         });
 

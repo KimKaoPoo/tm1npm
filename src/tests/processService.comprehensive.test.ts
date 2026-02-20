@@ -522,24 +522,24 @@ describe('ProcessService - Comprehensive Tests', () => {
             };
             mockRestService.get.mockResolvedValue(mockResponse(breakpointsData));
 
-            const result = await processService.getProcessDebugBreakpoints('TestProcess');
-            
+            const result = await processService.getProcessDebugBreakpoints('debug-123');
+
             expect(result).toHaveLength(2);
             expect(ProcessDebugBreakpoint.fromDict).toHaveBeenCalledTimes(2);
-            expect(mockRestService.get).toHaveBeenCalledWith("/Processes('TestProcess')/Breakpoints");
+            expect(mockRestService.get).toHaveBeenCalledWith("/ProcessDebugContexts('debug-123')/Breakpoints");
         });
 
         test('should create process debug breakpoint', async () => {
             mockRestService.post.mockResolvedValue(mockResponse({}));
 
             const result = await processService.createProcessDebugBreakpoint(
-                'TestProcess',
+                'debug-123',
                 mockProcessDebugBreakpoint
             );
-            
+
             expect(result).toBeDefined();
             expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Processes('TestProcess')/Breakpoints",
+                "/ProcessDebugContexts('debug-123')/Breakpoints",
                 mockProcessDebugBreakpoint.body
             );
         });
@@ -547,54 +547,66 @@ describe('ProcessService - Comprehensive Tests', () => {
         test('should delete process debug breakpoint', async () => {
             mockRestService.delete.mockResolvedValue(mockResponse({}));
 
-            const result = await processService.deleteProcessDebugBreakpoint('TestProcess', 5);
-            
+            const result = await processService.deleteProcessDebugBreakpoint('debug-123', 5);
+
             expect(result).toBeDefined();
-            expect(mockRestService.delete).toHaveBeenCalledWith("/Processes('TestProcess')/Breakpoints(5)");
+            expect(mockRestService.delete).toHaveBeenCalledWith("/ProcessDebugContexts('debug-123')/Breakpoints('5')");
         });
 
         test('should debug step over', async () => {
+            const debugData = { ID: 'debug-123', CallStack: [] };
             mockRestService.post.mockResolvedValue(mockResponse({}));
+            mockRestService.get.mockResolvedValue(mockResponse(debugData));
 
-            await processService.debugStepOver('TestProcess');
-            
+            const result = await processService.debugStepOver('debug-123');
+
             expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Processes('TestProcess')/tm1.DebugStepOver",
-                {}
+                "/ProcessDebugContexts('debug-123')/tm1.StepOver",
+                '{}'
             );
+            expect(result).toEqual(debugData);
         });
 
         test('should debug step in', async () => {
+            const debugData = { ID: 'debug-123', CallStack: [] };
             mockRestService.post.mockResolvedValue(mockResponse({}));
+            mockRestService.get.mockResolvedValue(mockResponse(debugData));
 
-            await processService.debugStepIn('TestProcess');
-            
+            const result = await processService.debugStepIn('debug-123');
+
             expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Processes('TestProcess')/tm1.DebugStepIn",
-                {}
+                "/ProcessDebugContexts('debug-123')/tm1.StepIn",
+                '{}'
             );
+            expect(result).toEqual(debugData);
         });
 
         test('should debug step out', async () => {
+            const debugData = { ID: 'debug-123', CallStack: [] };
             mockRestService.post.mockResolvedValue(mockResponse({}));
+            mockRestService.get.mockResolvedValue(mockResponse(debugData));
 
-            await processService.debugStepOut('TestProcess');
-            
+            const result = await processService.debugStepOut('debug-123');
+
             expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Processes('TestProcess')/tm1.DebugStepOut",
-                {}
+                "/ProcessDebugContexts('debug-123')/tm1.StepOut",
+                '{}'
             );
+            expect(result).toEqual(debugData);
         });
 
         test('should debug continue', async () => {
+            const debugData = { ID: 'debug-123', CallStack: [] };
             mockRestService.post.mockResolvedValue(mockResponse({}));
+            mockRestService.get.mockResolvedValue(mockResponse(debugData));
 
-            await processService.debugContinue('TestProcess');
-            
+            const result = await processService.debugContinue('debug-123');
+
             expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Processes('TestProcess')/tm1.DebugContinue",
-                {}
+                "/ProcessDebugContexts('debug-123')/tm1.Continue",
+                '{}'
             );
+            expect(result).toEqual(debugData);
         });
     });
 
@@ -606,41 +618,41 @@ describe('ProcessService - Comprehensive Tests', () => {
             const result = await processService.getErrorLogFileContent('TestProcess_20250115.log');
             
             expect(result).toBe(logContent);
-            expect(mockRestService.get).toHaveBeenCalledWith("/Contents('Logs/TestProcess_20250115.log')");
+            expect(mockRestService.get).toHaveBeenCalledWith("/ErrorLogFiles('TestProcess_20250115.log')/Content");
         });
 
         test('should get error log filenames', async () => {
             const filesData = {
                 value: [
-                    { Name: 'Process1_20250115.log' },
-                    { Name: 'Process2_20250114.log' },
-                    { Name: 'Process3_20250113.log' }
+                    { Filename: 'Process1_20250115.log' },
+                    { Filename: 'Process2_20250114.log' },
+                    { Filename: 'Process3_20250113.log' }
                 ]
             };
             mockRestService.get.mockResolvedValue(mockResponse(filesData));
 
             const result = await processService.getErrorLogFilenames();
-            
+
             expect(result).toEqual(['Process1_20250115.log', 'Process2_20250114.log', 'Process3_20250113.log']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Contents('Logs')?$select=Name&$filter=endswith(Name,'.log')"
+                "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), tolower(''))"
             );
         });
 
         test('should get error log filenames with top limit', async () => {
             const filesData = {
                 value: [
-                    { Name: 'Process1_20250115.log' },
-                    { Name: 'Process2_20250114.log' }
+                    { Filename: 'Process1_20250115.log' },
+                    { Filename: 'Process2_20250114.log' }
                 ]
             };
             mockRestService.get.mockResolvedValue(mockResponse(filesData));
 
-            const result = await processService.getErrorLogFilenames(2);
-            
+            const result = await processService.getErrorLogFilenames(undefined, 2);
+
             expect(result).toEqual(['Process1_20250115.log', 'Process2_20250114.log']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Contents('Logs')?$select=Name&$filter=endswith(Name,'.log')&$top=2"
+                "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), tolower(''))&$top=2"
             );
         });
 
@@ -648,9 +660,9 @@ describe('ProcessService - Comprehensive Tests', () => {
             mockRestService.delete.mockResolvedValue(mockResponse({}));
 
             const result = await processService.deleteErrorLogFile('TestProcess_20250115.log');
-            
+
             expect(result).toBeDefined();
-            expect(mockRestService.delete).toHaveBeenCalledWith("/Contents('Logs/TestProcess_20250115.log')");
+            expect(mockRestService.delete).toHaveBeenCalledWith("/ErrorLogFiles('TestProcess_20250115.log')");
         });
 
         test('should get last message from message log', async () => {
@@ -715,66 +727,37 @@ describe('ProcessService - Comprehensive Tests', () => {
 
     describe('Boolean TI Expression Evaluation', () => {
         test('should evaluate boolean TI expression - true result', async () => {
-            // Mock the series of REST calls for evaluation
-            mockRestService.post
-                .mockResolvedValueOnce(mockResponse({})) // Create dimension
-                .mockResolvedValueOnce(mockResponse({})) // Create cube
-                .mockResolvedValueOnce(mockResponse({})) // Create process
-                .mockResolvedValueOnce(mockResponse({})); // Execute process
-
-            mockRestService.get.mockResolvedValue(mockResponse({
-                Cells: [{ Value: 1 }]
-            }));
-
-            mockRestService.delete
-                .mockResolvedValueOnce(mockResponse({})) // Delete process
-                .mockResolvedValueOnce(mockResponse({})) // Delete cube
-                .mockResolvedValueOnce(mockResponse({})); // Delete dimension
+            mockRestService.post.mockResolvedValue(
+                mockResponse({ ProcessExecuteStatusCode: 'CompletedSuccessfully' })
+            );
 
             const result = await processService.evaluateBooleanTiExpression('1 = 1');
-            
+
             expect(result).toBe(true);
-            expect(mockRestService.post).toHaveBeenCalledTimes(4);
-            expect(mockRestService.delete).toHaveBeenCalledTimes(3);
+            expect(mockRestService.post).toHaveBeenCalledTimes(1);
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                '/ExecuteProcessWithReturn?$expand=*',
+                expect.stringContaining('ProcessQuit')
+            );
         });
 
         test('should evaluate boolean TI expression - false result', async () => {
-            // Mock the series of REST calls for evaluation
-            mockRestService.post
-                .mockResolvedValueOnce(mockResponse({})) // Create dimension
-                .mockResolvedValueOnce(mockResponse({})) // Create cube
-                .mockResolvedValueOnce(mockResponse({})) // Create process
-                .mockResolvedValueOnce(mockResponse({})); // Execute process
-
-            mockRestService.get.mockResolvedValue(mockResponse({
-                Cells: [{ Value: 0 }]
-            }));
-
-            mockRestService.delete
-                .mockResolvedValueOnce(mockResponse({})) // Delete process
-                .mockResolvedValueOnce(mockResponse({})) // Delete cube
-                .mockResolvedValueOnce(mockResponse({})); // Delete dimension
+            mockRestService.post.mockResolvedValue(
+                mockResponse({ ProcessExecuteStatusCode: 'QuitCalled' })
+            );
 
             const result = await processService.evaluateBooleanTiExpression('1 = 0');
-            
+
             expect(result).toBe(false);
         });
 
-        test('should handle evaluation errors and cleanup', async () => {
-            mockRestService.post
-                .mockResolvedValueOnce(mockResponse({})) // Create dimension
-                .mockResolvedValueOnce(mockResponse({})) // Create cube
-                .mockRejectedValueOnce(new Error('Process creation failed')); // Fail process creation
-
-            mockRestService.delete
-                .mockResolvedValueOnce(mockResponse({})) // Delete cube
-                .mockResolvedValueOnce(mockResponse({})); // Delete dimension
+        test('should handle unexpected status from evaluation', async () => {
+            mockRestService.post.mockResolvedValue(
+                mockResponse({ ProcessExecuteStatusCode: 'Aborted' })
+            );
 
             await expect(processService.evaluateBooleanTiExpression('invalid expression'))
-                .rejects.toThrow('Process creation failed');
-
-            // Verify cleanup was attempted
-            expect(mockRestService.delete).toHaveBeenCalledTimes(2);
+                .rejects.toThrow("Unexpected TI return status: 'Aborted'");
         });
     });
 
@@ -902,15 +885,16 @@ describe('ProcessService - Comprehensive Tests', () => {
         });
 
         test('should support debug workflow management', async () => {
+            const debugData = { ID: 'debug-123', CallStack: [] };
             mockRestService.post.mockResolvedValue(mockResponse({}));
-            mockRestService.get.mockResolvedValue(mockResponse({ value: [] }));
+            mockRestService.get.mockResolvedValue(mockResponse(debugData));
             mockRestService.delete.mockResolvedValue(mockResponse({}));
 
             // Debug workflow: set breakpoint, run debug commands, remove breakpoint
-            await processService.createProcessDebugBreakpoint('TestProcess', mockProcessDebugBreakpoint);
-            await processService.debugStepOver('TestProcess');
-            await processService.debugContinue('TestProcess');
-            await processService.deleteProcessDebugBreakpoint('TestProcess', 5);
+            await processService.createProcessDebugBreakpoint('debug-123', mockProcessDebugBreakpoint);
+            await processService.debugStepOver('debug-123');
+            await processService.debugContinue('debug-123');
+            await processService.deleteProcessDebugBreakpoint('debug-123', 5);
 
             expect(mockRestService.post).toHaveBeenCalledTimes(3);
             expect(mockRestService.delete).toHaveBeenCalledTimes(1);
