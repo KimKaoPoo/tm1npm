@@ -859,7 +859,12 @@ export class ProcessService extends ObjectService {
         const url = '/ExecuteProcessWithReturn?$expand=*';
         const payload = {
             Process: {
+                Name: '',
                 PrologProcedure: prologProcedure,
+                MetadataProcedure: '',
+                DataProcedure: '',
+                EpilogProcedure: '',
+                HasSecurityAccess: false,
                 Parameters: []
             }
         };
