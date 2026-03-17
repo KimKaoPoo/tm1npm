@@ -5,7 +5,7 @@ import { ObjectService } from './ObjectService';
 import { Process } from '../objects/Process';
 import { ProcessDebugBreakpoint } from '../objects/ProcessDebugBreakpoint';
 import { TM1RestException, TM1Exception } from '../exceptions/TM1Exception';
-import { formatUrl } from '../utils/Utils';
+import { formatUrl, lowerAndDropSpaces } from '../utils/Utils';
 import { OperationStatus, OperationType } from './AsyncOperationService';
 
 export class ProcessService extends ObjectService {
@@ -99,7 +99,7 @@ export class ProcessService extends ObjectService {
          * :param skip_control_processes: bool, True to exclude processes that begin with "}" or "{"
          * :return: List of process names that contain the search string
          */
-        const normalized = searchString.toLowerCase().replace(/ /g, '');
+        const normalized = lowerAndDropSpaces(searchString);
         const fields = ['PrologProcedure', 'MetadataProcedure', 'DataProcedure', 'EpilogProcedure'];
         const codeFilter = fields
             .map(f => `contains(tolower(replace(${f},' ','')), '${normalized}')`)
