@@ -83,17 +83,17 @@ export class HierarchyService extends ObjectService {
         await this.removeAllEdges(hierarchy.dimensionName, hierarchy.name);
         
         // Add all edges from hierarchy
-        for (const [key, weight] of hierarchy.edges) {
-            const [parentName, componentName] = key.split(':');
-            const edgeBody = {
-                ParentName: parentName,
-                ComponentName: componentName,
-                Weight: weight
-            };
-            
-            const url = this.formatUrl("/Dimensions('{}')/Hierarchies('{}')/Edges", 
-                hierarchy.dimensionName, hierarchy.name);
-            await this.rest.post(url, JSON.stringify(edgeBody));
+        const url = this.formatUrl("/Dimensions('{}')/Hierarchies('{}')/Edges",
+            hierarchy.dimensionName, hierarchy.name);
+        for (const [parentName, children] of hierarchy.edges) {
+            for (const [componentName, weight] of children) {
+                const edgeBody = {
+                    ParentName: parentName,
+                    ComponentName: componentName,
+                    Weight: weight
+                };
+                await this.rest.post(url, JSON.stringify(edgeBody));
+            }
         }
     }
 
