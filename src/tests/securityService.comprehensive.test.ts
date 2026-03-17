@@ -275,22 +275,29 @@ describe('SecurityService - Comprehensive Tests', () => {
 
         test('should get users from group', async () => {
             // Mock determineActualGroupName call
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ 
-                value: [{ Name: 'PowerUser' }] 
+            mockRestService.get.mockResolvedValueOnce(mockResponse({
+                value: [{ Name: 'PowerUser' }]
             }));
-            // Mock getUsersFromGroup call
-            const usersData = {
-                value: [
-                    { Name: 'admin' },
-                    { Name: 'poweruser1' },
-                    { Name: 'poweruser2' }
+            // Mock getUsersFromGroup call — expand URL returns Users array on the group object
+            const groupData = {
+                Users: [
+                    { Name: 'admin', FriendlyName: 'admin', Type: '0', Enabled: true, Groups: [{ Name: 'ADMIN' }] },
+                    { Name: 'poweruser1', FriendlyName: 'poweruser1', Type: '0', Enabled: true, Groups: [{ Name: 'PowerUser' }] },
+                    { Name: 'poweruser2', FriendlyName: 'poweruser2', Type: '0', Enabled: true, Groups: [{ Name: 'PowerUser' }] }
                 ]
             };
-            mockRestService.get.mockResolvedValueOnce(mockResponse(usersData));
+            mockRestService.get.mockResolvedValueOnce(mockResponse(groupData));
+
+            const mockUserFromDict = jest.fn().mockImplementation((data: any) => ({ name: data.Name }));
+            (User as any).fromDict = mockUserFromDict;
 
             const result = await securityService.getUsersFromGroup('PowerUser');
-            
-            expect(result).toEqual(['admin', 'poweruser1', 'poweruser2']);
+
+            expect(result).toHaveLength(3);
+            expect(mockUserFromDict).toHaveBeenCalledTimes(3);
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                "/Groups('PowerUser')?$expand=Users($select=Name,FriendlyName,Password,Type,Enabled;$expand=Groups)"
+            );
         });
 
         test('should get groups for user', async () => {
@@ -331,26 +338,25 @@ describe('SecurityService - Comprehensive Tests', () => {
 
     describe('User-Group Relationship Operations', () => {
         test('should add user to multiple groups', async () => {
-            // Mock determineActualGroupName calls for both groups
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ 
-                value: [{ Name: 'PowerUser' }] 
+            // Single determineActualUserName call — no per-group resolution
+            mockRestService.get.mockResolvedValueOnce(mockResponse({
+                value: [{ Name: 'testuser' }]
             }));
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ 
-                value: [{ Name: 'testuser' }] 
-            }));
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ 
-                value: [{ Name: 'DataEntry' }] 
-            }));
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ 
-                value: [{ Name: 'testuser' }] 
-            }));
-            mockRestService.post.mockResolvedValue(mockResponse({}));
+            mockRestService.patch.mockResolvedValue(mockResponse({}));
 
             const groupNames = ['PowerUser', 'DataEntry'];
-            const results = await securityService.addUserToGroups('testuser', groupNames);
-            
-            expect(results).toHaveLength(2);
-            expect(mockRestService.post).toHaveBeenCalledTimes(2);
+            const result = await securityService.addUserToGroups('testuser', groupNames);
+
+            expect(result).toBeDefined();
+            expect(mockRestService.patch).toHaveBeenCalledTimes(1);
+            expect(mockRestService.patch).toHaveBeenCalledWith(
+                "/Users('testuser')",
+                JSON.stringify({
+                    Name: 'testuser',
+                    'Groups@odata.bind': ["Groups('PowerUser')", "Groups('DataEntry')"]
+                })
+            );
+            expect(mockRestService.post).not.toHaveBeenCalled();
         });
 
         test('should add user to single group', async () => {
@@ -371,24 +377,28 @@ describe('SecurityService - Comprehensive Tests', () => {
 
         test('should remove user from group', async () => {
             // Mock determineActualGroupName call
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ 
-                value: [{ Name: 'PowerUser' }] 
+            mockRestService.get.mockResolvedValueOnce(mockResponse({
+                value: [{ Name: 'PowerUser' }]
             }));
             // Mock determineActualUserName call
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ 
-                value: [{ Name: 'testuser' }] 
+            mockRestService.get.mockResolvedValueOnce(mockResponse({
+                value: [{ Name: 'testuser' }]
             }));
             mockRestService.delete.mockResolvedValue(mockResponse({}));
 
             const result = await securityService.removeUserFromGroup('PowerUser', 'testuser');
-            
+
             expect(result).toBeDefined();
+            expect(mockRestService.delete).toHaveBeenCalledWith(
+                "/Users('testuser')/Groups?$id=Groups('PowerUser')"
+            );
         });
 
         test('should handle empty group list when adding user to groups', async () => {
-            const results = await securityService.addUserToGroups('testuser', []);
-            
-            expect(results).toEqual([]);
+            const result = await securityService.addUserToGroups('testuser', []);
+
+            expect(result).toBeUndefined();
+            expect(mockRestService.patch).not.toHaveBeenCalled();
             expect(mockRestService.post).not.toHaveBeenCalled();
         });
     });
