@@ -8,6 +8,17 @@ import { TM1RestException, TM1Exception } from '../exceptions/TM1Exception';
 import { formatUrl, lowerAndDropSpaces } from '../utils/Utils';
 import { OperationStatus, OperationType } from './AsyncOperationService';
 
+export interface ProcessDebugContext {
+    ID: string;
+    Status: string;
+    CurrentLine?: number;
+    Procedure?: string;
+    ProcessName?: string;
+    Breakpoints?: ProcessDebugBreakpoint[];
+    Thread?: Record<string, unknown>;
+    CallStack?: Record<string, unknown>[];
+}
+
 export class ProcessService extends ObjectService {
     /** Service to handle Object Updates for TI Processes
      * 
@@ -74,7 +85,7 @@ export class ProcessService extends ObjectService {
 
         const response = await this.rest.get(url);
         const responseAsDict = response.data;
-        return responseAsDict.value.map((p: any) => Process.fromDict(p));
+        return responseAsDict.value.map((p: Record<string, unknown>) => Process.fromDict(p));
     }
 
     public async getAllNames(skipControlProcesses: boolean = false): Promise<string[]> {
@@ -88,7 +99,7 @@ export class ProcessService extends ObjectService {
         const url = "/Processes?$select=Name" + (skipControlProcesses ? modelProcessFilter : "");
 
         const response = await this.rest.get(url);
-        const processes = response.data.value.map((process: any) => process.Name);
+        const processes = response.data.value.map((process: { Name: string }) => process.Name);
         return processes;
     }
 
@@ -105,13 +116,13 @@ export class ProcessService extends ObjectService {
             .map(f => `contains(tolower(replace(${f},' ','')), '${normalized}')`)
             .join(' or ');
 
-        let url = `/Processes?$select=Name&$filter=${codeFilter}`;
+        let url = `/Processes?$select=Name&$filter=(${codeFilter})`;
         if (skipControlProcesses) {
             url += " and (startswith(Name, '}') eq false and startswith(Name, '{') eq false)";
         }
 
         const response = await this.rest.get(url);
-        return response.data.value.map((p: any) => p.Name);
+        return response.data.value.map((p: { Name: string }) => p.Name);
     }
 
     public async create(process: Process): Promise<AxiosResponse> {
@@ -169,8 +180,8 @@ export class ProcessService extends ObjectService {
          * :return: response
          */
         const url = formatUrl("/Processes('{}')/tm1.Execute", processName);
-        
-        const body: any = {};
+
+        const body: Record<string, unknown> = {};
         if (parameters && Object.keys(parameters).length > 0) {
             body.Parameters = Object.entries(parameters).map(([name, value]) => ({
                 Name: name,
@@ -182,7 +193,7 @@ export class ProcessService extends ObjectService {
     }
 
     public async executeWithReturn(
-        processName: string, 
+        processName: string,
         parameters?: Record<string, any>,
         timeout?: number
     ): Promise<any> {
@@ -194,8 +205,8 @@ export class ProcessService extends ObjectService {
          * :return: response including execution details
          */
         const url = formatUrl("/Processes('{}')/tm1.ExecuteWithReturn?$expand=*", processName);
-        
-        const body: any = {};
+
+        const body: Record<string, unknown> = {};
         if (parameters && Object.keys(parameters).length > 0) {
             body.Parameters = Object.entries(parameters).map(([name, value]) => ({
                 Name: name,
@@ -417,9 +428,14 @@ export class ProcessService extends ObjectService {
         );
         await this.create(p);
         try {
-            return await this.executeProcessWithReturn(name, parameters);
+            return await this.execute(name, parameters);
         } finally {
-            await this.delete(name);
+            try {
+                await this.delete(name);
+            } catch (_deleteError) {
+                // Cleanup failure should not mask the original execution error.
+                // The temporary process }TM1py... may need manual removal.
+            }
         }
     }
 
@@ -461,7 +477,7 @@ export class ProcessService extends ObjectService {
         if (processName) {
             url += `&$filter=contains(tolower(Filename), '${processName.toLowerCase().replace(/'/g, "''")}')`;
         }
-        if (top) {
+        if (top !== undefined && top !== null) {
             url += `&$top=${top}`;
         }
         if (descending) {
@@ -469,7 +485,7 @@ export class ProcessService extends ObjectService {
         }
 
         const response = await this.rest.get(url);
-        return response.data.value.map((file: any) => file.Filename);
+        return response.data.value.map((file: { Filename: string }) => file.Filename);
     }
 
     public async deleteErrorLogFile(fileName: string): Promise<AxiosResponse> {
@@ -494,19 +510,20 @@ export class ProcessService extends ObjectService {
          */
         let url = "/Processes?$select=Name";
         
-        const filters = [`indexof(tolower(Name), '${searchString.toLowerCase()}') ge 0`];
-        
+        const escaped = searchString.toLowerCase().replace(/'/g, "''");
+        const filters = [`indexof(tolower(Name), '${escaped}') ge 0`];
+
         if (skipControlProcesses) {
             filters.push("not startswith(Name, '}')");
             filters.push("not startswith(Name, '{')");
         }
-        
+
         if (filters.length > 0) {
             url += `&$filter=${filters.join(' and ')}`;
         }
 
         const response = await this.rest.get(url);
-        return response.data.value.map((process: any) => process.Name);
+        return response.data.value.map((process: { Name: string }) => process.Name);
     }
 
     public async updateOrCreate(process: Process): Promise<AxiosResponse> {
@@ -544,62 +561,34 @@ export class ProcessService extends ObjectService {
         return await this.create(sourceProcess);
     }
 
-    // ===== NEW DEBUGGING FUNCTIONS FOR 100% TM1PY PARITY =====
+    // ===== DEBUGGING FUNCTIONS =====
 
-    /**
-     * Step over in process debugging
-     */
-    public async debugStepOver(debugId: string): Promise<any> {
-        /** Step over the current line during process debugging
-         *
-         * :param debug_id: ID of the debug context
-         * :return: debug context state
-         */
-        await this.rest.post(formatUrl("/ProcessDebugContexts('{}')/tm1.StepOver", debugId), '');
-        const response = await this.rest.get(formatUrl("/ProcessDebugContexts('{}')?$expand=*", debugId));
-        return response.data;
+    private static readonly DEBUG_CONTEXT_EXPAND =
+        "$expand=Breakpoints,Thread,CallStack($expand=Variables,Process($select=Name))";
+
+    private async executeDebugAction(debugId: string, action: string): Promise<ProcessDebugContext> {
+        await this.rest.post(formatUrl(`/ProcessDebugContexts('{}')/tm1.${action}`, debugId), '');
+        await new Promise(r => setTimeout(r, 100));
+        const response = await this.rest.get(
+            formatUrl(`/ProcessDebugContexts('{}')?${ProcessService.DEBUG_CONTEXT_EXPAND}`, debugId)
+        );
+        return response.data as ProcessDebugContext;
     }
 
-    /**
-     * Step into in process debugging
-     */
-    public async debugStepIn(debugId: string): Promise<any> {
-        /** Step into the current line during process debugging
-         *
-         * :param debug_id: ID of the debug context
-         * :return: debug context state
-         */
-        await this.rest.post(formatUrl("/ProcessDebugContexts('{}')/tm1.StepIn", debugId), '');
-        const response = await this.rest.get(formatUrl("/ProcessDebugContexts('{}')?$expand=*", debugId));
-        return response.data;
+    public async debugStepOver(debugId: string): Promise<ProcessDebugContext> {
+        return this.executeDebugAction(debugId, 'StepOver');
     }
 
-    /**
-     * Step out in process debugging
-     */
-    public async debugStepOut(debugId: string): Promise<any> {
-        /** Step out of the current procedure during process debugging
-         *
-         * :param debug_id: ID of the debug context
-         * :return: debug context state
-         */
-        await this.rest.post(formatUrl("/ProcessDebugContexts('{}')/tm1.StepOut", debugId), '');
-        const response = await this.rest.get(formatUrl("/ProcessDebugContexts('{}')?$expand=*", debugId));
-        return response.data;
+    public async debugStepIn(debugId: string): Promise<ProcessDebugContext> {
+        return this.executeDebugAction(debugId, 'StepIn');
     }
 
-    /**
-     * Continue execution in process debugging
-     */
-    public async debugContinue(debugId: string): Promise<any> {
-        /** Continue execution during process debugging
-         *
-         * :param debug_id: ID of the debug context
-         * :return: debug context state
-         */
-        await this.rest.post(formatUrl("/ProcessDebugContexts('{}')/tm1.Continue", debugId), '');
-        const response = await this.rest.get(formatUrl("/ProcessDebugContexts('{}')?$expand=*", debugId));
-        return response.data;
+    public async debugStepOut(debugId: string): Promise<ProcessDebugContext> {
+        return this.executeDebugAction(debugId, 'StepOut');
+    }
+
+    public async debugContinue(debugId: string): Promise<ProcessDebugContext> {
+        return this.executeDebugAction(debugId, 'Continue');
     }
 
     /**
@@ -687,8 +676,7 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * const deps = await processService.analyzeProcessDependencies('ImportData');
-     * console.log('Cubes used:', deps.cubes);
-     * console.log('Dimensions used:', deps.dimensions);
+     * // deps.cubes, deps.dimensions, deps.processes, deps.subsets
      * ```
      */
     public async analyzeProcessDependencies(processName: string): Promise<any> {
@@ -798,7 +786,7 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * const plan = await processService.getProcessExecutionPlan('ImportData');
-     * console.log('Estimated execution time:', plan.estimatedTime);
+     * // plan.estimatedComplexity, plan.parameterCount, plan.procedures
      * ```
      */
     public async getProcessExecutionPlan(processName: string): Promise<any> {
@@ -906,9 +894,7 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * const status = await processService.pollProcessExecution(operationId);
-     * if (status === OperationStatus.COMPLETED) {
-     *     console.log('Process completed!');
-     * }
+     * // status === OperationStatus.COMPLETED
      * ```
      */
     public async pollProcessExecution(operationId: string): Promise<OperationStatus> {
@@ -929,7 +915,6 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * await processService.cancelProcessExecution(operationId);
-     * console.log('Process execution cancelled');
      * ```
      */
     public async cancelProcessExecution(operationId: string): Promise<void> {

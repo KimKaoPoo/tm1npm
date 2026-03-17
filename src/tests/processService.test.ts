@@ -448,7 +448,7 @@ describe('ProcessService Tests', () => {
                 "/ProcessDebugContexts('debug-ctx-1')/tm1.StepOver", ''
             );
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/ProcessDebugContexts('debug-ctx-1')?$expand=*"
+                expect.stringContaining("/ProcessDebugContexts('debug-ctx-1')?$expand=")
             );
             expect(result).toEqual(mockDebugContext);
 
@@ -492,6 +492,70 @@ describe('ProcessService Tests', () => {
             );
 
             console.log('✅ debugContinue uses correct endpoint');
+        });
+    });
+
+    describe('OData Injection Prevention', () => {
+        test('searchStringInCode should escape single quotes in search string', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await processService.searchStringInCode("it's a test");
+
+            const url = mockRestService.get.mock.calls[0][0] as string;
+            expect(url).toContain("it''satest");
+            expect(url).not.toMatch(/it's/);
+
+            console.log('✅ searchStringInCode escapes single quotes');
+        });
+
+        test('getErrorLogFilenames should escape single quotes in processName', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await processService.getErrorLogFilenames("Process'Name");
+
+            const url = mockRestService.get.mock.calls[0][0] as string;
+            expect(url).toContain("process''name");
+            expect(url).not.toMatch(/process'name/);
+
+            console.log('✅ getErrorLogFilenames escapes single quotes');
+        });
+
+        test('searchStringInName should escape single quotes in search string', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await processService.searchStringInName("O'Brien");
+
+            const url = mockRestService.get.mock.calls[0][0] as string;
+            expect(url).toContain("o''brien");
+            expect(url).not.toMatch(/o'brien/);
+
+            console.log('✅ searchStringInName escapes single quotes');
+        });
+
+        test('searchStringInCode should wrap codeFilter in parentheses for correct precedence', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await processService.searchStringInCode('test', true);
+
+            const url = mockRestService.get.mock.calls[0][0] as string;
+            // Verify the code filter OR clauses are wrapped in parentheses
+            expect(url).toMatch(/\$filter=\(contains\(/);
+
+            console.log('✅ searchStringInCode wraps codeFilter in parentheses');
+        });
+
+        test('searchStringInCode should include all four code fields', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await processService.searchStringInCode('test');
+
+            const url = mockRestService.get.mock.calls[0][0] as string;
+            expect(url).toContain('PrologProcedure');
+            expect(url).toContain('MetadataProcedure');
+            expect(url).toContain('DataProcedure');
+            expect(url).toContain('EpilogProcedure');
+
+            console.log('✅ searchStringInCode includes all four code fields');
         });
     });
 });

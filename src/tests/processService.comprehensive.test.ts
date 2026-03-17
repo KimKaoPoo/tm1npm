@@ -336,7 +336,7 @@ describe('ProcessService - Comprehensive Tests', () => {
     describe('TI Code Execution Operations', () => {
         test('should execute TI code via create-execute-delete temp process', async () => {
             jest.spyOn(processService, 'create').mockResolvedValue(mockResponse({}));
-            jest.spyOn(processService, 'executeProcessWithReturn').mockResolvedValue({ ProcessExecuteStatusCode: 'CompletedSuccessfully' });
+            jest.spyOn(processService, 'execute').mockResolvedValue(mockResponse({}));
             jest.spyOn(processService, 'delete').mockResolvedValue(mockResponse({}));
 
             const prologLines = ['sMessage = "Starting";', 'WriteToMessageLog(INFO, sMessage);'];
@@ -346,8 +346,7 @@ describe('ProcessService - Comprehensive Tests', () => {
 
             expect(result).toBeDefined();
             expect(processService.create).toHaveBeenCalledTimes(1);
-            // The name used for execute and delete must start with }TM1py
-            expect(processService.executeProcessWithReturn).toHaveBeenCalledWith(
+            expect(processService.execute).toHaveBeenCalledWith(
                 expect.stringMatching(/^\}TM1py.+/),
                 undefined
             );
@@ -356,7 +355,7 @@ describe('ProcessService - Comprehensive Tests', () => {
 
         test('should delete temp process even when execution fails', async () => {
             jest.spyOn(processService, 'create').mockResolvedValue(mockResponse({}));
-            jest.spyOn(processService, 'executeProcessWithReturn').mockRejectedValue(new Error('Execution failed'));
+            jest.spyOn(processService, 'execute').mockRejectedValue(new Error('Execution failed'));
             jest.spyOn(processService, 'delete').mockResolvedValue(mockResponse({}));
 
             await expect(processService.executeTiCode(['sTest = "fail";'])).rejects.toThrow('Execution failed');
@@ -364,15 +363,24 @@ describe('ProcessService - Comprehensive Tests', () => {
             expect(processService.delete).toHaveBeenCalled();
         });
 
+        test('should still delete temp process when delete itself fails', async () => {
+            jest.spyOn(processService, 'create').mockResolvedValue(mockResponse({}));
+            jest.spyOn(processService, 'execute').mockRejectedValue(new Error('Execution failed'));
+            jest.spyOn(processService, 'delete').mockRejectedValue(new Error('Delete failed'));
+
+            // The original execution error should surface, not the delete error
+            await expect(processService.executeTiCode(['sTest = "fail";'])).rejects.toThrow('Execution failed');
+        });
+
         test('should pass parameters to executeTiCode execution', async () => {
             jest.spyOn(processService, 'create').mockResolvedValue(mockResponse({}));
-            jest.spyOn(processService, 'executeProcessWithReturn').mockResolvedValue({});
+            jest.spyOn(processService, 'execute').mockResolvedValue(mockResponse({}));
             jest.spyOn(processService, 'delete').mockResolvedValue(mockResponse({}));
 
             const parameters = { pMessage: 'Test Message', pValue: 123 };
             await processService.executeTiCode(['WriteToMessageLog(INFO, pMessage);'], undefined, undefined, undefined, parameters);
 
-            expect(processService.executeProcessWithReturn).toHaveBeenCalledWith(
+            expect(processService.execute).toHaveBeenCalledWith(
                 expect.stringMatching(/^\}TM1py.+/),
                 parameters
             );
@@ -407,7 +415,7 @@ describe('ProcessService - Comprehensive Tests', () => {
 
             expect(result).toEqual(['Process1', 'Process2']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                expect.stringMatching(/\/Processes\?\$select=Name&\$filter=.*contains\(tolower\(replace\(PrologProcedure,' ',''\)\)/)
+                expect.stringMatching(/\/Processes\?\$select=Name&\$filter=\(.*contains\(tolower\(replace\(PrologProcedure,' ',''\)\)/)
             );
         });
 
@@ -509,7 +517,7 @@ describe('ProcessService - Comprehensive Tests', () => {
                 "/ProcessDebugContexts('ctx-1')/tm1.StepOver", ''
             );
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/ProcessDebugContexts('ctx-1')?$expand=*"
+                expect.stringContaining("/ProcessDebugContexts('ctx-1')?$expand=")
             );
             expect(result).toEqual(debugContext);
         });
