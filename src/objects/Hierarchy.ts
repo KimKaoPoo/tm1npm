@@ -34,7 +34,9 @@ export class Hierarchy extends TM1Object {
         }
 
         this._elementAttributes = elementAttributes ? [...elementAttributes] : [];
-        this._edges = edges ? new Map(edges) : new Map();
+        this._edges = edges
+            ? new Map(Array.from(edges, ([k, v]) => [k, new Map(v)]))
+            : new Map();
         this._subsets = subsets ? [...subsets] : [];
         this._balanced = structure !== undefined ? structure === 0 : false;
         this._defaultMember = defaultMember;
