@@ -524,9 +524,10 @@ describe('ProcessService Tests', () => {
 
             await processService.getErrorLogFilenames("Process'Name");
 
-            const url = mockRestService.get.mock.calls[0][0] as string;
-            expect(url).toContain("Process''Name");
-            expect(url).not.toMatch(/Process'Name/);
+            const allUrls = mockRestService.get.mock.calls.map((c: any[]) => c[0] as string);
+            const url = allUrls.find((u: string) => u.includes('ErrorLogFiles')) ?? '';
+            expect(url).toMatch(/Process''Name/);
+            expect(url).not.toMatch(/Process'[^']/);
 
             console.log('✅ getErrorLogFilenames escapes single quotes');
         });
