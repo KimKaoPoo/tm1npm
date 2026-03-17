@@ -102,8 +102,9 @@ export class ElementAttribute extends TM1Object {
 
     public equals(other: TM1Object): boolean {
         if (other instanceof ElementAttribute) {
-            return this._name.toLowerCase().replace(/\s+/g, '') === 
-                   other._name.toLowerCase().replace(/\s+/g, '');
+            const sameName = this._name.toLowerCase().replace(/\s+/g, '') ===
+                             other._name.toLowerCase().replace(/\s+/g, '');
+            return sameName && this._attributeType === other._attributeType;
         }
         return false;
     }

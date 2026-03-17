@@ -70,7 +70,7 @@ export class ViewService extends ObjectService {
         const viewAsDict = response.data;
         
         if ("MDX" in viewAsDict) {
-            return new MDXView(cubeName, viewName, viewAsDict.MDX);
+            return MDXView.fromDict(viewAsDict, cubeName);
         } else {
             return await this.getNativeView(cubeName, viewName, isPrivate);
         }
@@ -146,7 +146,7 @@ export class ViewService extends ObjectService {
         
         for (const viewDict of response.data.value) {
             if ("MDX" in viewDict) {
-                mdxViews.push(new MDXView(cubeName, viewDict.Name, viewDict.MDX));
+                mdxViews.push(MDXView.fromDict(viewDict, cubeName));
             } else {
                 const nativeView = await this.getNativeView(cubeName, viewDict.Name, false);
                 nativeViews.push(nativeView);

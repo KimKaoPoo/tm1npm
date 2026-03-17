@@ -8,10 +8,12 @@ export class MDXView extends View {
      */
 
     private _mdx: string;
+    private _dynamicProperties: Record<string, any>;
 
-    constructor(cubeName: string, viewName: string, MDX: string) {
+    constructor(cubeName: string, viewName: string, MDX: string, dynamicProperties?: Record<string, any>) {
         super(cubeName, viewName);
         this._mdx = MDX;
+        this._dynamicProperties = dynamicProperties || {};
     }
 
     public get mdx(): string {
@@ -28,6 +30,14 @@ export class MDXView extends View {
 
     public set MDX(value: string) {
         this._mdx = value;
+    }
+
+    public get dynamicProperties(): Record<string, any> {
+        return this._dynamicProperties;
+    }
+
+    public set dynamicProperties(value: Record<string, any>) {
+        this._dynamicProperties = value;
     }
 
     public get body(): string {
@@ -77,7 +87,8 @@ export class MDXView extends View {
         return new MDXView(
             viewAsDict.Cube?.Name || cubeName!,
             viewAsDict.Name,
-            viewAsDict.MDX
+            viewAsDict.MDX,
+            viewAsDict.Properties || {}
         );
     }
 
@@ -86,6 +97,9 @@ export class MDXView extends View {
         mdxViewAsDict['@odata.type'] = 'ibm.tm1.api.v1.MDXView';
         mdxViewAsDict['Name'] = this._name;
         mdxViewAsDict['MDX'] = this._mdx;
+        if (Object.keys(this._dynamicProperties).length > 0) {
+            mdxViewAsDict['Properties'] = this._dynamicProperties;
+        }
         return JSON.stringify(mdxViewAsDict);
     }
 }

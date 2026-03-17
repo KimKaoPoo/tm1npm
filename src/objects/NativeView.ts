@@ -61,9 +61,9 @@ export class NativeView extends View {
     }
 
     public get asMDX(): string {
-        /** Build a valid MDX Query from an Existing cubeview. 
-         * Takes Zero suppression into account. 
-         * Throws an Exception when no elements are place on the columns.
+        /** Build a valid MDX Query from an Existing cubeview.
+         * Takes Zero suppression into account.
+         * Throws an Exception when no elements are placed on the columns.
          * Subsets are referenced in the result-MDX through the TM1SubsetToSet Function
          *
          * :return: String, the MDX Query
@@ -72,63 +72,42 @@ export class NativeView extends View {
             throw new Error("Column selection must not be empty");
         }
 
-        // Basic MDX construction - this would need a full MDX builder implementation
-        let mdx = "SELECT ";
-        
-        // Build column axis
-        const columnSets: string[] = [];
-        for (const columnSelection of this.columns) {
-            const subset = columnSelection.subset;
-            if (subset instanceof AnonymousSubset) {
-                if (subset.expression) {
-                    columnSets.push(subset.expression);
-                } else {
-                    const members = subset.elements.map(e => `[${subset.dimensionName}].[${e}]`);
-                    columnSets.push(`{${members.join(', ')}}`);
-                }
-            } else {
-                columnSets.push(`TM1SubsetToSet([${subset.dimensionName}], "${subset.name}")`);
-            }
-        }
-        
-        if (this._suppressEmptyColumns) {
-            mdx += `NON EMPTY (${columnSets.join(' * ')}) ON COLUMNS`;
-        } else {
-            mdx += `(${columnSets.join(' * ')}) ON COLUMNS`;
-        }
-
-        // Build row axis if exists
-        if (this.rows && this.rows.length > 0) {
-            const rowSets: string[] = [];
-            for (const rowSelection of this.rows) {
-                const subset = rowSelection.subset;
+        const buildAxisMdx = (selections: ViewAxisSelection[], axisOrdinal: number, suppress: boolean): string => {
+            const sets: string[] = [];
+            for (const sel of selections) {
+                const subset = sel.subset;
                 if (subset instanceof AnonymousSubset) {
                     if (subset.expression) {
-                        rowSets.push(subset.expression);
+                        sets.push(subset.expression);
                     } else {
-                        const members = subset.elements.map(e => `[${subset.dimensionName}].[${e}]`);
-                        rowSets.push(`{${members.join(', ')}}`);
+                        const members = subset.elements.map(e =>
+                            `[${subset.dimensionName}].[${subset.hierarchyName}].[${e}]`
+                        );
+                        sets.push(`{${members.join(', ')}}`);
                     }
                 } else {
-                    rowSets.push(`TM1SubsetToSet([${subset.dimensionName}], "${subset.name}")`);
+                    sets.push(`TM1SubsetToSet([${subset.dimensionName}].[${subset.hierarchyName}], "${subset.name}")`);
                 }
             }
-            
-            if (this._suppressEmptyRows) {
-                mdx += `, NON EMPTY (${rowSets.join(' * ')}) ON ROWS`;
-            } else {
-                mdx += `, (${rowSets.join(' * ')}) ON ROWS`;
-            }
+            const combined = sets.join(' * ');
+            const prefix = suppress ? 'NON EMPTY ' : '';
+            return `${prefix}{${combined}} DIMENSION PROPERTIES MEMBER_NAME ON ${axisOrdinal}`;
+        };
+
+        const axisParts: string[] = [];
+        axisParts.push(buildAxisMdx(this.columns, 0, this._suppressEmptyColumns));
+
+        if (this.rows && this.rows.length > 0) {
+            axisParts.push(buildAxisMdx(this.rows, 1, this._suppressEmptyRows));
         }
 
-        mdx += ` FROM [${this.cube}]`;
+        let mdx = `SELECT ${axisParts.join(',\n')} FROM [${this.cube}]`;
 
-        // Add WHERE clause for titles
         if (this.titles && this.titles.length > 0) {
             const titleSelections: string[] = [];
             for (const title of this.titles) {
-                if (title.selected && title.selected.length > 0) {
-                    titleSelections.push(`[${title.dimensionName}].[${title.selected[0]}]`);
+                if (title.selected) {
+                    titleSelections.push(`[${title.dimensionName}].[${title.hierarchyName}].[${title.selected}]`);
                 }
             }
             if (titleSelections.length > 0) {
@@ -155,6 +134,15 @@ export class NativeView extends View {
         this._suppressEmptyRows = value;
     }
 
+    public get suppressEmptyCells(): boolean {
+        return this._suppressEmptyColumns && this._suppressEmptyRows;
+    }
+
+    public set suppressEmptyCells(value: boolean) {
+        this._suppressEmptyColumns = value;
+        this._suppressEmptyRows = value;
+    }
+
     public get formatString(): string {
         return this._formatString;
     }
@@ -176,7 +164,7 @@ export class NativeView extends View {
     }
 
     public removeTitle(dimensionName: string): boolean {
-        const index = this._titles.findIndex(t => 
+        const index = this._titles.findIndex(t =>
             caseAndSpaceInsensitiveEquals(t.dimensionName, dimensionName));
         if (index !== -1) {
             this._titles.splice(index, 1);
@@ -186,7 +174,7 @@ export class NativeView extends View {
     }
 
     public removeColumn(dimensionName: string): boolean {
-        const index = this._columns.findIndex(c => 
+        const index = this._columns.findIndex(c =>
             caseAndSpaceInsensitiveEquals(c.subset.dimensionName, dimensionName));
         if (index !== -1) {
             this._columns.splice(index, 1);
@@ -196,13 +184,28 @@ export class NativeView extends View {
     }
 
     public removeRow(dimensionName: string): boolean {
-        const index = this._rows.findIndex(r => 
+        const index = this._rows.findIndex(r =>
             caseAndSpaceInsensitiveEquals(r.subset.dimensionName, dimensionName));
         if (index !== -1) {
             this._rows.splice(index, 1);
             return true;
         }
         return false;
+    }
+
+    public substituteTitle(dimension: string, element: string): void {
+        /** Substitute the title element for a given dimension
+         *
+         * :param dimension: str, name of dimension
+         * :param element: str, name of element
+         */
+        for (const title of this._titles) {
+            if (caseAndSpaceInsensitiveEquals(title.dimensionName, dimension)) {
+                title.selected = element;
+                return;
+            }
+        }
+        throw new Error(`No title with dimension: '${dimension}'`);
     }
 
     public static fromJSON(viewAsJson: string, cubeName: string): NativeView {
@@ -256,10 +259,10 @@ export class NativeView extends View {
 
         // Add titles
         viewAsDict['Titles'] = this._titles.map(title => title.bodyAsDict);
-        
+
         // Add columns
         viewAsDict['Columns'] = this._columns.map(column => column.bodyAsDict);
-        
+
         // Add rows
         viewAsDict['Rows'] = this._rows.map(row => row.bodyAsDict);
 

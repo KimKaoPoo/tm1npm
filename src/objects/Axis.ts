@@ -1,6 +1,6 @@
 import { TM1Object } from './TM1Object';
 import { Subset, AnonymousSubset } from './Subset';
-import { formatUrl } from '../utils/Utils';
+import { formatUrl, parseODataBindUrl } from '../utils/Utils';
 
 export class ViewAxisSelection extends TM1Object {
     /** Describes what is selected in a dimension on an axis. Can be a Registered Subset or an Anonymous Subset
@@ -42,9 +42,19 @@ export class ViewAxisSelection extends TM1Object {
         return this.constructBody();
     }
 
-    public static fromDict(_data: Record<string, any>): ViewAxisSelection {
-        // Basic implementation - would need actual data structure
-        return new ViewAxisSelection('', new AnonymousSubset('', ''));
+    public static fromDict(data: Record<string, any>): ViewAxisSelection {
+        if ('Subset' in data) {
+            const subset = AnonymousSubset.fromDict(data['Subset']);
+            return new ViewAxisSelection(subset.dimensionName, subset);
+        } else if ('Subset@odata.bind' in data) {
+            const parts = parseODataBindUrl(data['Subset@odata.bind']);
+            const dimName = parts[0] || '';
+            const hierName = parts[1] || '';
+            const subsetName = parts[2] || '';
+            const subset = new Subset(subsetName, dimName, hierName);
+            return new ViewAxisSelection(dimName, subset);
+        }
+        throw new Error("ViewAxisSelection dict must contain 'Subset' or 'Subset@odata.bind'");
     }
 
     private constructBody(): Record<string, any> {
@@ -53,7 +63,7 @@ export class ViewAxisSelection extends TM1Object {
          * :return: dictionary
          */
         const bodyAsDict: Record<string, any> = {};
-        
+
         if (this._subset instanceof AnonymousSubset) {
             bodyAsDict['Subset'] = JSON.parse(this._subset.body);
         } else if (this._subset instanceof Subset) {
@@ -65,7 +75,7 @@ export class ViewAxisSelection extends TM1Object {
             );
             bodyAsDict['Subset@odata.bind'] = subsetPath;
         }
-        
+
         return bodyAsDict;
     }
 }
@@ -104,6 +114,10 @@ export class ViewTitleSelection {
         return this._selected;
     }
 
+    public set selected(value: string) {
+        this._selected = value;
+    }
+
     public get body(): string {
         return JSON.stringify(this.constructBody());
     }
@@ -112,9 +126,35 @@ export class ViewTitleSelection {
         return this.constructBody();
     }
 
-    public static fromDict(_data: Record<string, any>): ViewTitleSelection {
-        // Basic implementation - would need actual data structure
-        return new ViewTitleSelection('', new AnonymousSubset('', ''), '');
+    public static fromDict(data: Record<string, any>): ViewTitleSelection {
+        let subset: AnonymousSubset | Subset;
+        let dimName: string;
+
+        if ('Subset' in data) {
+            subset = AnonymousSubset.fromDict(data['Subset']);
+            dimName = subset.dimensionName;
+        } else if ('Subset@odata.bind' in data) {
+            const parts = parseODataBindUrl(data['Subset@odata.bind']);
+            dimName = parts[0] || '';
+            const hierName = parts[1] || '';
+            const subsetName = parts[2] || '';
+            subset = new Subset(subsetName, dimName, hierName);
+        } else {
+            throw new Error("ViewTitleSelection dict must contain 'Subset' or 'Subset@odata.bind'");
+        }
+
+        let selected: string;
+        if ('Selected@odata.bind' in data) {
+            // URL format: Dimensions('D')/Hierarchies('H')/Elements('E')
+            const parts = parseODataBindUrl(data['Selected@odata.bind']);
+            selected = parts[2] || '';
+        } else if ('Selected' in data && data['Selected']) {
+            selected = data['Selected'].Name || '';
+        } else {
+            selected = '';
+        }
+
+        return new ViewTitleSelection(dimName, subset, selected);
     }
 
     private constructBody(): Record<string, any> {
@@ -123,7 +163,7 @@ export class ViewTitleSelection {
          * :return: string, the valid JSON
          */
         const bodyAsDict: Record<string, any> = {};
-        
+
         if (this._subset instanceof AnonymousSubset) {
             bodyAsDict['Subset'] = JSON.parse(this._subset.body);
         } else if (this._subset instanceof Subset) {
@@ -135,7 +175,7 @@ export class ViewTitleSelection {
             );
             bodyAsDict['Subset@odata.bind'] = subsetPath;
         }
-        
+
         const elementPath = formatUrl(
             "Dimensions('{}')/Hierarchies('{}')/Elements('{}')",
             this._dimensionName,
@@ -143,7 +183,7 @@ export class ViewTitleSelection {
             this._selected
         );
         bodyAsDict['Selected@odata.bind'] = elementPath;
-        
+
         return bodyAsDict;
     }
 }

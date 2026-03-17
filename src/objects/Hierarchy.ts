@@ -1,5 +1,5 @@
 import { TM1Object } from './TM1Object';
-import { Element } from './Element';
+import { Element, ElementType } from './Element';
 import { ElementAttribute } from './ElementAttribute';
 
 export class Hierarchy extends TM1Object {
@@ -7,7 +7,7 @@ export class Hierarchy extends TM1Object {
     private _dimensionName: string;
     private _elements: Map<string, Element> = new Map();
     private _elementAttributes: ElementAttribute[] = [];
-    private _edges: Map<string, number> = new Map();
+    private _edges: Map<string, Map<string, number>> = new Map();
     private _subsets: string[] = [];
     private _balanced: boolean = false;
     private _defaultMember?: string;
@@ -17,7 +17,7 @@ export class Hierarchy extends TM1Object {
         dimensionName: string,
         elements?: Element[],
         elementAttributes?: ElementAttribute[],
-        edges?: Map<string, number>,
+        edges?: Map<string, Map<string, number>>,
         subsets?: string[],
         structure?: number,
         defaultMember?: string
@@ -25,13 +25,13 @@ export class Hierarchy extends TM1Object {
         super();
         this._name = name;
         this._dimensionName = dimensionName;
-        
+
         if (elements) {
             for (const elem of elements) {
                 this._elements.set(elem.name.toLowerCase(), elem);
             }
         }
-        
+
         this._elementAttributes = elementAttributes ? [...elementAttributes] : [];
         this._edges = edges ? new Map(edges) : new Map();
         this._subsets = subsets ? [...subsets] : [];
@@ -40,17 +40,21 @@ export class Hierarchy extends TM1Object {
     }
 
     public static fromDict(hierarchyAsDict: any, dimensionName: string): Hierarchy {
-        const elements = hierarchyAsDict.Elements ? 
+        const elements = hierarchyAsDict.Elements ?
             hierarchyAsDict.Elements.map((e: any) => Element.fromDict(e)) : [];
-        
-        const elementAttributes = hierarchyAsDict.ElementAttributes ? 
+
+        const elementAttributes = hierarchyAsDict.ElementAttributes ?
             hierarchyAsDict.ElementAttributes.map((ea: any) => ElementAttribute.fromDict(ea)) : [];
-        
-        const edges = new Map<string, number>();
+
+        const edges = new Map<string, Map<string, number>>();
         if (hierarchyAsDict.Edges) {
             for (const edge of hierarchyAsDict.Edges) {
-                const key = `${edge.ParentName}:${edge.ComponentName}`;
-                edges.set(key, edge.Weight || 1);
+                const parentName: string = edge.ParentName;
+                const componentName: string = edge.ComponentName;
+                if (!edges.has(parentName)) {
+                    edges.set(parentName, new Map());
+                }
+                edges.get(parentName)!.set(componentName, edge.Weight || 1);
             }
         }
 
@@ -98,7 +102,7 @@ export class Hierarchy extends TM1Object {
         return this._elementAttributes;
     }
 
-    public get edges(): Map<string, number> {
+    public get edges(): Map<string, Map<string, number>> {
         return this._edges;
     }
 
@@ -150,16 +154,17 @@ export class Hierarchy extends TM1Object {
 
     private constructEdges(): any[] {
         const edges: any[] = [];
-        
-        for (const [key, weight] of this._edges) {
-            const [parentName, componentName] = key.split(':');
-            edges.push({
-                ParentName: parentName,
-                ComponentName: componentName,
-                Weight: weight
-            });
+
+        for (const [parentName, children] of this._edges) {
+            for (const [componentName, weight] of children) {
+                edges.push({
+                    ParentName: parentName,
+                    ComponentName: componentName,
+                    Weight: weight
+                });
+            }
         }
-        
+
         return edges;
     }
 
@@ -180,18 +185,26 @@ export class Hierarchy extends TM1Object {
     }
 
     public addEdge(parentName: string, componentName: string, weight: number = 1): void {
-        const key = `${parentName}:${componentName}`;
-        this._edges.set(key, weight);
+        if (!this._edges.has(parentName)) {
+            this._edges.set(parentName, new Map());
+        }
+        this._edges.get(parentName)!.set(componentName, weight);
     }
 
     public removeEdge(parentName: string, componentName: string): boolean {
-        const key = `${parentName}:${componentName}`;
-        return this._edges.delete(key);
+        const children = this._edges.get(parentName);
+        if (children) {
+            const result = children.delete(componentName);
+            if (children.size === 0) {
+                this._edges.delete(parentName);
+            }
+            return result;
+        }
+        return false;
     }
 
     public getEdgeWeight(parentName: string, componentName: string): number | undefined {
-        const key = `${parentName}:${componentName}`;
-        return this._edges.get(key);
+        return this._edges.get(parentName)?.get(componentName);
     }
 
     public addElementAttribute(elementAttribute: ElementAttribute): void {
@@ -199,9 +212,9 @@ export class Hierarchy extends TM1Object {
     }
 
     public removeElementAttribute(attributeName: string): boolean {
-        const index = this._elementAttributes.findIndex(ea => 
+        const index = this._elementAttributes.findIndex(ea =>
             ea.name.toLowerCase() === attributeName.toLowerCase());
-        
+
         if (index !== -1) {
             this._elementAttributes.splice(index, 1);
             return true;
@@ -210,13 +223,161 @@ export class Hierarchy extends TM1Object {
     }
 
     public getElementAttribute(attributeName: string): ElementAttribute | undefined {
-        return this._elementAttributes.find(ea => 
+        return this._elementAttributes.find(ea =>
             ea.name.toLowerCase() === attributeName.toLowerCase());
     }
 
     public hasElementAttribute(attributeName: string): boolean {
-        return this._elementAttributes.some(ea => 
+        return this._elementAttributes.some(ea =>
             ea.name.toLowerCase() === attributeName.toLowerCase());
+    }
+
+    private normalize(name: string): string {
+        return name.toLowerCase().replace(/\s+/g, '');
+    }
+
+    private getChildrenOf(elementName: string): Map<string, number> | undefined {
+        const normalized = this.normalize(elementName);
+        for (const [parent, children] of this._edges) {
+            if (this.normalize(parent) === normalized) {
+                return children;
+            }
+        }
+        return undefined;
+    }
+
+    public getAncestors(elementName: string, recursive: boolean = false): string[] {
+        const normalizedTarget = this.normalize(elementName);
+        const directParents: string[] = [];
+
+        for (const [parent, children] of this._edges) {
+            for (const child of children.keys()) {
+                if (this.normalize(child) === normalizedTarget) {
+                    directParents.push(parent);
+                    break;
+                }
+            }
+        }
+
+        if (!recursive) {
+            return directParents;
+        }
+
+        const result = new Set<string>(directParents);
+        const queue = [...directParents];
+        while (queue.length > 0) {
+            const current = queue.shift()!;
+            for (const ancestor of this.getAncestors(current, false)) {
+                if (!result.has(ancestor)) {
+                    result.add(ancestor);
+                    queue.push(ancestor);
+                }
+            }
+        }
+        return Array.from(result);
+    }
+
+    public getDescendants(elementName: string, recursive: boolean = false, leavesOnly: boolean = false): string[] {
+        const normalizedTarget = this.normalize(elementName);
+        const directChildren: string[] = [];
+
+        for (const [parent, children] of this._edges) {
+            if (this.normalize(parent) === normalizedTarget) {
+                directChildren.push(...children.keys());
+            }
+        }
+
+        let result: string[];
+        if (recursive) {
+            const seen = new Set<string>(directChildren);
+            const queue = [...directChildren];
+            while (queue.length > 0) {
+                const current = queue.shift()!;
+                const grandChildren = this.getChildrenOf(current);
+                if (grandChildren) {
+                    for (const child of grandChildren.keys()) {
+                        if (!seen.has(child)) {
+                            seen.add(child);
+                            queue.push(child);
+                        }
+                    }
+                }
+            }
+            result = Array.from(seen);
+        } else {
+            result = directChildren;
+        }
+
+        if (leavesOnly) {
+            const allParents = new Set(
+                Array.from(this._edges.keys()).map(p => this.normalize(p))
+            );
+            return result.filter(d => !allParents.has(this.normalize(d)));
+        }
+        return result;
+    }
+
+    public getDescendantEdges(elementName: string, recursive: boolean = false): Map<string, Map<string, number>> {
+        const descendants = this.getDescendants(elementName, recursive);
+        const result = new Map<string, Map<string, number>>();
+        for (const descendant of descendants) {
+            const children = this.getChildrenOf(descendant);
+            if (children) {
+                result.set(descendant, new Map(children));
+            }
+        }
+        return result;
+    }
+
+    public getAncestorEdges(elementName: string, recursive: boolean = false): Map<string, Map<string, number>> {
+        const ancestors = this.getAncestors(elementName, recursive);
+        const result = new Map<string, Map<string, number>>();
+        for (const ancestor of ancestors) {
+            const children = this.getChildrenOf(ancestor);
+            if (children) {
+                result.set(ancestor, new Map(children));
+            }
+        }
+        return result;
+    }
+
+    public replaceElement(oldName: string, newName: string): void {
+        const normalizedOld = this.normalize(oldName);
+
+        // Rename in _elements
+        const oldKey = Array.from(this._elements.keys()).find(
+            k => this.normalize(k) === normalizedOld
+        );
+        if (oldKey) {
+            const element = this._elements.get(oldKey)!;
+            element.name = newName;
+            this._elements.delete(oldKey);
+            this._elements.set(newName.toLowerCase(), element);
+        }
+
+        // Rebuild edges replacing all occurrences of oldName
+        const newEdges = new Map<string, Map<string, number>>();
+        for (const [parent, children] of this._edges) {
+            const newParent = this.normalize(parent) === normalizedOld ? newName : parent;
+            const newChildren = new Map<string, number>();
+            for (const [child, weight] of children) {
+                const newChild = this.normalize(child) === normalizedOld ? newName : child;
+                newChildren.set(newChild, weight);
+            }
+            newEdges.set(newParent, newChildren);
+        }
+        this._edges = newEdges;
+    }
+
+    public addComponent(parent: string, component: string, weight: number = 1): void {
+        const parentElement = this.getElement(parent);
+        if (!parentElement) {
+            throw new Error(`Parent element '${parent}' not found in hierarchy`);
+        }
+        if (parentElement.elementType === ElementType.STRING) {
+            throw new Error(`Parent element '${parent}' is of type String and cannot have components`);
+        }
+        this.addEdge(parent, component, weight);
     }
 
     public *[Symbol.iterator](): Iterator<Element> {
