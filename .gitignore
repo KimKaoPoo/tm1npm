@@ -217,3 +217,4 @@ build/Release
 .internal-docs/
 
 .claude/
+CLAUDE.md
