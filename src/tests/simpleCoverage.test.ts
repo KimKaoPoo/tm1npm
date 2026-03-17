@@ -153,17 +153,19 @@ describe('Simple Coverage Tests', () => {
 
         test('ProcessService debug operations should work', async () => {
             const mockRest = {
-                post: jest.fn().mockResolvedValue(mockResponse)
+                post: jest.fn().mockResolvedValue(mockResponse),
+                get: jest.fn().mockResolvedValue(mockResponse)
             } as any;
 
             const processService = new ProcessService(mockRest);
-            
-            await processService.debugStepOver('TestProcess');
-            await processService.debugStepIn('TestProcess');
-            await processService.debugStepOut('TestProcess');
-            await processService.debugContinue('TestProcess');
-            
+
+            await processService.debugStepOver('debug-ctx-1');
+            await processService.debugStepIn('debug-ctx-1');
+            await processService.debugStepOut('debug-ctx-1');
+            await processService.debugContinue('debug-ctx-1');
+
             expect(mockRest.post).toHaveBeenCalledTimes(4);
+            expect(mockRest.get).toHaveBeenCalledTimes(4);
         });
 
         test('ProcessService boolean expression evaluation should work', async () => {
@@ -210,12 +212,13 @@ describe('Simple Coverage Tests', () => {
 
         test('should handle timeout errors', async () => {
             const mockRest = {
-                post: jest.fn().mockRejectedValue(new Error('Timeout'))
+                post: jest.fn().mockRejectedValue(new Error('Timeout')),
+                get: jest.fn()
             } as any;
 
             const processService = new ProcessService(mockRest);
-            
-            await expect(processService.debugStepOver('TestProcess'))
+
+            await expect(processService.debugStepOver('debug-ctx-1'))
                 .rejects.toThrow('Timeout');
         });
     });

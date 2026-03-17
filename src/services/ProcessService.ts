@@ -1,4 +1,5 @@
 import { AxiosResponse } from 'axios';
+import { v4 as uuidv4 } from 'uuid';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { Process } from '../objects/Process';
@@ -92,42 +93,25 @@ export class ProcessService extends ObjectService {
     }
 
     public async searchStringInCode(searchString: string, skipControlProcesses: boolean = false): Promise<string[]> {
-        /** Search for a string in all process code
+        /** Search for a string in all process code (server-side OData filter)
          *
          * :param search_string: string to search for
          * :param skip_control_processes: bool, True to exclude processes that begin with "}" or "{"
          * :return: List of process names that contain the search string
          */
-        const allProcesses = await this.getAll(skipControlProcesses);
-        const matchingProcesses: string[] = [];
+        const normalized = searchString.toLowerCase().replace(/ /g, '');
+        const fields = ['PrologProcedure', 'MetadataProcedure', 'DataProcedure', 'EpilogProcedure'];
+        const codeFilter = fields
+            .map(f => `contains(tolower(replace(${f},' ','')), '${normalized}')`)
+            .join(' or ');
 
-        for (const process of allProcesses) {
-            if (this.processContainsString(process, searchString)) {
-                matchingProcesses.push(process.name);
-            }
+        let url = `/Processes?$select=Name&$filter=${codeFilter}`;
+        if (skipControlProcesses) {
+            url += " and startswith(Name, '}') eq false and startswith(Name, '{') eq false";
         }
 
-        return matchingProcesses;
-    }
-
-    private processContainsString(process: Process, searchString: string): boolean {
-        /** Check if a process contains a specific string in its code
-         */
-        const codeProperties = [
-            'prologProcedure',
-            'metadataProcedure', 
-            'dataProcedure',
-            'epilogProcedure'
-        ];
-
-        for (const property of codeProperties) {
-            const code = (process as any)[property];
-            if (code && code.toLowerCase().includes(searchString.toLowerCase())) {
-                return true;
-            }
-        }
-
-        return false;
+        const response = await this.rest.get(url);
+        return response.data.value.map((p: any) => p.Name);
     }
 
     public async create(process: Process): Promise<AxiosResponse> {
@@ -409,7 +393,7 @@ export class ProcessService extends ObjectService {
         linesEpilog?: string[],
         parameters?: Record<string, any>
     ): Promise<any> {
-        /** Execute TI code directly on TM1 Server with separate sections
+        /** Execute TI code by creating a temporary process, executing it, then deleting it
          *
          * :param lines_prolog: TI code for prolog section
          * :param lines_metadata: TI code for metadata section
@@ -418,31 +402,25 @@ export class ProcessService extends ObjectService {
          * :param parameters: dictionary of parameters
          * :return: execution result
          */
-        const url = "/ExecuteProcessWithReturn";
-        
-        const body: any = {};
-        
-        if (linesProlog && linesProlog.length > 0) {
-            body.PrologProcedure = linesProlog.join('\n');
+        const name = `}TM1py${uuidv4()}`;
+        const p = new Process(
+            name,
+            false,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            Process.AUTO_GENERATED_STATEMENTS + (linesProlog || []).join('\r\n'),
+            Process.AUTO_GENERATED_STATEMENTS + (linesMetadata || []).join('\r\n'),
+            Process.AUTO_GENERATED_STATEMENTS + (linesData || []).join('\r\n'),
+            Process.AUTO_GENERATED_STATEMENTS + (linesEpilog || []).join('\r\n')
+        );
+        await this.create(p);
+        try {
+            return await this.executeProcessWithReturn(name, parameters);
+        } finally {
+            await this.delete(name);
         }
-        if (linesMetadata && linesMetadata.length > 0) {
-            body.MetadataProcedure = linesMetadata.join('\n');
-        }
-        if (linesData && linesData.length > 0) {
-            body.DataProcedure = linesData.join('\n');
-        }
-        if (linesEpilog && linesEpilog.length > 0) {
-            body.EpilogProcedure = linesEpilog.join('\n');
-        }
-        
-        if (parameters && Object.keys(parameters).length > 0) {
-            body.Parameters = Object.entries(parameters).map(([name, value]) => ({
-                Name: name,
-                Value: value
-            }));
-        }
-
-        return await this.rest.post(url, JSON.stringify(body));
     }
 
     public async compileSingleStatement(statement: string): Promise<any> {
@@ -465,25 +443,33 @@ export class ProcessService extends ObjectService {
          * :param file_name: name of the error log file
          * :return: file content as string
          */
-        const url = formatUrl("/Contents('Logs/{}')", fileName);
+        const url = formatUrl("/ErrorLogFiles('{}')/Content", fileName);
         const response = await this.rest.get(url);
         return response.data;
     }
 
-    public async getErrorLogFilenames(top?: number): Promise<string[]> {
+    public async getErrorLogFilenames(processName?: string, top?: number, descending: boolean = false): Promise<string[]> {
         /** Get list of error log file names
          *
+         * :param process_name: optional process name to filter filenames
          * :param top: optional limit on number of files to return
+         * :param descending: if true, order by LastModified descending (most recent first)
          * :return: list of error log file names
          */
-        let url = "/Contents('Logs')?$select=Name&$filter=endswith(Name,'.log')";
-        
+        let url = "/ErrorLogFiles?$select=Filename";
+
+        if (processName) {
+            url += `&$filter=contains(tolower(Filename), '${processName.toLowerCase()}')`;
+        }
         if (top) {
             url += `&$top=${top}`;
         }
+        if (descending) {
+            url += `&$orderby=LastModified desc`;
+        }
 
         const response = await this.rest.get(url);
-        return response.data.value.map((file: any) => file.Name);
+        return response.data.value.map((file: any) => file.Filename);
     }
 
     public async deleteErrorLogFile(fileName: string): Promise<AxiosResponse> {
@@ -563,53 +549,57 @@ export class ProcessService extends ObjectService {
     /**
      * Step over in process debugging
      */
-    public async debugStepOver(processName: string): Promise<void> {
+    public async debugStepOver(debugId: string): Promise<any> {
         /** Step over the current line during process debugging
          *
-         * :param process_name: name of the process being debugged
-         * :return: void
+         * :param debug_id: ID of the debug context
+         * :return: debug context state
          */
-        const url = formatUrl("/Processes('{}')/tm1.DebugStepOver", processName);
-        await this.rest.post(url, {});
+        await this.rest.post(formatUrl("/ProcessDebugContexts('{}')/tm1.StepOver", debugId), '');
+        const response = await this.rest.get(formatUrl("/ProcessDebugContexts('{}')?$expand=*", debugId));
+        return response.data;
     }
 
     /**
      * Step into in process debugging
      */
-    public async debugStepIn(processName: string): Promise<void> {
+    public async debugStepIn(debugId: string): Promise<any> {
         /** Step into the current line during process debugging
          *
-         * :param process_name: name of the process being debugged
-         * :return: void
+         * :param debug_id: ID of the debug context
+         * :return: debug context state
          */
-        const url = formatUrl("/Processes('{}')/tm1.DebugStepIn", processName);
-        await this.rest.post(url, {});
+        await this.rest.post(formatUrl("/ProcessDebugContexts('{}')/tm1.StepIn", debugId), '');
+        const response = await this.rest.get(formatUrl("/ProcessDebugContexts('{}')?$expand=*", debugId));
+        return response.data;
     }
 
     /**
      * Step out in process debugging
      */
-    public async debugStepOut(processName: string): Promise<void> {
+    public async debugStepOut(debugId: string): Promise<any> {
         /** Step out of the current procedure during process debugging
          *
-         * :param process_name: name of the process being debugged
-         * :return: void
+         * :param debug_id: ID of the debug context
+         * :return: debug context state
          */
-        const url = formatUrl("/Processes('{}')/tm1.DebugStepOut", processName);
-        await this.rest.post(url, {});
+        await this.rest.post(formatUrl("/ProcessDebugContexts('{}')/tm1.StepOut", debugId), '');
+        const response = await this.rest.get(formatUrl("/ProcessDebugContexts('{}')?$expand=*", debugId));
+        return response.data;
     }
 
     /**
      * Continue execution in process debugging
      */
-    public async debugContinue(processName: string): Promise<void> {
+    public async debugContinue(debugId: string): Promise<any> {
         /** Continue execution during process debugging
          *
-         * :param process_name: name of the process being debugged
-         * :return: void
+         * :param debug_id: ID of the debug context
+         * :return: debug context state
          */
-        const url = formatUrl("/Processes('{}')/tm1.DebugContinue", processName);
-        await this.rest.post(url, {});
+        await this.rest.post(formatUrl("/ProcessDebugContexts('{}')/tm1.Continue", debugId), '');
+        const response = await this.rest.get(formatUrl("/ProcessDebugContexts('{}')?$expand=*", debugId));
+        return response.data;
     }
 
     /**

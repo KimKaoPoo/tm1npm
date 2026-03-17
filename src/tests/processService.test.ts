@@ -340,70 +340,158 @@ describe('ProcessService Tests', () => {
     });
 
     describe('Process Search Operations', () => {
-        test('should handle searchStringInCode functionality', async () => {
+        test('should use server-side OData filter in searchStringInCode', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse({
-                value: [
-                    { 
-                        Name: 'ProcessWithCode', 
-                        PrologProcedure: 'sMessage = "Hello World";',
-                        HasSecurityAccess: true 
-                    },
-                    { 
-                        Name: 'ProcessWithoutCode', 
-                        PrologProcedure: 'nValue = 123;',
-                        HasSecurityAccess: true 
-                    }
-                ]
+                value: [{ Name: 'ProcessWithHello' }]
             }));
 
             const results = await processService.searchStringInCode('Hello');
-            
+
             expect(Array.isArray(results)).toBe(true);
-            expect(results.length).toBe(1);
-            expect(results[0]).toBe('ProcessWithCode'); // Returns process name string, not object
-            
-            console.log('✅ Search string in code functionality working');
+            expect(results).toEqual(['ProcessWithHello']);
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                expect.stringContaining("contains(tolower(replace(PrologProcedure,' ','')), 'hello')")
+            );
+
+            console.log('✅ searchStringInCode uses server-side OData filter');
+        });
+
+        test('should include skipControlProcesses filter in searchStringInCode', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await processService.searchStringInCode('test', true);
+
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                expect.stringContaining("startswith(Name, '}') eq false")
+            );
+
+            console.log('✅ searchStringInCode includes skipControlProcesses filter');
         });
 
         test('should handle empty search results gracefully', async () => {
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                value: [
-                    { 
-                        Name: 'Process1', 
-                        PrologProcedure: 'nValue = 123;',
-                        HasSecurityAccess: true 
-                    }
-                ]
-            }));
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
 
             const results = await processService.searchStringInCode('NonExistentString');
-            
+
             expect(Array.isArray(results)).toBe(true);
             expect(results.length).toBe(0);
-            
+
             console.log('✅ Empty search results handled gracefully');
         });
     });
 
-    describe('Process Debug Operations', () => {
-        test('should handle debug breakpoint operations for existing processes', async () => {
+    describe('Error Log Operations', () => {
+        test('should get error log file content from correct endpoint', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse('log content here'));
+
+            const result = await processService.getErrorLogFileContent('Process1_20250115.log');
+
+            expect(result).toBe('log content here');
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                "/ErrorLogFiles('Process1_20250115.log')/Content"
+            );
+
+            console.log('✅ getErrorLogFileContent uses correct endpoint');
+        });
+
+        test('should get error log filenames from correct endpoint', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse({
-                value: [{ Name: 'DebugProcess' }]
+                value: [
+                    { Filename: 'Process1_20250115.log' },
+                    { Filename: 'Process2_20250114.log' }
+                ]
             }));
 
-            // Mock debug operations (these would typically return specific debug info)
-            mockRestService.post.mockResolvedValue(createMockResponse({
-                DebugInfo: 'Breakpoint set successfully'
-            }));
+            const result = await processService.getErrorLogFilenames();
 
-            const processNames = await processService.getAllNames();
-            expect(processNames).toContain('DebugProcess');
-            
-            // In a real implementation, this would set debug breakpoints
-            // For now, we just verify the mock interaction
-            expect(mockRestService.get).toHaveBeenCalled();
-            
-            console.log('✅ Debug operations handled for existing processes');
+            expect(result).toEqual(['Process1_20250115.log', 'Process2_20250114.log']);
+            expect(mockRestService.get).toHaveBeenCalledWith('/ErrorLogFiles?$select=Filename');
+
+            console.log('✅ getErrorLogFilenames uses correct endpoint');
+        });
+
+        test('should filter error log filenames by processName', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await processService.getErrorLogFilenames('MyProcess');
+
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), 'myprocess')"
+            );
+
+            console.log('✅ getErrorLogFilenames filters by processName');
+        });
+
+        test('should apply descending order in getErrorLogFilenames', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await processService.getErrorLogFilenames(undefined, undefined, true);
+
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                '/ErrorLogFiles?$select=Filename&$orderby=LastModified desc'
+            );
+
+            console.log('✅ getErrorLogFilenames supports descending order');
+        });
+    });
+
+    describe('Process Debug Step Operations', () => {
+        const mockDebugContext = { ID: 'debug-ctx-1', Status: 'Suspended', CurrentLine: 5 };
+
+        test('debugStepOver should POST to ProcessDebugContexts and return context', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            mockRestService.get.mockResolvedValue(createMockResponse(mockDebugContext));
+
+            const result = await processService.debugStepOver('debug-ctx-1');
+
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/ProcessDebugContexts('debug-ctx-1')/tm1.StepOver", ''
+            );
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                "/ProcessDebugContexts('debug-ctx-1')?$expand=*"
+            );
+            expect(result).toEqual(mockDebugContext);
+
+            console.log('✅ debugStepOver uses correct endpoint and returns context');
+        });
+
+        test('debugStepIn should POST to ProcessDebugContexts and return context', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            mockRestService.get.mockResolvedValue(createMockResponse(mockDebugContext));
+
+            await processService.debugStepIn('debug-ctx-1');
+
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/ProcessDebugContexts('debug-ctx-1')/tm1.StepIn", ''
+            );
+
+            console.log('✅ debugStepIn uses correct endpoint');
+        });
+
+        test('debugStepOut should POST to ProcessDebugContexts and return context', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            mockRestService.get.mockResolvedValue(createMockResponse(mockDebugContext));
+
+            await processService.debugStepOut('debug-ctx-1');
+
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/ProcessDebugContexts('debug-ctx-1')/tm1.StepOut", ''
+            );
+
+            console.log('✅ debugStepOut uses correct endpoint');
+        });
+
+        test('debugContinue should POST to ProcessDebugContexts and return context', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            mockRestService.get.mockResolvedValue(createMockResponse(mockDebugContext));
+
+            await processService.debugContinue('debug-ctx-1');
+
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/ProcessDebugContexts('debug-ctx-1')/tm1.Continue", ''
+            );
+
+            console.log('✅ debugContinue uses correct endpoint');
         });
     });
 });
