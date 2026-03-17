@@ -470,7 +470,7 @@ export class ProcessService extends ObjectService {
          */
         if (processName) {
             if (!(await this.exists(processName))) {
-                throw new Error(`'${processName}' is not a valid process`);
+                throw new TM1Exception(`'${processName}' is not a valid process`);
             }
         }
 
