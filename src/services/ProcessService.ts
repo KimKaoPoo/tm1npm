@@ -398,18 +398,14 @@ export class ProcessService extends ObjectService {
     }
 
     public async executeTiCode(
-        linesProlog?: string[],
-        linesMetadata?: string[],
-        linesData?: string[],
+        linesProlog: string[],
         linesEpilog?: string[],
         parameters?: Record<string, any>
     ): Promise<any> {
-        /** Execute TI code by creating a temporary process, executing it, then deleting it
+        /** Execute lines of code on the TM1 Server
          *
-         * :param lines_prolog: TI code for prolog section
-         * :param lines_metadata: TI code for metadata section
-         * :param lines_data: TI code for data section
-         * :param lines_epilog: TI code for epilog section
+         * :param lines_prolog: list - where each element is a valid statement of TI code.
+         * :param lines_epilog: list - where each element is a valid statement of TI code.
          * :param parameters: dictionary of parameters
          * :return: execution result
          */
@@ -421,14 +417,14 @@ export class ProcessService extends ObjectService {
             undefined,
             undefined,
             undefined,
-            Process.AUTO_GENERATED_STATEMENTS + (linesProlog || []).join('\r\n'),
-            Process.AUTO_GENERATED_STATEMENTS + (linesMetadata || []).join('\r\n'),
-            Process.AUTO_GENERATED_STATEMENTS + (linesData || []).join('\r\n'),
-            Process.AUTO_GENERATED_STATEMENTS + (linesEpilog || []).join('\r\n')
+            Process.AUTO_GENERATED_STATEMENTS + linesProlog.join('\r\n'),
+            '',
+            '',
+            linesEpilog ? Process.AUTO_GENERATED_STATEMENTS + linesEpilog.join('\r\n') : ''
         );
         await this.create(p);
         try {
-            return await this.executeProcessWithReturn(name, parameters);
+            return await this.execute(name, parameters);
         } finally {
             try {
                 await this.delete(name);
@@ -464,24 +460,31 @@ export class ProcessService extends ObjectService {
         return response.data;
     }
 
-    public async getErrorLogFilenames(processName?: string, top?: number, descending: boolean = false): Promise<string[]> {
-        /** Get list of error log file names
+    public async getErrorLogFilenames(processName?: string, top: number = 0, descending: boolean = false): Promise<string[]> {
+        /** Get error log filenames for specified TI process
          *
-         * :param process_name: optional process name to filter filenames
-         * :param top: optional limit on number of files to return
-         * :param descending: if true, order by LastModified descending (most recent first)
-         * :return: list of error log file names
+         * :param process_name: valid TI name, leave blank to return all error log filenames
+         * :param top: top n filenames
+         * :param descending: default sort is ascending, descending=True would have most recent at the top of list
+         * :return: list of filenames
          */
-        let url = "/ErrorLogFiles?$select=Filename";
-
         if (processName) {
-            url += `&$filter=contains(tolower(Filename), '${processName.toLowerCase().replace(/'/g, "''")}')`;
+            if (!(await this.exists(processName))) {
+                throw new Error(`'${processName}' is not a valid process`);
+            }
         }
-        if (top !== undefined && top !== null) {
+
+        const searchString = processName ? processName.replace(/'/g, "''") : '';
+
+        let url = "/ErrorLogFiles?$select=Filename";
+        if (searchString) {
+            url += `&$filter=contains(tolower(Filename), tolower('${searchString}'))`;
+        }
+        if (top > 0) {
             url += `&$top=${top}`;
         }
         if (descending) {
-            url += `&$orderby=LastModified desc`;
+            url += `&$orderby=Filename desc`;
         }
 
         const response = await this.rest.get(url);

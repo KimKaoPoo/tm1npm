@@ -336,17 +336,17 @@ describe('ProcessService - Comprehensive Tests', () => {
     describe('TI Code Execution Operations', () => {
         test('should execute TI code via create-execute-delete temp process', async () => {
             jest.spyOn(processService, 'create').mockResolvedValue(mockResponse({}));
-            jest.spyOn(processService, 'executeProcessWithReturn').mockResolvedValue({ ProcessExecuteStatusCode: 'CompletedSuccessfully' });
+            jest.spyOn(processService, 'execute').mockResolvedValue(mockResponse({}));
             jest.spyOn(processService, 'delete').mockResolvedValue(mockResponse({}));
 
             const prologLines = ['sMessage = "Starting";', 'WriteToMessageLog(INFO, sMessage);'];
             const epilogLines = ['sMessage = "Completed";'];
 
-            const result = await processService.executeTiCode(prologLines, undefined, undefined, epilogLines);
+            const result = await processService.executeTiCode(prologLines, epilogLines);
 
             expect(result).toBeDefined();
             expect(processService.create).toHaveBeenCalledTimes(1);
-            expect(processService.executeProcessWithReturn).toHaveBeenCalledWith(
+            expect(processService.execute).toHaveBeenCalledWith(
                 expect.stringMatching(/^\}TM1py.+/),
                 undefined
             );
@@ -355,7 +355,7 @@ describe('ProcessService - Comprehensive Tests', () => {
 
         test('should delete temp process even when execution fails', async () => {
             jest.spyOn(processService, 'create').mockResolvedValue(mockResponse({}));
-            jest.spyOn(processService, 'executeProcessWithReturn').mockRejectedValue(new Error('Execution failed'));
+            jest.spyOn(processService, 'execute').mockRejectedValue(new Error('Execution failed'));
             jest.spyOn(processService, 'delete').mockResolvedValue(mockResponse({}));
 
             await expect(processService.executeTiCode(['sTest = "fail";'])).rejects.toThrow('Execution failed');
@@ -365,7 +365,7 @@ describe('ProcessService - Comprehensive Tests', () => {
 
         test('should still delete temp process when delete itself fails', async () => {
             jest.spyOn(processService, 'create').mockResolvedValue(mockResponse({}));
-            jest.spyOn(processService, 'executeProcessWithReturn').mockRejectedValue(new Error('Execution failed'));
+            jest.spyOn(processService, 'execute').mockRejectedValue(new Error('Execution failed'));
             jest.spyOn(processService, 'delete').mockRejectedValue(new Error('Delete failed'));
 
             // The original execution error should surface, not the delete error
@@ -374,13 +374,13 @@ describe('ProcessService - Comprehensive Tests', () => {
 
         test('should pass parameters to executeTiCode execution', async () => {
             jest.spyOn(processService, 'create').mockResolvedValue(mockResponse({}));
-            jest.spyOn(processService, 'executeProcessWithReturn').mockResolvedValue({ ProcessExecuteStatusCode: 'CompletedSuccessfully' });
+            jest.spyOn(processService, 'execute').mockResolvedValue(mockResponse({}));
             jest.spyOn(processService, 'delete').mockResolvedValue(mockResponse({}));
 
             const parameters = { pMessage: 'Test Message', pValue: 123 };
-            await processService.executeTiCode(['WriteToMessageLog(INFO, pMessage);'], undefined, undefined, undefined, parameters);
+            await processService.executeTiCode(['WriteToMessageLog(INFO, pMessage);'], undefined, parameters);
 
-            expect(processService.executeProcessWithReturn).toHaveBeenCalledWith(
+            expect(processService.execute).toHaveBeenCalledWith(
                 expect.stringMatching(/^\}TM1py.+/),
                 parameters
             );
@@ -586,6 +586,7 @@ describe('ProcessService - Comprehensive Tests', () => {
         });
 
         test('should filter error log filenames by processName', async () => {
+            jest.spyOn(processService, 'exists').mockResolvedValue(true);
             const filesData = {
                 value: [{ Filename: 'Process1_20250115.log' }, { Filename: 'Process1_20250114.log' }]
             };
@@ -595,17 +596,24 @@ describe('ProcessService - Comprehensive Tests', () => {
 
             expect(result).toEqual(['Process1_20250115.log', 'Process1_20250114.log']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), 'process1')&$top=2"
+                "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), tolower('Process1'))&$top=2"
             );
+        });
+
+        test('should throw error for invalid processName in getErrorLogFilenames', async () => {
+            jest.spyOn(processService, 'exists').mockResolvedValue(false);
+
+            await expect(processService.getErrorLogFilenames('NonExistent'))
+                .rejects.toThrow("'NonExistent' is not a valid process");
         });
 
         test('should apply descending order in getErrorLogFilenames', async () => {
             mockRestService.get.mockResolvedValue(mockResponse({ value: [] }));
 
-            await processService.getErrorLogFilenames(undefined, undefined, true);
+            await processService.getErrorLogFilenames(undefined, 0, true);
 
             expect(mockRestService.get).toHaveBeenCalledWith(
-                '/ErrorLogFiles?$select=Filename&$orderby=LastModified desc'
+                '/ErrorLogFiles?$select=Filename&$orderby=Filename desc'
             );
         });
 

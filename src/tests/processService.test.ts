@@ -411,24 +411,34 @@ describe('ProcessService Tests', () => {
         });
 
         test('should filter error log filenames by processName', async () => {
+            jest.spyOn(processService, 'exists').mockResolvedValue(true);
             mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
 
             await processService.getErrorLogFilenames('MyProcess');
 
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), 'myprocess')"
+                "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), tolower('MyProcess'))"
             );
 
             console.log('✅ getErrorLogFilenames filters by processName');
         });
 
+        test('should throw error for invalid processName in getErrorLogFilenames', async () => {
+            jest.spyOn(processService, 'exists').mockResolvedValue(false);
+
+            await expect(processService.getErrorLogFilenames('BadProcess'))
+                .rejects.toThrow("'BadProcess' is not a valid process");
+
+            console.log('✅ getErrorLogFilenames validates process existence');
+        });
+
         test('should apply descending order in getErrorLogFilenames', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
 
-            await processService.getErrorLogFilenames(undefined, undefined, true);
+            await processService.getErrorLogFilenames(undefined, 0, true);
 
             expect(mockRestService.get).toHaveBeenCalledWith(
-                '/ErrorLogFiles?$select=Filename&$orderby=LastModified desc'
+                '/ErrorLogFiles?$select=Filename&$orderby=Filename desc'
             );
 
             console.log('✅ getErrorLogFilenames supports descending order');
@@ -509,13 +519,14 @@ describe('ProcessService Tests', () => {
         });
 
         test('getErrorLogFilenames should escape single quotes in processName', async () => {
+            jest.spyOn(processService, 'exists').mockResolvedValue(true);
             mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
 
             await processService.getErrorLogFilenames("Process'Name");
 
             const url = mockRestService.get.mock.calls[0][0] as string;
-            expect(url).toContain("process''name");
-            expect(url).not.toMatch(/process'name/);
+            expect(url).toContain("Process''Name");
+            expect(url).not.toMatch(/Process'Name/);
 
             console.log('✅ getErrorLogFilenames escapes single quotes');
         });
