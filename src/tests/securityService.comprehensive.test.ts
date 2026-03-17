@@ -300,10 +300,28 @@ describe('SecurityService - Comprehensive Tests', () => {
             );
         });
 
+        test('should get user names from group', async () => {
+            mockRestService.get.mockResolvedValueOnce(mockResponse({
+                value: [{ Name: 'PowerUser' }]
+            }));
+            mockRestService.get.mockResolvedValueOnce(mockResponse({
+                Users: [
+                    { Name: 'admin', FriendlyName: 'admin', Type: '0', Enabled: true, Groups: [{ Name: 'ADMIN' }] },
+                    { Name: 'poweruser1', FriendlyName: 'poweruser1', Type: '0', Enabled: true, Groups: [{ Name: 'PowerUser' }] }
+                ]
+            }));
+            const mockUserFromDict = jest.fn().mockImplementation((d: any) => ({ name: d.Name }));
+            (User as any).fromDict = mockUserFromDict;
+
+            const result = await securityService.getUserNamesFromGroup('PowerUser');
+
+            expect(result).toEqual(['admin', 'poweruser1']);
+        });
+
         test('should get groups for user', async () => {
             // Mock determineActualUserName call
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ 
-                value: [{ Name: 'testuser' }] 
+            mockRestService.get.mockResolvedValueOnce(mockResponse({
+                value: [{ Name: 'testuser' }]
             }));
             // Mock getGroups call
             const groupsData = {
@@ -478,10 +496,14 @@ describe('SecurityService - Comprehensive Tests', () => {
 
     describe('Edge Cases and Special Scenarios', () => {
         test('should handle empty results gracefully', async () => {
-            mockRestService.get.mockResolvedValue(mockResponse({ value: [] }));
-
-            // Mock determineActualGroupName to return the input name
+            // Mock determineActualGroupName to bypass name resolution
             jest.spyOn(securityService as any, 'determineActualGroupName').mockResolvedValue('EmptyGroup');
+
+            // getUserNames and getGroupNames use collection endpoints returning { value: [] }
+            mockRestService.get.mockResolvedValueOnce(mockResponse({ value: [] }));
+            mockRestService.get.mockResolvedValueOnce(mockResponse({ value: [] }));
+            // getUsersFromGroup uses expand endpoint returning { Users: [] }
+            mockRestService.get.mockResolvedValueOnce(mockResponse({ Users: [] }));
 
             const userNames = await securityService.getUserNames();
             const groupNames = await securityService.getGroupNames();
@@ -514,19 +536,19 @@ describe('SecurityService - Comprehensive Tests', () => {
         });
 
         test('should handle case sensitivity in group operations', async () => {
-            // Mock determineActualGroupName calls for both groups
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ 
-                value: [{ Name: 'admin' }] 
+            // Each getUsersFromGroup call: 1 GET for determineActualGroupName, 1 GET for expand
+            mockRestService.get.mockResolvedValueOnce(mockResponse({
+                value: [{ Name: 'admin' }]
             }));
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ value: [] }));
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ 
-                value: [{ Name: 'ADMIN' }] 
+            mockRestService.get.mockResolvedValueOnce(mockResponse({ Users: [] }));
+            mockRestService.get.mockResolvedValueOnce(mockResponse({
+                value: [{ Name: 'ADMIN' }]
             }));
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ value: [] }));
+            mockRestService.get.mockResolvedValueOnce(mockResponse({ Users: [] }));
 
             await securityService.getUsersFromGroup('admin');
             await securityService.getUsersFromGroup('ADMIN');
-            
+
             expect(mockRestService.get).toHaveBeenCalledTimes(4);
         });
 
