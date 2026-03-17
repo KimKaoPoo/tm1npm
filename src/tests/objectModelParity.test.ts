@@ -57,6 +57,18 @@ describe('ViewAxisSelection.fromDict', () => {
     test('throws when neither Subset nor Subset@odata.bind present', () => {
         expect(() => ViewAxisSelection.fromDict({})).toThrow();
     });
+
+    test('registered subset preserves non-default hierarchy name in constructBody', () => {
+        const dict = {
+            'Subset@odata.bind': "Dimensions('Product')/Hierarchies('Product_Alt')/Subsets('MySubset')"
+        };
+        const sel = ViewAxisSelection.fromDict(dict);
+        expect(sel.dimensionName).toBe('Product');
+        expect((sel.subset as Subset).hierarchyName).toBe('Product_Alt');
+        // constructBody must use the actual hierarchy name
+        const body = sel.bodyAsDict;
+        expect(body['Subset@odata.bind']).toContain("Hierarchies('Product_Alt')");
+    });
 });
 
 describe('ViewTitleSelection.fromDict', () => {
@@ -391,6 +403,45 @@ describe('Hierarchy.getDescendants', () => {
     test('returns empty array for leaf elements', () => {
         const h = buildHierarchy();
         expect(h.getDescendants('North')).toEqual([]);
+    });
+});
+
+describe('Hierarchy.getDescendantEdges and getAncestorEdges', () => {
+    function buildHierarchy(): Hierarchy {
+        const h = new Hierarchy('H', 'D');
+        h.addEdge('Total', 'Region', 1);
+        h.addEdge('Region', 'North', 1);
+        h.addEdge('Region', 'South', 1);
+        return h;
+    }
+
+    test('getDescendantEdges returns edges for direct descendants', () => {
+        const h = buildHierarchy();
+        const edges = h.getDescendantEdges('Total');
+        expect(edges.has('Region')).toBe(true);
+        expect(edges.get('Region')?.get('North')).toBe(1);
+    });
+
+    test('getDescendantEdges returns all descendant edges recursively', () => {
+        const h = buildHierarchy();
+        const edges = h.getDescendantEdges('Total', true);
+        expect(edges.has('Region')).toBe(true);
+        expect(edges.has('North')).toBe(false); // North has no children
+        expect(edges.has('South')).toBe(false);
+    });
+
+    test('getAncestorEdges returns edges for direct ancestors', () => {
+        const h = buildHierarchy();
+        const edges = h.getAncestorEdges('North');
+        expect(edges.has('Region')).toBe(true);
+        expect(edges.get('Region')?.get('North')).toBe(1);
+    });
+
+    test('getAncestorEdges returns all ancestor edges recursively', () => {
+        const h = buildHierarchy();
+        const edges = h.getAncestorEdges('North', true);
+        expect(edges.has('Region')).toBe(true);
+        expect(edges.has('Total')).toBe(true);
     });
 });
 

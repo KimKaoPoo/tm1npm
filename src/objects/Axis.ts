@@ -19,7 +19,7 @@ export class ViewAxisSelection extends TM1Object {
         super();
         this._subset = subset;
         this._dimensionName = dimensionName;
-        this._hierarchyName = dimensionName;
+        this._hierarchyName = subset.hierarchyName || dimensionName;
     }
 
     public get subset(): Subset | AnonymousSubset {
@@ -93,7 +93,7 @@ export class ViewTitleSelection {
 
     constructor(dimensionName: string, subset: AnonymousSubset | Subset, selected: string) {
         this._dimensionName = dimensionName;
-        this._hierarchyName = dimensionName;
+        this._hierarchyName = subset.hierarchyName || dimensionName;
         this._subset = subset;
         this._selected = selected;
     }
