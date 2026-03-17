@@ -99,7 +99,7 @@ export class ProcessService extends ObjectService {
          * :param skip_control_processes: bool, True to exclude processes that begin with "}" or "{"
          * :return: List of process names that contain the search string
          */
-        const normalized = lowerAndDropSpaces(searchString);
+        const normalized = lowerAndDropSpaces(searchString).replace(/'/g, "''");
         const fields = ['PrologProcedure', 'MetadataProcedure', 'DataProcedure', 'EpilogProcedure'];
         const codeFilter = fields
             .map(f => `contains(tolower(replace(${f},' ','')), '${normalized}')`)
@@ -107,7 +107,7 @@ export class ProcessService extends ObjectService {
 
         let url = `/Processes?$select=Name&$filter=${codeFilter}`;
         if (skipControlProcesses) {
-            url += " and startswith(Name, '}') eq false and startswith(Name, '{') eq false";
+            url += " and (startswith(Name, '}') eq false and startswith(Name, '{') eq false)";
         }
 
         const response = await this.rest.get(url);
@@ -459,7 +459,7 @@ export class ProcessService extends ObjectService {
         let url = "/ErrorLogFiles?$select=Filename";
 
         if (processName) {
-            url += `&$filter=contains(tolower(Filename), '${processName.toLowerCase()}')`;
+            url += `&$filter=contains(tolower(Filename), '${processName.toLowerCase().replace(/'/g, "''")}')`;
         }
         if (top) {
             url += `&$top=${top}`;
@@ -478,7 +478,7 @@ export class ProcessService extends ObjectService {
          * :param file_name: name of the error log file to delete
          * :return: response
          */
-        const url = formatUrl("/Contents('Logs/{}')", fileName);
+        const url = formatUrl("/ErrorLogFiles('{}')", fileName);
         return await this.rest.delete(url);
     }
 

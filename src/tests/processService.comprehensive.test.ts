@@ -607,7 +607,7 @@ describe('ProcessService - Comprehensive Tests', () => {
             const result = await processService.deleteErrorLogFile('TestProcess_20250115.log');
 
             expect(result).toBeDefined();
-            expect(mockRestService.delete).toHaveBeenCalledWith("/Contents('Logs/TestProcess_20250115.log')");
+            expect(mockRestService.delete).toHaveBeenCalledWith("/ErrorLogFiles('TestProcess_20250115.log')");
         });
 
         test('should get last message from message log', async () => {
