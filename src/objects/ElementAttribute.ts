@@ -1,4 +1,5 @@
 import { TM1Object } from './TM1Object';
+import { caseAndSpaceInsensitiveEquals } from '../utils/Utils';
 
 export enum ElementAttributeType {
     NUMERIC = 1,
@@ -102,9 +103,8 @@ export class ElementAttribute extends TM1Object {
 
     public equals(other: TM1Object): boolean {
         if (other instanceof ElementAttribute) {
-            const sameName = this._name.toLowerCase().replace(/\s+/g, '') ===
-                             other._name.toLowerCase().replace(/\s+/g, '');
-            return sameName && this._attributeType === other._attributeType;
+            return caseAndSpaceInsensitiveEquals(this._name, other._name) &&
+                   this._attributeType === other._attributeType;
         }
         return false;
     }

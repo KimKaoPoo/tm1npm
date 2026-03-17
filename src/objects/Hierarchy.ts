@@ -1,6 +1,7 @@
 import { TM1Object } from './TM1Object';
 import { Element, ElementType } from './Element';
 import { ElementAttribute } from './ElementAttribute';
+import { lowerAndDropSpaces } from '../utils/Utils';
 
 export class Hierarchy extends TM1Object {
     private _name: string;
@@ -232,27 +233,13 @@ export class Hierarchy extends TM1Object {
             ea.name.toLowerCase() === attributeName.toLowerCase());
     }
 
-    private normalize(name: string): string {
-        return name.toLowerCase().replace(/\s+/g, '');
-    }
-
-    private getChildrenOf(elementName: string): Map<string, number> | undefined {
-        const normalized = this.normalize(elementName);
-        for (const [parent, children] of this._edges) {
-            if (this.normalize(parent) === normalized) {
-                return children;
-            }
-        }
-        return undefined;
-    }
-
     public getAncestors(elementName: string, recursive: boolean = false): string[] {
-        const normalizedTarget = this.normalize(elementName);
+        const normalizedTarget = lowerAndDropSpaces(elementName);
         const directParents: string[] = [];
 
         for (const [parent, children] of this._edges) {
             for (const child of children.keys()) {
-                if (this.normalize(child) === normalizedTarget) {
+                if (lowerAndDropSpaces(child) === normalizedTarget) {
                     directParents.push(parent);
                     break;
                 }
@@ -263,6 +250,7 @@ export class Hierarchy extends TM1Object {
             return directParents;
         }
 
+        // BFS; uses non-recursive call to avoid re-scanning for already-visited ancestors
         const result = new Set<string>(directParents);
         const queue = [...directParents];
         while (queue.length > 0) {
@@ -278,11 +266,11 @@ export class Hierarchy extends TM1Object {
     }
 
     public getDescendants(elementName: string, recursive: boolean = false, leavesOnly: boolean = false): string[] {
-        const normalizedTarget = this.normalize(elementName);
+        const normalizedTarget = lowerAndDropSpaces(elementName);
         const directChildren: string[] = [];
 
         for (const [parent, children] of this._edges) {
-            if (this.normalize(parent) === normalizedTarget) {
+            if (lowerAndDropSpaces(parent) === normalizedTarget) {
                 directChildren.push(...children.keys());
             }
         }
@@ -293,7 +281,8 @@ export class Hierarchy extends TM1Object {
             const queue = [...directChildren];
             while (queue.length > 0) {
                 const current = queue.shift()!;
-                const grandChildren = this.getChildrenOf(current);
+                // current comes directly from stored edge values; use O(1) Map lookup
+                const grandChildren = this._edges.get(current);
                 if (grandChildren) {
                     for (const child of grandChildren.keys()) {
                         if (!seen.has(child)) {
@@ -309,44 +298,38 @@ export class Hierarchy extends TM1Object {
         }
 
         if (leavesOnly) {
-            const allParents = new Set(
-                Array.from(this._edges.keys()).map(p => this.normalize(p))
-            );
-            return result.filter(d => !allParents.has(this.normalize(d)));
+            const allParents = new Set(Array.from(this._edges.keys()).map(lowerAndDropSpaces));
+            return result.filter(d => !allParents.has(lowerAndDropSpaces(d)));
+        }
+        return result;
+    }
+
+    private buildEdgeMap(elements: string[]): Map<string, Map<string, number>> {
+        const result = new Map<string, Map<string, number>>();
+        for (const element of elements) {
+            // elements come from stored edge keys/values; O(1) lookup suffices
+            const children = this._edges.get(element);
+            if (children) {
+                result.set(element, new Map(children));
+            }
         }
         return result;
     }
 
     public getDescendantEdges(elementName: string, recursive: boolean = false): Map<string, Map<string, number>> {
-        const descendants = this.getDescendants(elementName, recursive);
-        const result = new Map<string, Map<string, number>>();
-        for (const descendant of descendants) {
-            const children = this.getChildrenOf(descendant);
-            if (children) {
-                result.set(descendant, new Map(children));
-            }
-        }
-        return result;
+        return this.buildEdgeMap(this.getDescendants(elementName, recursive));
     }
 
     public getAncestorEdges(elementName: string, recursive: boolean = false): Map<string, Map<string, number>> {
-        const ancestors = this.getAncestors(elementName, recursive);
-        const result = new Map<string, Map<string, number>>();
-        for (const ancestor of ancestors) {
-            const children = this.getChildrenOf(ancestor);
-            if (children) {
-                result.set(ancestor, new Map(children));
-            }
-        }
-        return result;
+        return this.buildEdgeMap(this.getAncestors(elementName, recursive));
     }
 
     public replaceElement(oldName: string, newName: string): void {
-        const normalizedOld = this.normalize(oldName);
+        const normalizedOld = lowerAndDropSpaces(oldName);
 
         // Rename in _elements
         const oldKey = Array.from(this._elements.keys()).find(
-            k => this.normalize(k) === normalizedOld
+            k => lowerAndDropSpaces(k) === normalizedOld
         );
         if (oldKey) {
             const element = this._elements.get(oldKey)!;
@@ -358,10 +341,10 @@ export class Hierarchy extends TM1Object {
         // Rebuild edges replacing all occurrences of oldName
         const newEdges = new Map<string, Map<string, number>>();
         for (const [parent, children] of this._edges) {
-            const newParent = this.normalize(parent) === normalizedOld ? newName : parent;
+            const newParent = lowerAndDropSpaces(parent) === normalizedOld ? newName : parent;
             const newChildren = new Map<string, number>();
             for (const [child, weight] of children) {
-                const newChild = this.normalize(child) === normalizedOld ? newName : child;
+                const newChild = lowerAndDropSpaces(child) === normalizedOld ? newName : child;
                 newChildren.set(newChild, weight);
             }
             newEdges.set(newParent, newChildren);
