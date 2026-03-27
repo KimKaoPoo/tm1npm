@@ -1,11 +1,12 @@
 import { AxiosResponse } from 'axios';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
+import { ProcessService } from './ProcessService';
 import { Cube } from '../objects/Cube';
 import { Rules } from '../objects/Rules';
 import { CellService } from './CellService';
 import { ViewService } from './ViewService';
-import { formatUrl, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
+import { formatUrl, caseAndSpaceInsensitiveEquals, lowerAndDropSpaces } from '../utils/Utils';
 import { TM1RestException } from '../exceptions/TM1Exception';
 
 export class CubeService extends ObjectService {
@@ -109,17 +110,14 @@ export class CubeService extends ObjectService {
     }
 
     public async getAllNames(skipControlCubes: boolean = false): Promise<string[]> {
-        /** Get all cube names from TM1 Server
+        /** Get all cube names from TM1 Server.
+         * Matches tm1py get_all_names(): uses /ModelCubes() when skip_control_cubes=True.
          *
          * :param skipControlCubes: exclude control cubes (cubes with } prefix)
          * :return: Array of cube names
          */
-        let url = "/Cubes?$select=Name";
-        
-        if (skipControlCubes) {
-            url += "&$filter=not startswith(Name,'}')";
-        }
-
+        const endpoint = skipControlCubes ? "/ModelCubes()" : "/Cubes";
+        const url = `${endpoint}?$select=Name`;
         const response = await this.rest.get(url);
         return response.data.value.map((cube: any) => cube.Name);
     }
@@ -152,23 +150,32 @@ export class CubeService extends ObjectService {
         return parseInt(response.data);
     }
 
-    public async searchForDimensionSubstring(substring: string, skipControlCubes: boolean = false): Promise<{[cubeName: string]: string[]}> {
-        /** Search cubes that contain dimensions with specific substring
+    public async searchForDimensionSubstring(
+        substring: string,
+        skipControlCubes: boolean = false
+    ): Promise<{[cubeName: string]: string[]}> {
+        /** Search cubes that contain dimensions with specific substring.
+         * Matches tm1py search_for_dimension_substring(): uses server-side OData $filter and $expand.
          *
          * :param substring: substring to search for in dimension names
          * :param skip_control_cubes: exclude control cubes
          * :return: dictionary with cube names as keys and matching dimension names as values
          */
-        const cubes = skipControlCubes ? await this.getModelCubes() : await this.getAll();
+        const endpoint = skipControlCubes ? "ModelCubes()" : "Cubes";
+        const normalizedSubstring = lowerAndDropSpaces(substring);
+        const url = `/${endpoint}?$select=Name` +
+            `&$filter=Dimensions/any(d: contains(replace(tolower(d/Name), ' ', ''),'${normalizedSubstring}'))` +
+            `&$expand=Dimensions($select=Name;$filter=contains(replace(tolower(Name), ' ', ''), '${normalizedSubstring}'))`;
+
+        const response = await this.rest.get(url);
         const results: {[cubeName: string]: string[]} = {};
 
-        for (const cube of cubes) {
-            const matchingDimensions = cube.dimensions.filter(dim => 
-                dim.toLowerCase().includes(substring.toLowerCase())
-            );
-            
+        for (const cube of response.data.value) {
+            const matchingDimensions = cube.Dimensions
+                ? cube.Dimensions.map((d: any) => d.Name)
+                : [];
             if (matchingDimensions.length > 0) {
-                results[cube.name] = matchingDimensions;
+                results[cube.Name] = matchingDimensions;
             }
         }
 
@@ -176,39 +183,35 @@ export class CubeService extends ObjectService {
     }
 
     public async searchForRuleSubstring(
-        substring: string, 
-        skipControlCubes: boolean = false, 
-        caseInsensitive: boolean = true, 
+        substring: string,
+        skipControlCubes: boolean = false,
+        caseInsensitive: boolean = true,
         spaceInsensitive: boolean = true
     ): Promise<Cube[]> {
-        /** Search cubes by rules substring
-         *
-         * :param substring: substring to search for in rules
-         * :param skip_control_cubes: exclude control cubes
-         * :param case_insensitive: ignore case when searching
-         * :param space_insensitive: ignore spaces when searching
-         * :return: List of cubes containing the substring in rules
+        /** Search cubes by rules substring.
+         * Matches tm1py search_for_rule_substring(): uses server-side OData $filter with
+         * 4 sensitivity variants: case+space, case only, space only, exact.
          */
-        const cubes = skipControlCubes ? await this.getModelCubes() : await this.getAll();
-        const results: Cube[] = [];
+        const endpoint = skipControlCubes ? "ModelCubes()" : "Cubes";
 
-        let searchString = substring;
-        if (caseInsensitive) searchString = searchString.toLowerCase();
-        if (spaceInsensitive) searchString = searchString.replace(/\s+/g, '');
+        let normalizedSubstring = substring;
+        if (caseInsensitive) normalizedSubstring = normalizedSubstring.toLowerCase();
+        if (spaceInsensitive) normalizedSubstring = normalizedSubstring.replace(/\s+/g, '');
 
-        for (const cube of cubes) {
-            if (cube.rules && cube.rules.text) {
-                let ruleText = cube.rules.text;
-                if (caseInsensitive) ruleText = ruleText.toLowerCase();
-                if (spaceInsensitive) ruleText = ruleText.replace(/\s+/g, '');
-
-                if (ruleText.includes(searchString)) {
-                    results.push(cube);
-                }
-            }
+        let urlFilter = "Rules ne null and contains(";
+        if (caseInsensitive && spaceInsensitive) {
+            urlFilter += `tolower(replace(Rules, ' ', '')),'${normalizedSubstring}')`;
+        } else if (caseInsensitive) {
+            urlFilter += `tolower(Rules),'${normalizedSubstring}')`;
+        } else if (spaceInsensitive) {
+            urlFilter += `replace(Rules, ' ', ''),'${normalizedSubstring}')`;
+        } else {
+            urlFilter += `Rules,'${normalizedSubstring}')`;
         }
 
-        return results;
+        const url = `/${endpoint}?$filter=${urlFilter}&$expand=Dimensions($select=Name)`;
+        const response = await this.rest.get(url);
+        return response.data.value.map((cube: any) => Cube.fromDict(cube));
     }
 
     public async getStorageDimensionOrder(cubeName: string): Promise<string[]> {
@@ -237,112 +240,104 @@ export class CubeService extends ObjectService {
     }
 
     public async getRandomIntersection(cubeName: string, uniqueNames: boolean = false): Promise<string[]> {
-        /** Get a random intersection from cube
-         *
-         * :param cube_name: name of the cube
-         * :param unique_names: return unique names instead of element names
-         * :return: list of element names representing random intersection
+        /** Get a random intersection from cube.
+         * Matches tm1py get_random_intersection(): traverses dimensions/hierarchies
+         * client-side and picks a random element from each.
          */
-        const url = formatUrl("/Cubes('{}')/tm1.GetRandomIntersection", cubeName) + 
-                   (uniqueNames ? "?uniqueNames=true" : "");
-        const response = await this.rest.get(url);
-        return response.data.value || [];
+        const dimensionNames = await this.getDimensionNames(cubeName);
+        const elements: string[] = [];
+
+        for (const dimensionName of dimensionNames) {
+            const url = formatUrl(
+                "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name",
+                dimensionName, dimensionName
+            );
+            const response = await this.rest.get(url);
+            const elementNames = response.data.value.map((e: any) => e.Name);
+
+            if (elementNames.length === 0) {
+                elements.push('');
+                continue;
+            }
+
+            const randomIndex = Math.floor(Math.random() * elementNames.length);
+            const element = elementNames[randomIndex];
+
+            if (uniqueNames) {
+                elements.push(`[${dimensionName}].[${element}]`);
+            } else {
+                elements.push(element);
+            }
+        }
+
+        return elements;
     }
 
     // Memory Management Functions
     public async load(cubeName: string): Promise<AxiosResponse> {
-        /** Load cube into memory
-         *
-         * :param cube_name: name of the cube
-         * :return: response
-         */
         const url = formatUrl("/Cubes('{}')/tm1.Load", cubeName);
         return await this.rest.post(url);
     }
 
     public async unload(cubeName: string): Promise<AxiosResponse> {
-        /** Unload cube from memory
-         *
-         * :param cube_name: name of the cube
-         * :return: response
-         */
         const url = formatUrl("/Cubes('{}')/tm1.Unload", cubeName);
         return await this.rest.post(url);
     }
 
     public async lock(cubeName: string): Promise<AxiosResponse> {
-        /** Lock cube
-         *
-         * :param cube_name: name of the cube
-         * :return: response
-         */
         const url = formatUrl("/Cubes('{}')/tm1.Lock", cubeName);
         return await this.rest.post(url);
     }
 
     public async unlock(cubeName: string): Promise<AxiosResponse> {
-        /** Unlock cube
-         *
-         * :param cube_name: name of the cube
-         * :return: response
-         */
         const url = formatUrl("/Cubes('{}')/tm1.Unlock", cubeName);
         return await this.rest.post(url);
     }
 
-    public async cubeSaveData(cubeName: string): Promise<AxiosResponse> {
-        /** Save cube data to disk
-         *
-         * :param cube_name: name of the cube
-         * :return: response
+    public async cubeSaveData(cubeName: string): Promise<any> {
+        /** Save cube data to disk.
+         * Matches tm1py cube_save_data(): executes TI code CubeSaveData('cubeName')
+         * via ProcessService.execute_ti_code().
          */
-        const url = formatUrl("/Cubes('{}')/tm1.SaveData", cubeName);
-        return await this.rest.post(url);
+        const escapedCubeName = cubeName.replace(/'/g, "''");
+        const tiCode = `CubeSaveData('${escapedCubeName}');`;
+        const processService = new ProcessService(this.rest);
+        return await processService.executeTiCode([tiCode]);
     }
 
     public async getVmm(cubeName: string): Promise<number> {
-        /** Get view storage max memory for cube
-         *
-         * :param cube_name: name of the cube
-         * :return: view storage max memory value
+        /** Get view storage max memory for cube.
+         * Matches tm1py get_vmm(): GET /Cubes('{}')?$select=ViewStorageMaxMemory.
          */
-        const url = formatUrl("/Cubes('{}')/ViewStorageMaxMemory/$value", cubeName);
+        const url = formatUrl("/Cubes('{}')?$select=ViewStorageMaxMemory", cubeName);
         const response = await this.rest.get(url);
-        return parseInt(response.data) || 0;
+        return response.data.ViewStorageMaxMemory;
     }
 
     public async setVmm(cubeName: string, vmm: number): Promise<AxiosResponse> {
-        /** Set view storage max memory for cube
-         *
-         * :param cube_name: name of the cube
-         * :param vmm: view storage max memory value
-         * :return: response
+        /** Set view storage max memory for cube.
+         * Matches tm1py set_vmm(): PATCH /Cubes('{}') with {ViewStorageMaxMemory: value}.
          */
-        const url = formatUrl("/Cubes('{}')/ViewStorageMaxMemory", cubeName);
-        const body = { Value: vmm };
+        const url = formatUrl("/Cubes('{}')", cubeName);
+        const body = { ViewStorageMaxMemory: vmm };
         return await this.rest.patch(url, body);
     }
 
     public async getVmt(cubeName: string): Promise<number> {
-        /** Get view storage min time for cube
-         *
-         * :param cube_name: name of the cube
-         * :return: view storage min time value
+        /** Get view storage min time for cube.
+         * Matches tm1py get_vmt(): GET /Cubes('{}')?$select=ViewStorageMinTime.
          */
-        const url = formatUrl("/Cubes('{}')/ViewStorageMinTime/$value", cubeName);
+        const url = formatUrl("/Cubes('{}')?$select=ViewStorageMinTime", cubeName);
         const response = await this.rest.get(url);
-        return parseInt(response.data) || 0;
+        return response.data.ViewStorageMinTime;
     }
 
     public async setVmt(cubeName: string, vmt: number): Promise<AxiosResponse> {
-        /** Set view storage min time for cube
-         *
-         * :param cube_name: name of the cube
-         * :param vmt: view storage min time value
-         * :return: response
+        /** Set view storage min time for cube.
+         * Matches tm1py set_vmt(): PATCH /Cubes('{}') with {ViewStorageMinTime: value}.
          */
-        const url = formatUrl("/Cubes('{}')/ViewStorageMinTime", cubeName);
-        const body = { Value: vmt };
+        const url = formatUrl("/Cubes('{}')", cubeName);
+        const body = { ViewStorageMinTime: vmt };
         return await this.rest.patch(url, body);
     }
 
@@ -362,40 +357,25 @@ export class CubeService extends ObjectService {
     }
 
     // Rules Management Functions
-    public async checkRules(cubeName: string): Promise<any> {
-        /** Check cube rules syntax
-         *
-         * :param cube_name: name of the cube
-         * :return: rules check result
+    public async checkRules(cubeName: string): Promise<any[]> {
+        /** Check cube rules syntax.
+         * Matches tm1py check_rules(): returns response.json()["value"] (the errors array).
          */
         const url = formatUrl("/Cubes('{}')/tm1.CheckRules", cubeName);
-        return await this.rest.post(url);
+        const response = await this.rest.post(url);
+        return response.data.value;
     }
 
     public async updateOrCreateRules(cubeName: string, rules: string | Rules): Promise<AxiosResponse> {
-        /** Update or create rules for cube
-         *
-         * :param cube_name: name of the cube
-         * :param rules: rules text or Rules object
-         * :return: response
+        /** Update or create rules for cube.
+         * Matches tm1py update_or_create_rules(): PATCH /Cubes('{}') with rules.body.
          */
-        const url = formatUrl("/Cubes('{}')/Rules", cubeName);
-        const body = typeof rules === 'string' ? { Text: rules } : rules.body;
-        
-        // Try to update first, if it fails, create
-        try {
-            return await this.rest.patch(url, body);
-        } catch (error) {
-            return await this.rest.post(url, body);
-        }
+        const rulesObj = typeof rules === 'string' ? new Rules(rules) : rules;
+        const url = formatUrl("/Cubes('{}')", cubeName);
+        return await this.rest.patch(url, rulesObj.body);
     }
 
     public async getMeasureDimension(cubeName: string): Promise<string> {
-        /** Get the measure dimension of a cube
-         *
-         * :param cubeName: string, name of the cube
-         * :return: string, name of the measure dimension
-         */
         const cube = await this.get(cubeName);
         return cube.dimensions[cube.dimensions.length - 1];
     }
@@ -403,70 +383,40 @@ export class CubeService extends ObjectService {
     // ===== ADVANCED SEARCH METHODS =====
 
     /**
-     * Search for cubes that contain specific dimensions
+     * Search for cubes that contain a specific dimension.
+     * Matches tm1py search_for_dimension(): uses server-side OData $filter.
      */
     public async searchForDimension(
-        dimensionName: string, 
+        dimensionName: string,
         skipControlCubes: boolean = false
     ): Promise<string[]> {
-        /** Search cubes that contain a specific dimension
-         *
-         * :param dimensionName: exact dimension name to search for
-         * :param skipControlCubes: exclude control cubes
-         * :return: array of cube names that contain the dimension
-         */
-        const cubes = skipControlCubes ? await this.getModelCubes() : await this.getAll();
-        const results: string[] = [];
-
-        for (const cube of cubes) {
-            if (cube.dimensions.includes(dimensionName)) {
-                results.push(cube.name);
-            }
-        }
-
-        return results;
+        const endpoint = skipControlCubes ? "ModelCubes()" : "Cubes";
+        const normalizedName = lowerAndDropSpaces(dimensionName);
+        const url = `/${endpoint}?$select=Name&$filter=Dimensions/any(d: replace(tolower(d/Name), ' ', '') eq '${normalizedName}')`;
+        const response = await this.rest.get(url);
+        return response.data.value.map((cube: any) => cube.Name);
     }
 
     /**
-     * Get all cube names that have rules
+     * Get all cube names that have rules.
+     * Matches tm1py get_all_names_with_rules(): uses server-side OData $filter=Rules ne null.
      */
     public async getAllNamesWithRules(skipControlCubes: boolean = false): Promise<string[]> {
-        /** Get all cube names that have rules
-         *
-         * :param skipControlCubes: exclude control cubes
-         * :return: array of cube names that have rules
-         */
-        const cubes = skipControlCubes ? await this.getModelCubes() : await this.getAll();
-        const results: string[] = [];
-
-        for (const cube of cubes) {
-            if (cube.hasRules) {
-                results.push(cube.name);
-            }
-        }
-
-        return results;
+        const endpoint = skipControlCubes ? "ModelCubes()" : "Cubes";
+        const url = `/${endpoint}?$select=Name,Rules&$filter=Rules ne null`;
+        const response = await this.rest.get(url);
+        return response.data.value.map((cube: any) => cube.Name);
     }
 
     /**
-     * Get all cube names that do not have rules
+     * Get all cube names that do not have rules.
+     * Matches tm1py get_all_names_without_rules(): uses server-side OData $filter=Rules eq null.
      */
     public async getAllNamesWithoutRules(skipControlCubes: boolean = false): Promise<string[]> {
-        /** Get all cube names that do not have rules
-         *
-         * :param skipControlCubes: exclude control cubes
-         * :return: array of cube names that do not have rules
-         */
-        const cubes = skipControlCubes ? await this.getModelCubes() : await this.getAll();
-        const results: string[] = [];
-
-        for (const cube of cubes) {
-            if (!cube.hasRules) {
-                results.push(cube.name);
-            }
-        }
-
-        return results;
+        const endpoint = skipControlCubes ? "ModelCubes()" : "Cubes";
+        const url = `/${endpoint}?$select=Name,Rules&$filter=Rules eq null`;
+        const response = await this.rest.get(url);
+        return response.data.value.map((cube: any) => cube.Name);
     }
 
     /**
@@ -480,23 +430,16 @@ export class CubeService extends ObjectService {
         minDimensions?: number;
         maxDimensions?: number;
     }): Promise<string[]> {
-        /** Advanced search for cubes based on multiple criteria
-         *
-         * :param criteria: search criteria object
-         * :return: array of cube names matching all criteria
-         */
         const cubes = criteria.skipControlCubes ? await this.getModelCubes() : await this.getAll();
         const results: string[] = [];
 
         for (const cube of cubes) {
             let matches = true;
 
-            // Check name pattern
             if (criteria.namePattern && !cube.name.toLowerCase().includes(criteria.namePattern.toLowerCase())) {
                 matches = false;
             }
 
-            // Check required dimensions
             if (criteria.dimensionNames && matches) {
                 for (const dimName of criteria.dimensionNames) {
                     if (!cube.dimensions.includes(dimName)) {
@@ -506,14 +449,12 @@ export class CubeService extends ObjectService {
                 }
             }
 
-            // Check rules requirement
             if (criteria.hasRules !== undefined && matches) {
                 if (criteria.hasRules !== cube.hasRules) {
                     matches = false;
                 }
             }
 
-            // Check dimension count limits
             if (matches) {
                 const dimCount = cube.dimensions.length;
                 if (criteria.minDimensions !== undefined && dimCount < criteria.minDimensions) {
