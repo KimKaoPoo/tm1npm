@@ -61,7 +61,7 @@ export class SubsetService extends ObjectService {
         dimensionName: string,
         hierarchyName: string,
         subsetName: string,
-        isPrivate: boolean = true
+        isPrivate: boolean = false
     ): Promise<any> {
         const visibility = this.getSubsetCollection(isPrivate);
         const url = this.formatUrl(
@@ -118,7 +118,7 @@ export class SubsetService extends ObjectService {
         dimensionName: string,
         hierarchyName: string,
         subsetName: string,
-        isPrivate: boolean = true
+        isPrivate: boolean = false
     ): Promise<AxiosResponse> {
         const visibility = this.getSubsetCollection(isPrivate);
         const url = this.formatUrl(
@@ -135,7 +135,7 @@ export class SubsetService extends ObjectService {
         dimensionName: string,
         hierarchyName: string,
         subsetName: string,
-        isPrivate: boolean = true
+        isPrivate: boolean = false
     ): Promise<boolean> {
         const visibility = this.getSubsetCollection(isPrivate);
         const url = this.formatUrl(
@@ -160,7 +160,7 @@ export class SubsetService extends ObjectService {
     public async getAllNames(
         dimensionName: string,
         hierarchyName: string,
-        isPrivate: boolean = true
+        isPrivate: boolean = false
     ): Promise<string[]> {
         const visibility = this.getSubsetCollection(isPrivate);
         const url = this.formatUrl(
