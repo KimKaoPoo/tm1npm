@@ -239,6 +239,13 @@ describe('HierarchyService Tests', () => {
                 .rejects.toThrow('Unexpected return value from TM1 API request: 99');
         });
 
+        test('should throw on structure=1 (ragged hierarchy) matching tm1py behavior', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse(1));
+
+            await expect(hierarchyService.isBalanced('TestDimension', 'TestHierarchy'))
+                .rejects.toThrow('Unexpected return value from TM1 API request: 1');
+        });
+
         test('should handle string response from $value endpoint', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse('0'));
 
