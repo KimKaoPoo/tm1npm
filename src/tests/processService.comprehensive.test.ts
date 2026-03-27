@@ -635,7 +635,7 @@ describe('ProcessService - Comprehensive Tests', () => {
 
             expect(result).toEqual(['Process1_20250115.log', 'Process2_20250114.log', 'Process3_20250113.log']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), tolower(''))"
+                "/ErrorLogFiles?select=Filename&$filter=contains(tolower(Filename), tolower(''))"
             );
         });
 
@@ -652,7 +652,7 @@ describe('ProcessService - Comprehensive Tests', () => {
 
             expect(result).toEqual(['Process1_20250115.log', 'Process2_20250114.log']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), tolower(''))&$top=2"
+                "/ErrorLogFiles?select=Filename&$filter=contains(tolower(Filename), tolower(''))&$top=2"
             );
         });
 
@@ -1151,7 +1151,7 @@ describe('ProcessService - Comprehensive Tests', () => {
             const result = await processService.searchErrorLogFilenames('TestProcess');
 
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), tolower('TestProcess'))"
+                "/ErrorLogFiles?select=Filename&$filter=contains(tolower(Filename), tolower('TestProcess'))"
             );
             expect(result).toEqual([
                 'TM1ProcessError_TestProcess_20250115.log',

@@ -597,7 +597,7 @@ export class ProcessService extends ObjectService {
          * :return: list of filenames
          */
         let url = formatUrl(
-            "/ErrorLogFiles?$select=Filename&$filter=contains(tolower(Filename), tolower('{}'))",
+            "/ErrorLogFiles?select=Filename&$filter=contains(tolower(Filename), tolower('{}'))",
             searchString
         );
 
@@ -853,7 +853,7 @@ export class ProcessService extends ObjectService {
      * ProcessQuit is called (status=QuitCalled), otherwise completes successfully.
      */
     public async evaluateBooleanTiExpression(expression: string): Promise<boolean> {
-        const formula = expression.replace(/;$/, '');
+        const formula = expression.replace(/^;+|;+$/g, '');
         const prologProcedure = `if (~${formula});\n  ProcessQuit;\nendif;`;
 
         const url = '/ExecuteProcessWithReturn?$expand=*';
