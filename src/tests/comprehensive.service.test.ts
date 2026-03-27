@@ -309,21 +309,22 @@ describe('Comprehensive Service Tests with Mocking', () => {
 
         beforeEach(() => {
             cellService = new CellService(mockRestService);
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Dimension1']);
+            jest.spyOn(cellService, 'executeMdxValues').mockResolvedValue([]);
         });
 
         test('should handle all cell operations successfully', async () => {
-            // Test getValue with correct signature
-            mockRestService.get.mockResolvedValueOnce(createMockResponse({
-                value: 1000
-            }));
-            
+            // Test getValue builds MDX and delegates to executeMdxValues
+            jest.spyOn(cellService, 'executeMdxValues').mockResolvedValueOnce([1000]);
+
             const cellValue = await cellService.getValue('TestCube', ['Element1']);
             expect(cellValue).toBe(1000);
-            
-            // Test writeValue with correct signature
-            mockRestService.patch.mockResolvedValueOnce(createMockResponse({}));
+
+            // Test writeValue via POST
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
             await cellService.writeValue('TestCube', ['Element1'], 2000);
-            
+            expect(mockRestService.post).toHaveBeenCalled();
+
             console.log('✅ All CellService operations working');
         });
     });
@@ -499,14 +500,12 @@ describe('Comprehensive Service Tests with Mocking', () => {
 
         test('should handle null and undefined values', async () => {
             const cellService = new CellService(mockRestService);
-            
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                value: null
-            }));
-            
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Dimension1']);
+            jest.spyOn(cellService, 'executeMdxValues').mockResolvedValue([]);
+
             const cellValue = await cellService.getValue('TestCube', ['NullElement']);
             expect(cellValue == null).toBe(true);
-            
+
             console.log('✅ Null/undefined values handled correctly');
         });
 
@@ -591,21 +590,18 @@ describe('Comprehensive Service Tests with Mocking', () => {
 
         test('should handle memory-intensive operations', async () => {
             const cellService = new CellService(mockRestService);
-            
-            // Create large coordinate arrays
+            const dims = Array(100).fill(null).map((_, i) => `Dim${i}`);
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(dims);
+            jest.spyOn(cellService, 'executeMdxValues').mockResolvedValue([42]);
+
             const largeCoordinates = Array(100).fill(null).map((_, i) => `Element${i}`);
-            
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                value: Math.random() * 1000000
-            }));
-            
+
             const startMemory = process.memoryUsage().heapUsed;
             await cellService.getValue('TestCube', largeCoordinates);
             const endMemory = process.memoryUsage().heapUsed;
-            
-            // Memory usage should not increase dramatically
-            expect(endMemory - startMemory).toBeLessThan(10 * 1024 * 1024); // 10MB threshold
-            
+
+            expect(endMemory - startMemory).toBeLessThan(10 * 1024 * 1024);
+
             console.log('✅ Memory usage within acceptable bounds');
         });
 

@@ -6,6 +6,13 @@
 import { RestService } from '../services/RestService';
 import { CellService } from '../services/CellService';
 
+// Mock getDimensionNamesForWriting globally — all CellService instances in these tests
+// need this since getValue/writeValue/write now require dimension names
+beforeEach(() => {
+    jest.spyOn(CellService.prototype, 'getDimensionNamesForWriting').mockResolvedValue(['Period', 'Measure', 'Version']);
+    jest.spyOn(CellService.prototype, 'executeMdxValues').mockResolvedValue([]);
+});
+
 // Helper function to create mock AxiosResponse
 const createMockResponse = (data: any, status: number = 200) => ({
     data,
@@ -249,32 +256,28 @@ describe('Advanced MDX and Calculation Tests', () => {
 
         test('should handle currency conversion calculations', async () => {
             const cellService = new CellService(mockRestService);
-            
+
             const exchangeRates = {
                 'USD_EUR': 0.85,
                 'USD_GBP': 0.75,
                 'USD_JPY': 110.0,
                 'USD_CAD': 1.25
             };
-            
+
             const baseAmountUSD = 100000;
-            
-            mockRestService.get.mockImplementation((url: string) => {
-                // Mock different responses based on currency
-                if (url.includes('EUR')) return Promise.resolve(createMockResponse({ value: baseAmountUSD * exchangeRates.USD_EUR }));
-                if (url.includes('GBP')) return Promise.resolve(createMockResponse({ value: baseAmountUSD * exchangeRates.USD_GBP }));
-                if (url.includes('JPY')) return Promise.resolve(createMockResponse({ value: baseAmountUSD * exchangeRates.USD_JPY }));
-                if (url.includes('CAD')) return Promise.resolve(createMockResponse({ value: baseAmountUSD * exchangeRates.USD_CAD }));
-                return Promise.resolve(createMockResponse({ value: baseAmountUSD }));
-            });
+            const rateValues = Object.values(exchangeRates).map(r => baseAmountUSD * r);
+            jest.spyOn(cellService, 'executeMdxValues')
+                .mockResolvedValueOnce([rateValues[0]])
+                .mockResolvedValueOnce([rateValues[1]])
+                .mockResolvedValueOnce([rateValues[2]])
+                .mockResolvedValueOnce([rateValues[3]]);
 
             for (const [currencyPair, rate] of Object.entries(exchangeRates)) {
                 const [from, to] = currencyPair.split('_');
                 const convertedAmount = await cellService.getValue('CurrencyCube', [to]);
                 const expectedAmount = baseAmountUSD * rate;
-                
+
                 expect(convertedAmount).toBeCloseTo(expectedAmount, 2);
-                console.log(`✅ Currency conversion ${from}->${to}: ${baseAmountUSD} -> ${convertedAmount}`);
             }
         });
     });
@@ -282,113 +285,56 @@ describe('Advanced MDX and Calculation Tests', () => {
     describe('Business Logic and Rules Engine', () => {
         test('should handle complex business rules validation', async () => {
             const cellService = new CellService(mockRestService);
-            
+
             const businessRules = [
-                {
-                    name: 'Budget Constraint',
-                    condition: 'Actual <= Budget * 1.1', // 10% tolerance
-                    testData: { actual: 105000, budget: 100000, result: 'valid' }
-                },
-                {
-                    name: 'Minimum Revenue',
-                    condition: 'Revenue >= 50000',
-                    testData: { revenue: 75000, result: 'valid' }
-                },
-                {
-                    name: 'Profit Margin',
-                    condition: '(Revenue - Cost) / Revenue >= 0.15',
-                    testData: { revenue: 100000, cost: 80000, margin: 0.20, result: 'valid' }
-                },
-                {
-                    name: 'Inventory Turnover',
-                    condition: 'Sales / AverageInventory >= 6',
-                    testData: { sales: 600000, inventory: 90000, turnover: 6.67, result: 'valid' }
-                }
+                { name: 'Budget Constraint', testData: { actual: 105000, budget: 100000, result: 'valid' } },
+                { name: 'Minimum Revenue', testData: { revenue: 75000, result: 'valid' } },
+                { name: 'Profit Margin', testData: { revenue: 100000, cost: 80000, margin: 0.20, result: 'valid' } },
+                { name: 'Inventory Turnover', testData: { sales: 600000, inventory: 90000, turnover: 6.67, result: 'valid' } }
             ];
 
             for (const rule of businessRules) {
-                mockRestService.get.mockResolvedValue(createMockResponse({ value: rule.testData }));
-                
+                jest.spyOn(cellService, 'executeMdxValues').mockResolvedValueOnce([rule.testData]);
+
                 const data = await cellService.getValue('RulesCube', ['TestRule']);
                 expect(data).toBeDefined();
                 expect(data.result).toBe('valid');
-                
-                console.log(`✅ Business rule validated: ${rule.name}`);
             }
         });
 
         test('should handle time-based calculations', async () => {
             const cellService = new CellService(mockRestService);
-            
+
             const timeCalculations = [
-                {
-                    type: 'YearToDate',
-                    periods: ['Jan', 'Feb', 'Mar', 'Apr', 'May'],
-                    values: [100, 110, 95, 120, 105],
-                    expected: 530 // Sum of all periods
-                },
-                {
-                    type: 'MovingAverage3',
-                    periods: ['Jan', 'Feb', 'Mar', 'Apr', 'May'],
-                    values: [100, 110, 95, 120, 105],
-                    expected: 108.33 // Average of last 3 periods
-                },
-                {
-                    type: 'GrowthRate',
-                    periods: ['2022', '2023'],
-                    values: [1000000, 1150000],
-                    expected: 0.15 // 15% growth
-                }
+                { type: 'YearToDate', expected: 530 },
+                { type: 'MovingAverage3', expected: 108.33 },
+                { type: 'GrowthRate', expected: 0.15 }
             ];
 
             for (const calc of timeCalculations) {
-                mockRestService.get.mockResolvedValue(createMockResponse({
-                    value: calc.expected
-                }));
+                jest.spyOn(cellService, 'executeMdxValues').mockResolvedValueOnce([calc.expected]);
 
                 const result = await cellService.getValue('TimeCube', [calc.type]);
                 expect(result).toBeCloseTo(calc.expected, 2);
-                
-                console.log(`✅ Time-based calculation: ${calc.type} = ${calc.expected}`);
             }
         });
 
         test('should handle statistical calculations', async () => {
             const cellService = new CellService(mockRestService);
-            
+
             const statisticalTests = [
-                {
-                    function: 'StandardDeviation',
-                    data: [10, 12, 23, 23, 16, 23, 21, 16],
-                    expected: 5.237
-                },
-                {
-                    function: 'Percentile90',
-                    data: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                    expected: 9.1
-                },
-                {
-                    function: 'Correlation',
-                    dataX: [1, 2, 3, 4, 5],
-                    dataY: [2, 4, 6, 8, 10],
-                    expected: 1.0 // Perfect positive correlation
-                },
-                {
-                    function: 'Regression',
-                    dataX: [1, 2, 3, 4, 5],
-                    dataY: [2.1, 3.9, 6.1, 7.8, 10.2],
-                    expected: 2.02 // Just the slope value for simplicity
-                }
+                { function: 'StandardDeviation', expected: 5.237 },
+                { function: 'Percentile90', expected: 9.1 },
+                { function: 'Correlation', expected: 1.0 },
+                { function: 'Regression', expected: 2.02 }
             ];
 
             for (const test of statisticalTests) {
-                mockRestService.get.mockResolvedValue(createMockResponse({
-                    value: test.expected
-                }));
+                jest.spyOn(cellService, 'executeMdxValues').mockResolvedValueOnce([test.expected]);
 
                 const result = await cellService.getValue('StatsCube', [test.function]);
                 expect(result).toBeDefined();
-                expect(typeof result === 'number' ? result : test.expected).toBeCloseTo(test.expected, 2);
+                expect(result).toBeCloseTo(test.expected, 2);
                 
                 console.log(`✅ Statistical calculation: ${test.function}`);
             }
