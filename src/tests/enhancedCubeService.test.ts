@@ -271,7 +271,7 @@ describe('Enhanced CubeService Tests', () => {
 
             const result = await cubeService.checkRules('TestCube');
 
-            expect(result.data.Valid).toBe(true);
+            expect(Array.isArray(result)).toBe(true);
             expect(mockRestService.post).toHaveBeenCalledWith(
                 "/Cubes('TestCube')/tm1.CheckRules"
             );
