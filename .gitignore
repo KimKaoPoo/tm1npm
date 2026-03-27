@@ -218,4 +218,5 @@ build/Release
 
 .claude/
 CLAUDE.md
+.mcp.json
 IMPLEMENTATION_PLAN.md
