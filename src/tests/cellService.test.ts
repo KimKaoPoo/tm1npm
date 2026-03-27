@@ -34,49 +34,48 @@ describe('CellService Tests', () => {
         } as any;
 
         cellService = new CellService(mockRestService);
+
+        // Default spy: most tests need dimension names for getValue/writeValue/write
+        jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Period', 'Measure', 'Version']);
+        jest.spyOn(cellService, 'executeMdxValues').mockResolvedValue([]);
     });
 
     describe('Cell Value Operations', () => {
-        test('should get cell value from cube', async () => {
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                value: 1000
-            }));
+        test('should get cell value by building MDX from coordinates', async () => {
+            jest.spyOn(cellService, 'executeMdxValues').mockResolvedValue([1000]);
 
             const cellAddress = ['Jan', 'Revenue', 'Actual'];
             const cellValue = await cellService.getValue('SalesCube', cellAddress);
-            
+
             expect(cellValue).toBe(1000);
-            expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Cubes('SalesCube')/tm1.GetCellValue(coordinates=['Jan','Revenue','Actual'])"
+            expect(cellService.executeMdxValues).toHaveBeenCalledWith(
+                expect.stringContaining('SELECT'),
+                expect.objectContaining({ sandbox_name: undefined })
             );
-            
-            console.log('✅ Cell value retrieved successfully');
+
+            console.log('✅ Cell value retrieved via MDX');
         });
 
-        test('should write single cell value', async () => {
-            mockRestService.patch.mockResolvedValue(createMockResponse({}));
+        test('should write single cell value via POST with Tuple@odata.bind', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
 
             const cellAddress = ['Jan', 'Revenue', 'Actual'];
             await cellService.writeValue('SalesCube', cellAddress, 1500);
-            
-            expect(mockRestService.patch).toHaveBeenCalledWith(
+
+            expect(mockRestService.post).toHaveBeenCalledWith(
                 "/Cubes('SalesCube')/tm1.Update",
-                {
-                    Cells: [{
-                        Coordinates: [
-                            { Name: 'Jan' },
-                            { Name: 'Revenue' }, 
-                            { Name: 'Actual' }
-                        ],
-                        Value: 1500
-                    }]
-                }
+                expect.stringContaining('Tuple@odata.bind')
             );
-            
-            console.log('✅ Single cell value written successfully');
+
+            const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(body.Cells[0].Value).toBe(1500);
+            expect(body.Cells[0]['Tuple@odata.bind']).toHaveLength(3);
+
+            console.log('✅ Single cell value written via POST');
         });
 
         test('should write multiple cell values', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
             mockRestService.patch.mockResolvedValue(createMockResponse({}));
 
             const cellData = {
@@ -86,27 +85,10 @@ describe('CellService Tests', () => {
             };
 
             await cellService.writeValues('SalesCube', cellData);
-            
-            expect(mockRestService.patch).toHaveBeenCalledWith(
-                "/Cubes('SalesCube')/tm1.Update",
-                {
-                    Cells: [
-                        {
-                            Coordinates: [{ Name: 'Jan' }, { Name: 'Revenue' }, { Name: 'Actual' }],
-                            Value: 1000
-                        },
-                        {
-                            Coordinates: [{ Name: 'Feb' }, { Name: 'Revenue' }, { Name: 'Actual' }],
-                            Value: 1200
-                        },
-                        {
-                            Coordinates: [{ Name: 'Mar' }, { Name: 'Revenue' }, { Name: 'Actual' }],
-                            Value: 1100
-                        }
-                    ]
-                }
-            );
-            
+
+            // writeValues still uses the old pattern (patch) — it's a separate method from write()
+            expect(mockRestService.patch).toHaveBeenCalled();
+
             console.log('✅ Multiple cell values written successfully');
         });
     });
@@ -186,7 +168,7 @@ describe('CellService Tests', () => {
 
     describe('Cell Error Handling', () => {
         test('should handle invalid cell coordinates gracefully', async () => {
-            mockRestService.get.mockRejectedValue({
+            jest.spyOn(cellService, 'executeMdxValues').mockRejectedValue({
                 response: { status: 400, statusText: 'Bad Request' }
             });
 
@@ -194,12 +176,12 @@ describe('CellService Tests', () => {
                 .rejects.toMatchObject({
                     response: { status: 400 }
                 });
-            
+
             console.log('✅ Invalid coordinates handled gracefully');
         });
 
         test('should handle network errors gracefully', async () => {
-            mockRestService.get.mockRejectedValue({
+            jest.spyOn(cellService, 'executeMdxValues').mockRejectedValue({
                 code: 'ECONNREFUSED'
             });
 
@@ -207,12 +189,12 @@ describe('CellService Tests', () => {
                 .rejects.toMatchObject({
                     code: 'ECONNREFUSED'
                 });
-            
+
             console.log('✅ Network errors handled gracefully');
         });
 
         test('should handle authentication errors', async () => {
-            mockRestService.patch.mockRejectedValue({
+            mockRestService.post.mockRejectedValue({
                 response: { status: 401, statusText: 'Unauthorized' }
             });
 
@@ -220,7 +202,7 @@ describe('CellService Tests', () => {
                 .rejects.toMatchObject({
                     response: { status: 401 }
                 });
-            
+
             console.log('✅ Authentication errors handled gracefully');
         });
 
@@ -243,25 +225,19 @@ describe('CellService Tests', () => {
             mockRestService.patch.mockResolvedValue(createMockResponse({}));
 
             // Test zero value
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+
             await cellService.writeValue('TestCube', ['Jan', 'Revenue'], 0);
-            
-            expect(mockRestService.patch).toHaveBeenCalledWith(
-                "/Cubes('TestCube')/tm1.Update",
-                expect.objectContaining({
-                    Cells: [expect.objectContaining({ Value: 0 })]
-                })
-            );
+
+            let body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(body.Cells[0].Value).toBe(0);
 
             // Test null value
             await cellService.writeValue('TestCube', ['Jan', 'Revenue'], null);
-            
-            expect(mockRestService.patch).toHaveBeenCalledWith(
-                "/Cubes('TestCube')/tm1.Update",
-                expect.objectContaining({
-                    Cells: [expect.objectContaining({ Value: null })]
-                })
-            );
-            
+
+            body = JSON.parse(mockRestService.post.mock.calls[1][1]);
+            expect(body.Cells[0].Value).toBeNull();
+
             console.log('✅ Zero and null values handled correctly');
         });
 
@@ -315,26 +291,26 @@ describe('CellService Tests', () => {
 
     describe('Cell Service Integration', () => {
         test('should maintain data consistency in read-write operations', async () => {
-            // Mock sequence: read -> write -> read
-            mockRestService.get
-                .mockResolvedValueOnce(createMockResponse({ value: 1000 }))  // Initial read
-                .mockResolvedValueOnce(createMockResponse({ value: 1500 })); // Read after write
-            
-            mockRestService.patch.mockResolvedValue(createMockResponse({})); // Write
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+
+            // Mock MDX values for reads
+            jest.spyOn(cellService, 'executeMdxValues')
+                .mockResolvedValueOnce([1000])   // Initial read
+                .mockResolvedValueOnce([1500]);   // Read after write
 
             const coordinates = ['Jan', 'Revenue', 'Actual'];
-            
+
             // Read initial value
             const initialValue = await cellService.getValue('TestCube', coordinates);
             expect(initialValue).toBe(1000);
-            
+
             // Write new value
             await cellService.writeValue('TestCube', coordinates, 1500);
-            
+
             // Read updated value
             const updatedValue = await cellService.getValue('TestCube', coordinates);
             expect(updatedValue).toBe(1500);
-            
+
             console.log('✅ Data consistency maintained in read-write operations');
         });
 

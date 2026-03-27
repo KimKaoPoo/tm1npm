@@ -10,6 +10,11 @@ import { CubeService } from '../services/CubeService';
 import { CellService } from '../services/CellService';
 import { ElementService } from '../services/ElementService';
 
+beforeEach(() => {
+    jest.spyOn(CellService.prototype, 'getDimensionNamesForWriting').mockResolvedValue(['Period', 'Measure', 'Version']);
+    jest.spyOn(CellService.prototype, 'executeMdxValues').mockResolvedValue([]);
+});
+
 // Helper function to create mock AxiosResponse
 const createMockResponse = (data: any, status: number = 200) => ({
     data,
@@ -407,6 +412,7 @@ describe('Advanced Security and Validation Tests', () => {
                 config: {} as any
             });
             
+            jest.spyOn(cellService, 'executeMdxValues').mockResolvedValueOnce([100]);
             const value = await cellService.getValue('TestCube', ['Element1']);
             expect(value).toBe(100);
             

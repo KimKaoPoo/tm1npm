@@ -5,7 +5,7 @@ import { Cube } from '../objects/Cube';
 import { Rules } from '../objects/Rules';
 import { CellService } from './CellService';
 import { ViewService } from './ViewService';
-import { formatUrl, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
+import { formatUrl, caseAndSpaceInsensitiveEquals, lowerAndDropSpaces } from '../utils/Utils';
 import { TM1RestException } from '../exceptions/TM1Exception';
 
 export class CubeService extends ObjectService {
@@ -114,14 +114,10 @@ export class CubeService extends ObjectService {
          * :param skipControlCubes: exclude control cubes (cubes with } prefix)
          * :return: Array of cube names
          */
-        let url = "/Cubes?$select=Name";
-        
-        if (skipControlCubes) {
-            url += "&$filter=not startswith(Name,'}')";
-        }
-
+        const endpoint = skipControlCubes ? "/ModelCubes()" : "/Cubes";
+        const url = `${endpoint}?$select=Name`;
         const response = await this.rest.get(url);
-        return response.data.value.map((cube: any) => cube.Name);
+        return response.data.value.map((cube: { Name: string }) => cube.Name);
     }
 
     public async exists(cubeName: string): Promise<boolean> {
@@ -159,29 +155,28 @@ export class CubeService extends ObjectService {
          * :param skip_control_cubes: exclude control cubes
          * :return: dictionary with cube names as keys and matching dimension names as values
          */
-        const cubes = skipControlCubes ? await this.getModelCubes() : await this.getAll();
-        const results: {[cubeName: string]: string[]} = {};
-
-        for (const cube of cubes) {
-            const matchingDimensions = cube.dimensions.filter(dim => 
-                dim.toLowerCase().includes(substring.toLowerCase())
-            );
-            
-            if (matchingDimensions.length > 0) {
-                results[cube.name] = matchingDimensions;
-            }
+        const normalized = substring.toLowerCase().replace(/\s+/g, '');
+        const endpoint = skipControlCubes ? "ModelCubes()" : "Cubes";
+        const url = formatUrl(
+            "/{}?$select=Name&$filter=Dimensions/any(d: contains(replace(tolower(d/Name), ' ', ''),'{}'))" +
+            "&$expand=Dimensions($select=Name;$filter=contains(replace(tolower(Name), ' ', ''), '{}'))",
+            endpoint, normalized, normalized
+        );
+        const response = await this.rest.get(url);
+        const result: {[cubeName: string]: string[]} = {};
+        for (const entry of response.data.value) {
+            result[entry.Name] = entry.Dimensions.map((dim: { Name: string }) => dim.Name);
         }
-
-        return results;
+        return result;
     }
 
     public async searchForRuleSubstring(
-        substring: string, 
-        skipControlCubes: boolean = false, 
-        caseInsensitive: boolean = true, 
+        substring: string,
+        skipControlCubes: boolean = false,
+        caseInsensitive: boolean = true,
         spaceInsensitive: boolean = true
     ): Promise<Cube[]> {
-        /** Search cubes by rules substring
+        /** Search cubes by rules substring (server-side OData filter)
          *
          * :param substring: substring to search for in rules
          * :param skip_control_cubes: exclude control cubes
@@ -189,26 +184,25 @@ export class CubeService extends ObjectService {
          * :param space_insensitive: ignore spaces when searching
          * :return: List of cubes containing the substring in rules
          */
-        const cubes = skipControlCubes ? await this.getModelCubes() : await this.getAll();
-        const results: Cube[] = [];
-
         let searchString = substring;
         if (caseInsensitive) searchString = searchString.toLowerCase();
         if (spaceInsensitive) searchString = searchString.replace(/\s+/g, '');
 
-        for (const cube of cubes) {
-            if (cube.rules && cube.rules.text) {
-                let ruleText = cube.rules.text;
-                if (caseInsensitive) ruleText = ruleText.toLowerCase();
-                if (spaceInsensitive) ruleText = ruleText.replace(/\s+/g, '');
-
-                if (ruleText.includes(searchString)) {
-                    results.push(cube);
-                }
-            }
+        let containsExpr: string;
+        if (caseInsensitive && spaceInsensitive) {
+            containsExpr = formatUrl("tolower(replace(Rules, ' ', '')),'{}')", searchString);
+        } else if (caseInsensitive) {
+            containsExpr = formatUrl("tolower(Rules),'{}')", searchString);
+        } else if (spaceInsensitive) {
+            containsExpr = formatUrl("replace(Rules, ' ', ''),'{}')", searchString);
+        } else {
+            containsExpr = formatUrl("Rules,'{}')", searchString);
         }
 
-        return results;
+        const endpoint = skipControlCubes ? "ModelCubes()" : "Cubes";
+        const url = `/${endpoint}?$filter=Rules ne null and contains(${containsExpr}&$expand=Dimensions($select=Name)`;
+        const response = await this.rest.get(url);
+        return response.data.value.map((cube: Record<string, unknown>) => Cube.fromDict(cube));
     }
 
     public async getStorageDimensionOrder(cubeName: string): Promise<string[]> {
@@ -243,10 +237,24 @@ export class CubeService extends ObjectService {
          * :param unique_names: return unique names instead of element names
          * :return: list of element names representing random intersection
          */
-        const url = formatUrl("/Cubes('{}')/tm1.GetRandomIntersection", cubeName) + 
-                   (uniqueNames ? "?uniqueNames=true" : "");
-        const response = await this.rest.get(url);
-        return response.data.value || [];
+        const dimensions = await this.getDimensionNames(cubeName);
+        const elements: string[] = [];
+
+        for (const dimension of dimensions) {
+            const url = formatUrl(
+                "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$top=50",
+                dimension, dimension
+            );
+            const response = await this.rest.get(url);
+            const elementList = response.data.value;
+            if (elementList.length > 0) {
+                const randomIdx = Math.floor(Math.random() * elementList.length);
+                const elementName = elementList[randomIdx].Name;
+                elements.push(uniqueNames ? `[${dimension}].[${elementName}]` : elementName);
+            }
+        }
+
+        return elements;
     }
 
     // Memory Management Functions
@@ -290,14 +298,15 @@ export class CubeService extends ObjectService {
         return await this.rest.post(url);
     }
 
-    public async cubeSaveData(cubeName: string): Promise<AxiosResponse> {
-        /** Save cube data to disk
+    public async cubeSaveData(cubeName: string): Promise<any> {
+        /** Save cube data to disk via TI code
          *
          * :param cube_name: name of the cube
          * :return: response
          */
-        const url = formatUrl("/Cubes('{}')/tm1.SaveData", cubeName);
-        return await this.rest.post(url);
+        const { ProcessService } = require('./ProcessService');
+        const processService = new ProcessService(this.rest);
+        return await processService.executeTiCode([`CubeSaveData('${cubeName.replace(/'/g, "''")}');`]);
     }
 
     public async getVmm(cubeName: string): Promise<number> {
@@ -306,9 +315,9 @@ export class CubeService extends ObjectService {
          * :param cube_name: name of the cube
          * :return: view storage max memory value
          */
-        const url = formatUrl("/Cubes('{}')/ViewStorageMaxMemory/$value", cubeName);
+        const url = formatUrl("/Cubes('{}')?$select=ViewStorageMaxMemory", cubeName);
         const response = await this.rest.get(url);
-        return parseInt(response.data) || 0;
+        return response.data.ViewStorageMaxMemory;
     }
 
     public async setVmm(cubeName: string, vmm: number): Promise<AxiosResponse> {
@@ -318,9 +327,8 @@ export class CubeService extends ObjectService {
          * :param vmm: view storage max memory value
          * :return: response
          */
-        const url = formatUrl("/Cubes('{}')/ViewStorageMaxMemory", cubeName);
-        const body = { Value: vmm };
-        return await this.rest.patch(url, body);
+        const url = formatUrl("/Cubes('{}')", cubeName);
+        return await this.rest.patch(url, JSON.stringify({ ViewStorageMaxMemory: vmm }));
     }
 
     public async getVmt(cubeName: string): Promise<number> {
@@ -329,9 +337,9 @@ export class CubeService extends ObjectService {
          * :param cube_name: name of the cube
          * :return: view storage min time value
          */
-        const url = formatUrl("/Cubes('{}')/ViewStorageMinTime/$value", cubeName);
+        const url = formatUrl("/Cubes('{}')?$select=ViewStorageMinTime", cubeName);
         const response = await this.rest.get(url);
-        return parseInt(response.data) || 0;
+        return response.data.ViewStorageMinTime;
     }
 
     public async setVmt(cubeName: string, vmt: number): Promise<AxiosResponse> {
@@ -341,9 +349,8 @@ export class CubeService extends ObjectService {
          * :param vmt: view storage min time value
          * :return: response
          */
-        const url = formatUrl("/Cubes('{}')/ViewStorageMinTime", cubeName);
-        const body = { Value: vmt };
-        return await this.rest.patch(url, body);
+        const url = formatUrl("/Cubes('{}')", cubeName);
+        return await this.rest.patch(url, JSON.stringify({ ViewStorageMinTime: vmt }));
     }
 
     public async getDimensionNames(
@@ -362,14 +369,15 @@ export class CubeService extends ObjectService {
     }
 
     // Rules Management Functions
-    public async checkRules(cubeName: string): Promise<any> {
+    public async checkRules(cubeName: string): Promise<any[]> {
         /** Check cube rules syntax
          *
          * :param cube_name: name of the cube
-         * :return: rules check result
+         * :return: array of rule syntax errors
          */
         const url = formatUrl("/Cubes('{}')/tm1.CheckRules", cubeName);
-        return await this.rest.post(url);
+        const response = await this.rest.post(url);
+        return response.data.value;
     }
 
     public async updateOrCreateRules(cubeName: string, rules: string | Rules): Promise<AxiosResponse> {
@@ -379,15 +387,9 @@ export class CubeService extends ObjectService {
          * :param rules: rules text or Rules object
          * :return: response
          */
-        const url = formatUrl("/Cubes('{}')/Rules", cubeName);
-        const body = typeof rules === 'string' ? { Text: rules } : rules.body;
-        
-        // Try to update first, if it fails, create
-        try {
-            return await this.rest.patch(url, body);
-        } catch (error) {
-            return await this.rest.post(url, body);
-        }
+        const rulesObj = typeof rules === 'string' ? new Rules(rules) : rules;
+        const url = formatUrl("/Cubes('{}')", cubeName);
+        return await this.rest.patch(url, rulesObj.body);
     }
 
     public async getMeasureDimension(cubeName: string): Promise<string> {
@@ -406,7 +408,7 @@ export class CubeService extends ObjectService {
      * Search for cubes that contain specific dimensions
      */
     public async searchForDimension(
-        dimensionName: string, 
+        dimensionName: string,
         skipControlCubes: boolean = false
     ): Promise<string[]> {
         /** Search cubes that contain a specific dimension
@@ -415,16 +417,14 @@ export class CubeService extends ObjectService {
          * :param skipControlCubes: exclude control cubes
          * :return: array of cube names that contain the dimension
          */
-        const cubes = skipControlCubes ? await this.getModelCubes() : await this.getAll();
-        const results: string[] = [];
-
-        for (const cube of cubes) {
-            if (cube.dimensions.includes(dimensionName)) {
-                results.push(cube.name);
-            }
-        }
-
-        return results;
+        const normalized = dimensionName.toLowerCase().replace(/\s+/g, '');
+        const endpoint = skipControlCubes ? "ModelCubes()" : "Cubes";
+        const url = formatUrl(
+            "/{}?$select=Name&$filter=Dimensions/any(d: replace(tolower(d/Name), ' ', '') eq '{}')",
+            endpoint, normalized
+        );
+        const response = await this.rest.get(url);
+        return response.data.value.map((entry: { Name: string }) => entry.Name);
     }
 
     /**
@@ -436,37 +436,22 @@ export class CubeService extends ObjectService {
          * :param skipControlCubes: exclude control cubes
          * :return: array of cube names that have rules
          */
-        const cubes = skipControlCubes ? await this.getModelCubes() : await this.getAll();
-        const results: string[] = [];
-
-        for (const cube of cubes) {
-            if (cube.hasRules) {
-                results.push(cube.name);
-            }
-        }
-
-        return results;
+        const endpoint = skipControlCubes ? "ModelCubes()" : "Cubes";
+        const url = `/${endpoint}?$select=Name,Rules&$filter=Rules ne null`;
+        const response = await this.rest.get(url);
+        return response.data.value.map((cube: { Name: string }) => cube.Name);
     }
 
-    /**
-     * Get all cube names that do not have rules
-     */
     public async getAllNamesWithoutRules(skipControlCubes: boolean = false): Promise<string[]> {
         /** Get all cube names that do not have rules
          *
          * :param skipControlCubes: exclude control cubes
          * :return: array of cube names that do not have rules
          */
-        const cubes = skipControlCubes ? await this.getModelCubes() : await this.getAll();
-        const results: string[] = [];
-
-        for (const cube of cubes) {
-            if (!cube.hasRules) {
-                results.push(cube.name);
-            }
-        }
-
-        return results;
+        const endpoint = skipControlCubes ? "ModelCubes()" : "Cubes";
+        const url = `/${endpoint}?$select=Name,Rules&$filter=Rules eq null`;
+        const response = await this.rest.get(url);
+        return response.data.value.map((cube: { Name: string }) => cube.Name);
     }
 
     /**

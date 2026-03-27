@@ -9,6 +9,7 @@ import { ProcessService } from './ProcessService';
 import { ViewService } from './ViewService';
 import { OperationStatus, OperationType } from './AsyncOperationService';
 import { TM1Exception } from '../exceptions/TM1Exception';
+import { formatUrl } from '../utils/Utils';
 
 export interface CellsetDict {
     [coordinates: string]: any;
@@ -104,34 +105,56 @@ export class CellService {
     }
 
     /**
-     * Read a single cell value from a cube
+     * Read a single cell value from a cube by building MDX from coordinates
      */
-    public async getValue(cubeName: string, coordinates: string[]): Promise<any> {
-        const url = `/Cubes('${cubeName}')/tm1.GetCellValue(coordinates=[${coordinates.map(c => `'${c}'`).join(',')}])`;
-        const response = await this.rest.get(url);
-        return response.data.value;
+    public async getValue(
+        cubeName: string,
+        coordinates: string[],
+        dimensions?: string[],
+        sandbox_name?: string
+    ): Promise<any> {
+        const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
+        const members = coordinates.map((elem, i) => `[${dims[i]}].[${elem}]`);
+        const mdx = `SELECT {${members[members.length - 1]}} ON COLUMNS` +
+            (members.length > 1
+                ? `, {(${members.slice(0, -1).join(',')})} ON ROWS`
+                : '') +
+            ` FROM [${cubeName}]`;
+        const values = await this.executeMdxValues(mdx, { sandbox_name });
+        return values.length > 0 ? values[0] : undefined;
     }
 
     /**
      * Write a single cell value to a cube
      */
-    public async writeValue(cubeName: string, coordinates: string[], value: any): Promise<void> {
-        const url = `/Cubes('${cubeName}')/tm1.Update`;
+    public async writeValue(
+        cubeName: string,
+        coordinates: string[],
+        value: any,
+        dimensions?: string[],
+        sandbox_name?: string
+    ): Promise<void> {
+        const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
+        const url = formatUrl("/Cubes('{}')/tm1.Update", cubeName)
+            + (sandbox_name ? `?$sandbox=${sandbox_name}` : '');
         const body = {
             Cells: [{
-                Coordinates: coordinates.map(c => ({ Name: c })),
+                'Tuple@odata.bind': dims.map((d, i) =>
+                    `Dimensions('${d}')/Hierarchies('${d}')/Elements('${coordinates[i]}')`
+                ),
                 Value: value
             }]
         };
-        await this.rest.patch(url, body);
+        await this.rest.post(url, JSON.stringify(body));
     }
 
     /**
-     * Read multiple cell values from a cube based on coordinate sets
+     * Read multiple cell values from a cube based on coordinate sets.
+     * Builds MDX with member tuples on columns axis.
      */
     public async getValues(
-        cubeName: string, 
-        elementSets: string[][], 
+        cubeName: string,
+        elementSets: string[][],
         dimensions?: string[],
         sandbox_name?: string
     ): Promise<any[]> {
@@ -139,19 +162,12 @@ export class CellService {
             return [];
         }
 
-        // Build coordinate tuples for bulk read
-        const coordinateTuples = elementSets.map(elements => 
-            elements.map(element => `'${element}'`).join(',')
+        const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
+        const tuples = elementSets.map(elements =>
+            `(${elements.map((elem, i) => `[${dims[i]}].[${elem}]`).join(',')})`
         );
-
-        let url = `/Cubes('${cubeName}')/tm1.GetCellValues(coordinates=[${coordinateTuples.join('],[')}])`;
-        
-        if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
-        }
-
-        const response = await this.rest.get(url);
-        return response.data.value || [];
+        const mdx = `SELECT {${tuples.join(',')}} ON COLUMNS FROM [${cubeName}]`;
+        return await this.executeMdxValues(mdx, { sandbox_name });
     }
 
     /**
@@ -159,32 +175,42 @@ export class CellService {
      * {coordinate_string: value} format for bulk writes
      */
     public async write(
-        cubeName: string, 
-        cellsetAsDict: CellsetDict, 
+        cubeName: string,
+        cellsetAsDict: CellsetDict,
         dimensions?: string[],
         options: WriteOptions = {}
     ): Promise<void> {
+        return this.writeThroughCellset(cubeName, cellsetAsDict, dimensions, options);
+    }
+
+    private async writeThroughCellset(
+        cubeName: string,
+        cellsetAsDict: CellsetDict,
+        dimensions?: string[],
+        options: WriteOptions = {}
+    ): Promise<void> {
+        const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
         const cells = Object.entries(cellsetAsDict).map(([coordinates, value]) => {
             const elementArray = coordinates.split(',').map(s => s.trim());
             return {
-                Coordinates: elementArray.map(element => ({ Name: element })),
+                'Tuple@odata.bind': elementArray.map((elem, i) =>
+                    `Dimensions('${dims[i]}')/Hierarchies('${dims[i]}')/Elements('${elem}')`
+                ),
                 Value: value
             };
         });
 
-        let url = `/Cubes('${cubeName}')/tm1.Update`;
-        
+        let url = formatUrl("/Cubes('{}')/tm1.Update", cubeName);
+
         if (options.sandbox_name) {
             url += `?$sandbox=${options.sandbox_name}`;
         }
 
-        const body = {
-            Cells: cells,
-            ...(options.increment && { Increment: true }),
-            ...(options.allow_spread && { AllowSpread: true })
-        };
+        const body: any = { Cells: cells };
+        if (options.increment) body.Increment = true;
+        if (options.allow_spread) body.AllowSpread = true;
 
-        await this.rest.patch(url, body);
+        await this.rest.post(url, JSON.stringify(body));
     }
 
     /**
@@ -292,21 +318,14 @@ export class CellService {
      * Create a cellset for advanced operations
      */
     public async createCellset(mdx: string, sandbox_name?: string): Promise<string> {
-        let url = '/Cellsets';
-        
+        let url = '/ExecuteMDX';
+
         if (sandbox_name) {
             url += `?$sandbox=${sandbox_name}`;
         }
 
         const body = { MDX: mdx };
-        const response = await this.rest.post(url, body);
-        
-        // Extract cellset ID from response location or data
-        if (response.headers?.location) {
-            const matches = response.headers.location.match(/Cellsets\('([^']+)'\)/);
-            return matches ? matches[1] : '';
-        }
-        
+        const response = await this.rest.post(url, JSON.stringify(body));
         return response.data?.ID || '';
     }
 
@@ -349,14 +368,34 @@ export class CellService {
      * Clear cube data with MDX filter
      */
     public async clearWithMdx(cubeName: string, mdx: string, sandbox_name?: string): Promise<void> {
-        let url = `/Cubes('${cubeName}')/tm1.Clear`;
-        
-        if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
-        }
+        /** Clear a slice in a cube based on an MDX query.
+         * Creates a temp MDX view, executes ViewZeroOut via TI, then deletes the view.
+         */
+        const { v4: uuidv4 } = require('uuid');
+        const { ProcessService } = require('./ProcessService');
+        const processService = new ProcessService(this.rest);
 
-        const body = { MDX: mdx };
-        await this.rest.post(url, body);
+        const viewName = `}TM1py${uuidv4()}`;
+        // Create temp MDX view
+        const viewUrl = formatUrl("/Cubes('{}')/Views", cubeName);
+        const viewBody = {
+            '@odata.type': 'ibm.tm1.api.v1.MDXView',
+            Name: viewName,
+            MDX: mdx
+        };
+        await this.rest.post(viewUrl, JSON.stringify(viewBody));
+
+        try {
+            const code = `ViewZeroOut('${cubeName.replace(/'/g, "''")}','${viewName.replace(/'/g, "''")}');`;
+            await processService.executeTiCode([code]);
+        } finally {
+            try {
+                const deleteUrl = formatUrl("/Cubes('{}')/Views('{}')", cubeName, viewName);
+                await this.rest.delete(deleteUrl);
+            } catch (_) {
+                // Cleanup failure should not mask the original error
+            }
+        }
     }
 
     /**
