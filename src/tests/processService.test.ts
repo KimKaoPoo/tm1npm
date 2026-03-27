@@ -340,47 +340,46 @@ describe('ProcessService Tests', () => {
     });
 
     describe('Process Search Operations', () => {
-        test('should handle searchStringInCode functionality', async () => {
+        test('should use server-side OData filter in searchStringInCode', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse({
                 value: [
-                    { 
-                        Name: 'ProcessWithCode', 
-                        PrologProcedure: 'sMessage = "Hello World";',
-                        HasSecurityAccess: true 
-                    },
-                    { 
-                        Name: 'ProcessWithoutCode', 
-                        PrologProcedure: 'nValue = 123;',
-                        HasSecurityAccess: true 
-                    }
+                    { Name: 'ProcessWithCode' }
                 ]
             }));
 
             const results = await processService.searchStringInCode('Hello');
-            
+
             expect(Array.isArray(results)).toBe(true);
             expect(results.length).toBe(1);
-            expect(results[0]).toBe('ProcessWithCode'); // Returns process name string, not object
-            
-            console.log('✅ Search string in code functionality working');
+            expect(results[0]).toBe('ProcessWithCode');
+            const url = mockRestService.get.mock.calls[0][0];
+            expect(url).toContain('/Processes?$select=Name&$filter=');
+            expect(url).toContain("'hello'");
+
+            console.log('✅ searchStringInCode uses server-side OData filter');
+        });
+
+        test('should include skipControlProcesses filter in searchStringInCode', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await processService.searchStringInCode('test', true);
+
+            const url = mockRestService.get.mock.calls[0][0];
+            expect(url).toContain("startswith(Name, '}') eq false");
+
+            console.log('✅ searchStringInCode includes skipControlProcesses filter');
         });
 
         test('should handle empty search results gracefully', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse({
-                value: [
-                    { 
-                        Name: 'Process1', 
-                        PrologProcedure: 'nValue = 123;',
-                        HasSecurityAccess: true 
-                    }
-                ]
+                value: []
             }));
 
             const results = await processService.searchStringInCode('NonExistentString');
-            
+
             expect(Array.isArray(results)).toBe(true);
             expect(results.length).toBe(0);
-            
+
             console.log('✅ Empty search results handled gracefully');
         });
     });

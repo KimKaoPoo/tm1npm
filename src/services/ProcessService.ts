@@ -1,10 +1,11 @@
 import { AxiosResponse } from 'axios';
+import { v4 as uuidv4 } from 'uuid';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { Process } from '../objects/Process';
 import { ProcessDebugBreakpoint } from '../objects/ProcessDebugBreakpoint';
 import { TM1RestException, TM1Exception } from '../exceptions/TM1Exception';
-import { formatUrl } from '../utils/Utils';
+import { formatUrl, lowerAndDropSpaces } from '../utils/Utils';
 import { OperationStatus, OperationType } from './AsyncOperationService';
 
 export class ProcessService extends ObjectService {
@@ -92,42 +93,25 @@ export class ProcessService extends ObjectService {
     }
 
     public async searchStringInCode(searchString: string, skipControlProcesses: boolean = false): Promise<string[]> {
-        /** Search for a string in all process code
+        /** Search for a string in all process code (server-side OData filter)
          *
-         * :param search_string: string to search for
+         * :param search_string: case insensitive string to search for
          * :param skip_control_processes: bool, True to exclude processes that begin with "}" or "{"
          * :return: List of process names that contain the search string
          */
-        const allProcesses = await this.getAll(skipControlProcesses);
-        const matchingProcesses: string[] = [];
+        const normalized = lowerAndDropSpaces(searchString).replace(/'/g, "''");
+        const fields = ['PrologProcedure', 'MetadataProcedure', 'DataProcedure', 'EpilogProcedure'];
+        const codeFilter = fields
+            .map(f => `contains(tolower(replace(${f},' ','')), '${normalized}')`)
+            .join(' or ');
 
-        for (const process of allProcesses) {
-            if (this.processContainsString(process, searchString)) {
-                matchingProcesses.push(process.name);
-            }
+        let url = `/Processes?$select=Name&$filter=(${codeFilter})`;
+        if (skipControlProcesses) {
+            url += " and (startswith(Name, '}') eq false and startswith(Name, '{') eq false)";
         }
 
-        return matchingProcesses;
-    }
-
-    private processContainsString(process: Process, searchString: string): boolean {
-        /** Check if a process contains a specific string in its code
-         */
-        const codeProperties = [
-            'prologProcedure',
-            'metadataProcedure', 
-            'dataProcedure',
-            'epilogProcedure'
-        ];
-
-        for (const property of codeProperties) {
-            const code = (process as any)[property];
-            if (code && code.toLowerCase().includes(searchString.toLowerCase())) {
-                return true;
-            }
-        }
-
-        return false;
+        const response = await this.rest.get(url);
+        return response.data.value.map((p: { Name: string }) => p.Name);
     }
 
     public async create(process: Process): Promise<AxiosResponse> {
@@ -517,46 +501,40 @@ export class ProcessService extends ObjectService {
     }
 
     public async executeTiCode(
-        linesProlog?: string[],
-        linesMetadata?: string[],
-        linesData?: string[],
+        linesProlog: string[],
         linesEpilog?: string[],
         parameters?: Record<string, any>
     ): Promise<any> {
-        /** Execute TI code directly on TM1 Server with separate sections
+        /** Execute lines of code on the TM1 Server
          *
-         * :param lines_prolog: TI code for prolog section
-         * :param lines_metadata: TI code for metadata section
-         * :param lines_data: TI code for data section
-         * :param lines_epilog: TI code for epilog section
+         * :param lines_prolog: list - where each element is a valid statement of TI code.
+         * :param lines_epilog: list - where each element is a valid statement of TI code.
          * :param parameters: dictionary of parameters
          * :return: execution result
          */
-        const url = "/ExecuteProcessWithReturn";
-        
-        const body: any = {};
-        
-        if (linesProlog && linesProlog.length > 0) {
-            body.PrologProcedure = linesProlog.join('\n');
+        const name = `}TM1py${uuidv4()}`;
+        const p = new Process(
+            name,
+            false,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            Process.AUTO_GENERATED_STATEMENTS + linesProlog.join('\r\n'),
+            '',
+            '',
+            linesEpilog ? Process.AUTO_GENERATED_STATEMENTS + linesEpilog.join('\r\n') : ''
+        );
+        await this.create(p);
+        try {
+            return await this.execute(name, parameters);
+        } finally {
+            try {
+                await this.delete(name);
+            } catch (_deleteError) {
+                // Cleanup failure should not mask the original execution error
+            }
         }
-        if (linesMetadata && linesMetadata.length > 0) {
-            body.MetadataProcedure = linesMetadata.join('\n');
-        }
-        if (linesData && linesData.length > 0) {
-            body.DataProcedure = linesData.join('\n');
-        }
-        if (linesEpilog && linesEpilog.length > 0) {
-            body.EpilogProcedure = linesEpilog.join('\n');
-        }
-        
-        if (parameters && Object.keys(parameters).length > 0) {
-            body.Parameters = Object.entries(parameters).map(([name, value]) => ({
-                Name: name,
-                Value: value
-            }));
-        }
-
-        return await this.rest.post(url, JSON.stringify(body));
     }
 
     public async compileSingleStatement(statement: string): Promise<any> {
