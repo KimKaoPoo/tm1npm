@@ -74,7 +74,7 @@ describe('CubeService.getAllNames', () => {
             
             expect(result).toEqual(['SalesCube', 'BudgetCube', 'ForecastCube']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Cubes?$select=Name&$filter=not startswith(Name,'}')"
+                "/ModelCubes()?$select=Name"
             );
         });
 
@@ -143,7 +143,7 @@ describe('CubeService.getAllNames', () => {
             await cubeService.getAllNames(true);
             
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Cubes?$select=Name&$filter=not startswith(Name,'}')"
+                "/ModelCubes()?$select=Name"
             );
         });
 
