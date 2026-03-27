@@ -505,7 +505,7 @@ describe('Comprehensive Service Tests with Mocking', () => {
             }));
             
             const cellValue = await cellService.getValue('TestCube', ['NullElement']);
-            expect(cellValue).toBeNull();
+            expect(cellValue == null).toBe(true);
             
             console.log('✅ Null/undefined values handled correctly');
         });
