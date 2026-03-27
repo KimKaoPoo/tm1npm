@@ -44,33 +44,30 @@ describe('Enhanced CellService Tests', () => {
     });
 
     describe('Enhanced Data Writing Functions', () => {
-        test('writeDataframe should write tabular data to cube', async () => {
+        test('writeDataframe should write tabular data to cube via POST', async () => {
             const dataFrame = [
                 ['2024', 'Actual', 'London', 100],
                 ['2024', 'Forecast', 'Paris', 200]
             ];
             const dimensions = ['Year', 'Version', 'Region'];
 
-            mockRestService.patch.mockResolvedValue(createMockResponse({}));
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
 
             await cellService.writeDataframe('SalesCube', dataFrame, dimensions);
 
-            expect(mockRestService.patch).toHaveBeenCalledWith(
+            expect(mockRestService.post).toHaveBeenCalledWith(
                 "/Cubes('SalesCube')/tm1.Update",
                 expect.objectContaining({
                     Cells: expect.arrayContaining([
                         expect.objectContaining({
-                            Coordinates: [
-                                { Name: '2024' },
-                                { Name: 'Actual' },
-                                { Name: 'London' }
-                            ],
-                            Value: 100
+                            'Tuple@odata.bind': expect.arrayContaining([
+                                "Dimensions('Year')/Hierarchies('Year')/Elements('2024')"
+                            ])
                         })
                     ])
                 })
             );
-            
+
             console.log('✅ writeDataframe test passed');
         });
 
@@ -171,24 +168,27 @@ describe('Enhanced CellService Tests', () => {
     });
 
     describe('Advanced Operations', () => {
-        test('clearWithDataframe should clear based on DataFrame coordinates', async () => {
+        test('clearWithDataframe should clear via ViewZeroOut', async () => {
             const dataFrame = [
                 ['2024', 'Actual', 'London'],
                 ['2024', 'Forecast', 'Paris']
             ];
             const dimensions = ['Year', 'Version', 'Region'];
 
-            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            mockRestService.post.mockResolvedValue(createMockResponse({}, 201));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}, 204));
+            mockProcessService.executeTiCode = jest.fn().mockResolvedValue({});
 
             await cellService.clearWithDataframe('SalesCube', dataFrame, dimensions);
 
             expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Cubes('SalesCube')/tm1.Clear",
-                expect.objectContaining({
-                    MDX: expect.stringContaining("('2024','Actual','London')")
-                })
+                "/Cubes('SalesCube')/Views",
+                expect.objectContaining({ '@odata.type': 'ibm.tm1.api.v1.MDXView' })
             );
-            
+            expect(mockProcessService.executeTiCode).toHaveBeenCalledWith(
+                expect.arrayContaining([expect.stringContaining('ViewZeroOut')])
+            );
+
             console.log('✅ clearWithDataframe test passed');
         });
 
@@ -239,26 +239,28 @@ describe('Enhanced CellService Tests', () => {
     describe('Error Handling', () => {
         test('should handle write errors gracefully', async () => {
             const cellset = { '2024,Actual,London': 100 };
+            const dims = ['Year', 'Version', 'Region'];
 
-            mockRestService.patch.mockRejectedValue(new Error('Server Error'));
+            mockRestService.post.mockRejectedValue(new Error('Server Error'));
 
-            await expect(cellService.write('SalesCube', cellset)).rejects.toThrow('Server Error');
-            
+            await expect(cellService.write('SalesCube', cellset, dims)).rejects.toThrow('Server Error');
+
             console.log('✅ Error handling test passed');
         });
 
         test('should handle sandbox operations', async () => {
             const cellset = { '2024,Actual,London': 100 };
+            const dims = ['Year', 'Version', 'Region'];
 
-            mockRestService.patch.mockResolvedValue(createMockResponse({}));
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
 
-            await cellService.write('SalesCube', cellset, undefined, { sandbox_name: 'TestSandbox' });
+            await cellService.write('SalesCube', cellset, dims, { sandbox_name: 'TestSandbox' });
 
-            expect(mockRestService.patch).toHaveBeenCalledWith(
+            expect(mockRestService.post).toHaveBeenCalledWith(
                 "/Cubes('SalesCube')/tm1.Update?$sandbox=TestSandbox",
                 expect.any(Object)
             );
-            
+
             console.log('✅ Sandbox operations test passed');
         });
     });

@@ -11,19 +11,19 @@ import { OperationStatus, OperationType } from './AsyncOperationService';
 import { TM1Exception } from '../exceptions/TM1Exception';
 
 export interface CellsetDict {
-    [coordinates: string]: any;
+    [coordinates: string]: string | number | null;
 }
 
 export interface DataFrame {
     columns: string[];
-    data: any[][];
-    index?: any[];
+    data: (string | number | null)[][];
+    index?: (string | number)[];
 }
 
 export interface CellsetAxes {
-    Hierarchies: any[];
-    Tuples: any[];
-    Members: any[];
+    Hierarchies: Record<string, unknown>[];
+    Tuples: Record<string, unknown>[];
+    Members: Record<string, unknown>[];
     Cardinality: number;
 }
 
@@ -104,87 +104,201 @@ export class CellService {
     }
 
     /**
-     * Read a single cell value from a cube
+     * Read a single cell value from a cube.
+     * Builds an MDX query from coordinates and delegates to executeMdx(),
+     * matching tm1py get_value() behavior.
+     *
+     * @param cubeName - Name of the cube
+     * @param elements - Element names or string of comma-separated element names
+     * @param dimensions - Optional dimension names (resolved from cube if not provided)
+     * @param sandboxName - Optional sandbox name
+     * @param elementSeparator - Separator between elements when elements is a string
+     * @param hierarchySeparator - Separator between hierarchy and element
+     * @param hierarchyElementSeparator - Separator for hierarchy::element notation
      */
-    public async getValue(cubeName: string, coordinates: string[]): Promise<any> {
-        const url = `/Cubes('${cubeName}')/tm1.GetCellValue(coordinates=[${coordinates.map(c => `'${c}'`).join(',')}])`;
-        const response = await this.rest.get(url);
-        return response.data.value;
+    public async getValue(
+        cubeName: string,
+        elements: string | string[],
+        dimensions?: string[],
+        sandboxName?: string,
+        elementSeparator: string = ',',
+        hierarchySeparator: string = '&&',
+        hierarchyElementSeparator: string = '::'
+    ): Promise<any> {
+        // Parse elements into array of member unique names
+        const memberUniqueNames = await this.buildMemberUniqueNames(
+            cubeName, elements, dimensions, elementSeparator,
+            hierarchySeparator, hierarchyElementSeparator
+        );
+
+        // Build MDX: all but last on ROWS, last on COLUMNS
+        const lastMember = memberUniqueNames[memberUniqueNames.length - 1];
+        const rowMembers = memberUniqueNames.slice(0, -1);
+
+        let mdx: string;
+        if (rowMembers.length === 0) {
+            mdx = `SELECT {${lastMember}} ON COLUMNS FROM [${cubeName}]`;
+        } else {
+            const rowTuple = rowMembers.length === 1
+                ? `{${rowMembers[0]}}`
+                : `{(${rowMembers.join(',')})}`;
+            mdx = `SELECT {${lastMember}} ON COLUMNS, ${rowTuple} ON ROWS FROM [${cubeName}]`;
+        }
+
+        const values = await this.executeMdxValues(mdx, { sandbox_name: sandboxName });
+        return values.length > 0 ? values[0] : null;
     }
 
     /**
-     * Write a single cell value to a cube
+     * Write a single cell value to a cube.
+     * Uses POST to /Cubes('{}')/tm1.Update with Tuple@odata.bind body format,
+     * matching tm1py write_value() behavior.
+     *
+     * @param cubeName - Name of the cube
+     * @param elementTuple - Element names for each dimension
+     * @param value - Value to write (string or number)
+     * @param dimensions - Optional dimension names (resolved from cube if not provided)
+     * @param sandboxName - Optional sandbox name
      */
-    public async writeValue(cubeName: string, coordinates: string[], value: any): Promise<void> {
-        const url = `/Cubes('${cubeName}')/tm1.Update`;
-        const body = {
+    public async writeValue(
+        cubeName: string,
+        elementTuple: string[],
+        value: string | number,
+        dimensions?: string[],
+        sandboxName?: string
+    ): Promise<void> {
+        // Resolve dimensions if not provided
+        const dimNames = dimensions || await this.getDimensionNamesForWriting(cubeName);
+
+        let url = `/Cubes('${cubeName}')/tm1.Update`;
+        if (sandboxName) {
+            url += `?$sandbox=${sandboxName}`;
+        }
+
+        // Build Tuple@odata.bind array
+        const tupleBindings = elementTuple.map((element, index) => {
+            const dim = dimNames[index];
+            return `Dimensions('${dim}')/Hierarchies('${dim}')/Elements('${element}')`;
+        });
+
+        const body: any = {
             Cells: [{
-                Coordinates: coordinates.map(c => ({ Name: c })),
-                Value: value
-            }]
+                'Tuple@odata.bind': tupleBindings
+            }],
+            Value: String(value)
         };
-        await this.rest.patch(url, body);
+
+        await this.rest.post(url, body);
     }
 
     /**
-     * Read multiple cell values from a cube based on coordinate sets
+     * Read multiple cell values from a cube based on coordinate sets.
+     * Builds MDX with member tuples on columns axis and delegates to executeMdxValues(),
+     * matching tm1py get_values() behavior.
+     *
+     * @param cubeName - Name of the cube
+     * @param elementSets - Array of element coordinate arrays, each representing one cell
+     * @param dimensions - Optional dimension names (resolved from cube if not provided)
+     * @param sandboxName - Optional sandbox name
      */
     public async getValues(
-        cubeName: string, 
-        elementSets: string[][], 
+        cubeName: string,
+        elementSets: string[][],
         dimensions?: string[],
-        sandbox_name?: string
+        sandboxName?: string
     ): Promise<any[]> {
         if (!elementSets || elementSets.length === 0) {
             return [];
         }
 
-        // Build coordinate tuples for bulk read
-        const coordinateTuples = elementSets.map(elements => 
-            elements.map(element => `'${element}'`).join(',')
-        );
+        // Resolve dimensions if not provided
+        const dimNames = dimensions || await this.getDimensionNamesForWriting(cubeName);
 
-        let url = `/Cubes('${cubeName}')/tm1.GetCellValues(coordinates=[${coordinateTuples.join('],[')}])`;
-        
-        if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
-        }
+        // Build MDX tuples for each coordinate set
+        const mdxTuples = elementSets.map(elements => {
+            const members = elements.map((element, i) => {
+                const dim = dimNames[i];
+                return `[${dim}].[${dim}].[${element}]`;
+            });
+            return `(${members.join(',')})`;
+        });
 
-        const response = await this.rest.get(url);
-        return response.data.value || [];
+        const mdx = `SELECT {${mdxTuples.join(',')}} ON COLUMNS FROM [${cubeName}]`;
+
+        return await this.executeMdxValues(mdx, { sandbox_name: sandboxName });
     }
 
     /**
-     * Write multiple cell values using dictionary format
-     * {coordinate_string: value} format for bulk writes
+     * Write multiple cell values using dictionary format.
+     * Routes to write_through_cellset (default), write_through_unbound_process (use_ti),
+     * or write_through_blob (use_blob), matching tm1py write() behavior.
+     *
+     * @param cubeName - Name of the cube
+     * @param cellsetAsDict - Dictionary of {coordinate_string: value} for bulk writes
+     * @param dimensions - Optional dimension names (resolved from cube if not provided)
+     * @param options - Write options (increment, sandbox, use_ti, use_blob, etc.)
      */
     public async write(
-        cubeName: string, 
-        cellsetAsDict: CellsetDict, 
+        cubeName: string,
+        cellsetAsDict: CellsetDict,
         dimensions?: string[],
         options: WriteOptions = {}
     ): Promise<void> {
-        const cells = Object.entries(cellsetAsDict).map(([coordinates, value]) => {
-            const elementArray = coordinates.split(',').map(s => s.trim());
-            return {
-                Coordinates: elementArray.map(element => ({ Name: element })),
-                Value: value
-            };
-        });
+        if (options.use_ti) {
+            await this.writeThroughUnboundProcess(cubeName, cellsetAsDict, undefined, options);
+            return;
+        }
+
+        if (options.use_blob) {
+            await this.writeThroughBlob(cubeName, cellsetAsDict, options);
+            return;
+        }
+
+        // Default: write through cellset (POST to tm1.Update)
+        await this.writeThroughCellset(cubeName, cellsetAsDict, dimensions, options);
+    }
+
+    /**
+     * Write data through cellset approach using POST to /Cubes('{}')/tm1.Update.
+     * Uses Tuple@odata.bind body format matching tm1py write_through_cellset().
+     */
+    private async writeThroughCellset(
+        cubeName: string,
+        cellsetAsDict: CellsetDict,
+        dimensions?: string[],
+        options: WriteOptions = {}
+    ): Promise<void> {
+        // Resolve dimensions if not provided
+        const dimNames = dimensions || await this.getDimensionNamesForWriting(cubeName);
 
         let url = `/Cubes('${cubeName}')/tm1.Update`;
-        
         if (options.sandbox_name) {
             url += `?$sandbox=${options.sandbox_name}`;
         }
 
-        const body = {
+        // Build cells array with Tuple@odata.bind format
+        const cells: any[] = [];
+        const values: string[] = [];
+
+        for (const [coordinates, value] of Object.entries(cellsetAsDict)) {
+            const elementArray = coordinates.split(',').map(s => s.trim());
+            const tupleBindings = elementArray.map((element, index) => {
+                const dim = dimNames[index];
+                return `Dimensions('${dim}')/Hierarchies('${dim}')/Elements('${element}')`;
+            });
+
+            cells.push({ 'Tuple@odata.bind': tupleBindings });
+            values.push(String(value));
+        }
+
+        const body: any = {
             Cells: cells,
+            Values: values,
             ...(options.increment && { Increment: true }),
             ...(options.allow_spread && { AllowSpread: true })
         };
 
-        await this.rest.patch(url, body);
+        await this.rest.post(url, body);
     }
 
     /**
@@ -289,24 +403,23 @@ export class CellService {
     }
 
     /**
-     * Create a cellset for advanced operations
+     * Create a cellset by posting MDX to /ExecuteMDX.
+     * Matches tm1py create_cellset() which posts to /ExecuteMDX.
+     *
+     * @param mdx - MDX query string
+     * @param sandboxName - Optional sandbox name
+     * @returns Cellset ID
      */
-    public async createCellset(mdx: string, sandbox_name?: string): Promise<string> {
-        let url = '/Cellsets';
-        
-        if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
+    public async createCellset(mdx: string, sandboxName?: string): Promise<string> {
+        let url = '/ExecuteMDX';
+
+        if (sandboxName) {
+            url += `?$sandbox=${sandboxName}`;
         }
 
         const body = { MDX: mdx };
         const response = await this.rest.post(url, body);
-        
-        // Extract cellset ID from response location or data
-        if (response.headers?.location) {
-            const matches = response.headers.location.match(/Cellsets\('([^']+)'\)/);
-            return matches ? matches[1] : '';
-        }
-        
+
         return response.data?.ID || '';
     }
 
@@ -346,17 +459,53 @@ export class CellService {
     }
 
     /**
-     * Clear cube data with MDX filter
+     * Clear cube data with MDX filter.
+     * Creates a temporary MDXView, executes ViewZeroOut TI code, then deletes the view.
+     * Matches tm1py clear_with_mdx() behavior.
+     *
+     * @param cubeName - Name of the cube
+     * @param mdx - MDX query defining the cells to clear
+     * @param sandboxName - Optional sandbox name
      */
-    public async clearWithMdx(cubeName: string, mdx: string, sandbox_name?: string): Promise<void> {
-        let url = `/Cubes('${cubeName}')/tm1.Clear`;
-        
-        if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
-        }
+    public async clearWithMdx(cubeName: string, mdx: string, sandboxName?: string): Promise<void> {
+        // Create a temporary view name
+        const viewName = `}TM1py${Date.now()}`;
 
-        const body = { MDX: mdx };
-        await this.rest.post(url, body);
+        // Create an MDXView via REST (POST to Views)
+        let viewUrl = `/Cubes('${cubeName}')/Views`;
+        const viewBody = {
+            '@odata.type': 'ibm.tm1.api.v1.MDXView',
+            Name: viewName,
+            MDX: mdx
+        };
+        await this.rest.post(viewUrl, viewBody);
+
+        try {
+            // Build TI code for ViewZeroOut
+            const escapedCubeName = cubeName.replace(/'/g, "''");
+            const escapedViewName = viewName.replace(/'/g, "''");
+            const tiCode = `ViewZeroOut('${escapedCubeName}','${escapedViewName}');`;
+
+            // Execute TI code
+            if (this.processService) {
+                await this.processService.executeTiCode([tiCode]);
+            } else {
+                // Fallback: create a ProcessService dynamically
+                const { ProcessService } = require('./ProcessService');
+                const processService = new ProcessService(this.rest);
+                await processService.executeTiCode([tiCode]);
+            }
+        } finally {
+            // Delete the temporary view (suppress 404 errors)
+            try {
+                const deleteUrl = `/Cubes('${cubeName}')/Views('${viewName}')`;
+                await this.rest.delete(deleteUrl);
+            } catch (error: any) {
+                if (error?.statusCode !== 404 && error?.response?.status !== 404) {
+                    throw error;
+                }
+            }
+        }
     }
 
     /**
@@ -501,32 +650,23 @@ export class CellService {
     }
 
     /**
-     * Write data through DataFrame format
+     * Write data through DataFrame format.
+     * Converts to cellset dict and delegates to write().
      */
     public async writeDataframe(
-        cubeName: string, 
+        cubeName: string,
         dataFrame: any[][],  // Array of arrays representing tabular data
         dimensions: string[],
         options: WriteOptions = {}
     ): Promise<void> {
-        const cells = dataFrame.map(row => ({
-            Coordinates: row.slice(0, dimensions.length).map(coord => ({ Name: coord })),
-            Value: row[dimensions.length] // Last column is the value
-        }));
-
-        let url = `/Cubes('${cubeName}')/tm1.Update`;
-        
-        if (options.sandbox_name) {
-            url += `?$sandbox=${options.sandbox_name}`;
+        // Convert DataFrame rows to cellset dict
+        const cellsetAsDict: CellsetDict = {};
+        for (const row of dataFrame) {
+            const coords = row.slice(0, dimensions.length).map(c => String(c));
+            const value = row[dimensions.length];
+            cellsetAsDict[coords.join(',')] = value;
         }
-
-        const body = {
-            Cells: cells,
-            ...(options.increment && { Increment: true }),
-            ...(options.allow_spread && { AllowSpread: true })
-        };
-
-        await this.rest.patch(url, body);
+        await this.write(cubeName, cellsetAsDict, dimensions, options);
     }
 
     /**
@@ -1510,6 +1650,43 @@ export class CellService {
         return this.formatForUiArray(cellset);
     }
 
+    /**
+     * Build member unique names from elements and dimensions.
+     * Helper for getValue/getValues to construct MDX member references.
+     */
+    private async buildMemberUniqueNames(
+        cubeName: string,
+        elements: string | string[],
+        dimensions?: string[],
+        elementSeparator: string = ',',
+        _hierarchySeparator: string = '&&',
+        hierarchyElementSeparator: string = '::'
+    ): Promise<string[]> {
+        // Parse elements string into array if needed
+        let elementArray: string[];
+        if (typeof elements === 'string') {
+            elementArray = elements.split(elementSeparator).map(e => e.trim());
+        } else {
+            elementArray = elements;
+        }
+
+        // Resolve dimensions if not provided
+        const dimNames = dimensions || await this.getDimensionNamesForWriting(cubeName);
+
+        // Build unique names
+        return elementArray.map((element, index) => {
+            const dim = dimNames[index];
+            // Handle hierarchy::element notation
+            if (element.includes(hierarchyElementSeparator)) {
+                const parts = element.split(hierarchyElementSeparator);
+                const hierarchy = parts[0].trim();
+                const elem = parts[1].trim();
+                return `[${dim}].[${hierarchy}].[${elem}]`;
+            }
+            return `[${dim}].[${dim}].[${element}]`;
+        });
+    }
+
     // ===== PRIVATE HELPER METHODS =====
 
     private buildDataFrameFromCellset(cellset: any): DataFrame {
@@ -1754,20 +1931,17 @@ END;
         return response.data.value === true;
     }
     /**
-     * Write multiple cell values to a cube (legacy method name for compatibility)
+     * Write multiple cell values to a cube (legacy method name for compatibility).
+     * Delegates to write() with coordinate separator ':'.
      */
     public async writeValues(cubeName: string, cellset: { [key: string]: any }): Promise<void> {
-        const cells = Object.entries(cellset).map(([key, value]) => {
-            const coordinates = key.split(':');
-            return {
-                Coordinates: coordinates.map(c => ({ Name: c })),
-                Value: value
-            };
-        });
-
-        const url = `/Cubes('${cubeName}')/tm1.Update`;
-        const body = { Cells: cells };
-        await this.rest.patch(url, body);
+        // Convert from colon-separated format to comma-separated format
+        const cellsetAsDict: CellsetDict = {};
+        for (const [key, value] of Object.entries(cellset)) {
+            const coordinates = key.split(':').map(c => c.trim());
+            cellsetAsDict[coordinates.join(',')] = value;
+        }
+        await this.write(cubeName, cellsetAsDict);
     }
 
     /**
@@ -2098,7 +2272,7 @@ END;
      *     'Sales',
      *     ['2024', 'Q1', 'Revenue']
      * );
-     * console.log(attributes.RuleDerived, attributes.Updateable);
+     * // attributes.RuleDerived, attributes.Updateable
      * ```
      */
     public async getCellAttributes(
@@ -2141,7 +2315,7 @@ END;
      *     ['2024', 'Q1', 'Revenue']
      * );
      * if (annotation) {
-     *     console.log('Cell has annotation:', annotation);
+     *     // annotation contains the cell's annotation text
      * }
      * ```
      */
@@ -2183,7 +2357,7 @@ END;
      *     'Sales',
      *     ['2024', 'Q1', 'Revenue']
      * );
-     * console.log('Can write:', security.canWrite);
+     * // security.canWrite indicates write permission
      * ```
      */
     public async checkCellSecurity(
@@ -2241,7 +2415,7 @@ END;
      *     'Sales',
      *     ['2024', 'Q1', 'Revenue']
      * );
-     * console.log('Dimensions:', elements); // ['2024', 'Q1', 'Revenue']
+     * // elements => ['2024', 'Q1', 'Revenue']
      * ```
      */
     public async getCellDimensionElements(
@@ -2317,7 +2491,7 @@ END;
      *     'Sales',
      *     ['2024', 'Q1', 'Revenue']
      * );
-     * console.log('Cell type:', type); // 'NUMERIC' or 'STRING' or 'CONSOLIDATED'
+     * // type => 'NUMERIC' or 'STRING' or 'CONSOLIDATED'
      * ```
      */
     public async getCellType(
@@ -2460,7 +2634,7 @@ END;
      * ```typescript
      * const status = await cellService.pollDataExecution(operationId);
      * if (status === OperationStatus.COMPLETED) {
-     *     console.log('Data operation completed!');
+     *     // data operation completed
      * }
      * ```
      */

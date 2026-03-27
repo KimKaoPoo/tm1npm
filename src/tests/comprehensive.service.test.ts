@@ -499,20 +499,29 @@ describe('Comprehensive Service Tests with Mocking', () => {
 
         test('should handle null and undefined values', async () => {
             const cellService = new CellService(mockRestService);
-            
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                value: null
+
+            // Reset mocks to avoid interference from previous tests
+            mockRestService.get.mockReset();
+            mockRestService.post.mockReset();
+
+            // Mock getDimensionNamesForWriting
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({
+                Dimensions: [{ Name: 'Dim1' }]
             }));
-            
+            // Mock executeMdxRaw returning empty cells
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({
+                Cells: []
+            }));
+
             const cellValue = await cellService.getValue('TestCube', ['NullElement']);
             expect(cellValue).toBeNull();
-            
+
             console.log('✅ Null/undefined values handled correctly');
         });
 
         test('should handle special characters in names', async () => {
             const dimensionService = new DimensionService(mockRestService);
-            
+
             mockRestService.get.mockResolvedValue(createMockResponse({
                 Name: "Dimension with spaces & special chars!@#",
                 UniqueName: "[Dimension with spaces & special chars!@#]"
@@ -591,12 +600,17 @@ describe('Comprehensive Service Tests with Mocking', () => {
 
         test('should handle memory-intensive operations', async () => {
             const cellService = new CellService(mockRestService);
-            
+
             // Create large coordinate arrays
             const largeCoordinates = Array(100).fill(null).map((_, i) => `Element${i}`);
-            
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                value: Math.random() * 1000000
+
+            // Mock getDimensionNamesForWriting
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({
+                Dimensions: largeCoordinates.map((_, i) => ({ Name: `Dim${i}` }))
+            }));
+            // Mock executeMdxRaw
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({
+                Cells: [{ Value: Math.random() * 1000000 }]
             }));
             
             const startMemory = process.memoryUsage().heapUsed;
