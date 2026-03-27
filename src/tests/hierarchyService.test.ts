@@ -1,14 +1,14 @@
 /**
  * HierarchyService Tests for tm1npm
- * Comprehensive tests for TM1 Hierarchy operations with proper mocking
+ * Tests validate parity with tm1py v2.2.4 HierarchyService
  */
 
 import { HierarchyService } from '../services/HierarchyService';
 import { RestService } from '../services/RestService';
 import { Hierarchy } from '../objects/Hierarchy';
+import { ElementAttribute } from '../objects/ElementAttribute';
 import { TM1RestException } from '../exceptions/TM1Exception';
 
-// Helper function to create mock AxiosResponse
 const createMockResponse = (data: any, status: number = 200) => ({
     data,
     status,
@@ -22,7 +22,6 @@ describe('HierarchyService Tests', () => {
     let mockRestService: jest.Mocked<RestService>;
 
     beforeEach(() => {
-        // Create comprehensive mock for RestService
         mockRestService = {
             get: jest.fn(),
             post: jest.fn(),
@@ -38,348 +37,449 @@ describe('HierarchyService Tests', () => {
         hierarchyService = new HierarchyService(mockRestService);
     });
 
-    describe('Hierarchy Retrieval Operations', () => {
-        test('should get all hierarchy names for dimension', async () => {
+    describe('get() — explicit $expand', () => {
+        test('should use explicit $expand properties instead of wildcard', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse({
-                value: [
-                    { Name: 'Hierarchy1' },
-                    { Name: 'Hierarchy2' }
-                ]
+                Name: 'TestHierarchy',
+                Elements: [],
+                Edges: [],
+                ElementAttributes: [],
+                Subsets: [],
+                DefaultMember: null
             }));
 
-            const hierarchyNames = await hierarchyService.getAllNames('TestDimension');
-            
-            expect(Array.isArray(hierarchyNames)).toBe(true);
-            expect(hierarchyNames).toEqual(['Hierarchy1', 'Hierarchy2']);
-            
-            console.log('✅ Hierarchy names retrieved successfully');
+            await hierarchyService.get('TestDimension', 'TestHierarchy');
+
+            const calledUrl = mockRestService.get.mock.calls[0][0];
+            expect(calledUrl).toContain('$expand=Edges,Elements,ElementAttributes,Subsets,DefaultMember');
+            expect(calledUrl).not.toContain('$expand=*');
         });
 
-        test('should get all hierarchies with full details', async () => {
+        test('should default hierarchyName to dimensionName when not provided', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                Name: 'TestDimension',
+                Elements: [],
+                Edges: [],
+                ElementAttributes: [],
+                Subsets: [],
+                DefaultMember: null
+            }));
+
+            await hierarchyService.get('TestDimension');
+
+            const calledUrl = mockRestService.get.mock.calls[0][0];
+            expect(calledUrl).toContain("Hierarchies('TestDimension')");
+        });
+    });
+
+    describe('getAll() — explicit $expand', () => {
+        test('should use explicit $expand properties instead of wildcard', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse({
                 value: [
-                    {
-                        Name: 'MainHierarchy',
-                        UniqueName: '[TestDimension].[MainHierarchy]',
-                        Visible: true,
-                        Elements: []
-                    },
-                    {
-                        Name: 'AlternateHierarchy',
-                        UniqueName: '[TestDimension].[AlternateHierarchy]',
-                        Visible: false,
-                        Elements: []
-                    }
+                    { Name: 'Hierarchy1', Elements: [], Edges: [], ElementAttributes: [], Subsets: [] },
+                    { Name: 'Hierarchy2', Elements: [], Edges: [], ElementAttributes: [], Subsets: [] }
                 ]
             }));
 
             const hierarchies = await hierarchyService.getAll('TestDimension');
-            
-            expect(Array.isArray(hierarchies)).toBe(true);
-            expect(hierarchies.length).toBe(2);
-            expect(hierarchies[0].name).toBe('MainHierarchy');
-            expect(hierarchies[1].name).toBe('AlternateHierarchy');
-            
-            console.log('✅ All hierarchies retrieved successfully');
-        });
 
-        test('should get specific hierarchy by name', async () => {
+            const calledUrl = mockRestService.get.mock.calls[0][0];
+            expect(calledUrl).toContain('$expand=Edges,Elements,ElementAttributes,Subsets,DefaultMember');
+            expect(calledUrl).not.toContain('$expand=*');
+            expect(hierarchies).toHaveLength(2);
+        });
+    });
+
+    describe('exists() — lightweight name check', () => {
+        test('should use $select=Name endpoint, not get()', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse({
-                Name: 'SpecificHierarchy',
-                UniqueName: '[TestDimension].[SpecificHierarchy]',
-                Visible: true,
-                Elements: []
+                value: [{ Name: 'TestHierarchy' }, { Name: 'OtherHierarchy' }]
             }));
 
-            const hierarchy = await hierarchyService.get('TestDimension', 'SpecificHierarchy');
-            
-            expect(hierarchy).toBeDefined();
-            expect(hierarchy.name).toBe('SpecificHierarchy');
-            
-            console.log('✅ Specific hierarchy retrieved successfully');
+            const result = await hierarchyService.exists('TestDimension', 'TestHierarchy');
+
+            expect(result).toBe(true);
+            const calledUrl = mockRestService.get.mock.calls[0][0];
+            expect(calledUrl).toContain('$select=Name');
+            expect(calledUrl).not.toContain('$expand');
         });
 
-        test('should check if hierarchy exists', async () => {
-            // Test existing hierarchy
+        test('should do case+space insensitive comparison', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse({
-                Name: 'ExistingHierarchy'
+                value: [{ Name: 'Test Hierarchy' }]
             }));
 
-            const exists = await hierarchyService.exists('TestDimension', 'ExistingHierarchy');
-            expect(exists).toBe(true);
+            const result = await hierarchyService.exists('TestDimension', 'testhierarchy');
 
-            console.log('✅ Hierarchy existence check working correctly');
+            expect(result).toBe(true);
         });
 
-        test('should check if hierarchy does not exist', async () => {
-            // Test non-existing hierarchy
-            const mockError = new TM1RestException('Hierarchy not found', 404, { status: 404 });
-            mockRestService.get.mockRejectedValue(mockError);
+        test('should return false when hierarchy name not in list', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                value: [{ Name: 'OtherHierarchy' }]
+            }));
 
-            const notExists = await hierarchyService.exists('TestDimension', 'NonExistent');
-            expect(notExists).toBe(false);
-            
-            console.log('✅ Hierarchy non-existence check working correctly');
+            const result = await hierarchyService.exists('TestDimension', 'NonExistent');
+
+            expect(result).toBe(false);
+        });
+
+        test('should return false when dimension does not exist (404)', async () => {
+            mockRestService.get.mockRejectedValue(
+                new TM1RestException('Dimension not found', 404, { status: 404 })
+            );
+
+            const result = await hierarchyService.exists('NonExistentDimension', 'TestHierarchy');
+
+            expect(result).toBe(false);
+        });
+
+        test('should rethrow non-404 errors', async () => {
+            mockRestService.get.mockRejectedValue(
+                new TM1RestException('Server error', 500, { status: 500 })
+            );
+
+            await expect(hierarchyService.exists('TestDimension', 'TestHierarchy'))
+                .rejects.toThrow();
+        });
+    });
+
+    describe('create() — no pre-existence check', () => {
+        test('should POST directly without calling exists() first', async () => {
+            const mockHierarchy = new Hierarchy('NewHierarchy', 'TestDimension');
+
+            mockRestService.post.mockResolvedValue(createMockResponse({ Name: 'NewHierarchy' }, 201));
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            const result = await hierarchyService.create(mockHierarchy);
+
+            expect(result.status).toBe(201);
+            // The first call should be POST (create), not GET (exists check)
+            expect(mockRestService.post).toHaveBeenCalled();
+            const postUrl = mockRestService.post.mock.calls[0][0];
+            expect(postUrl).toContain("/Hierarchies");
+        });
+
+        test('should call updateElementAttributes after POST', async () => {
+            const mockHierarchy = new Hierarchy('NewHierarchy', 'TestDimension');
+
+            mockRestService.post.mockResolvedValue(createMockResponse({ Name: 'NewHierarchy' }, 201));
+            // Mock getElementAttributes for updateElementAttributes
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await hierarchyService.create(mockHierarchy);
+
+            // GET should be called for getElementAttributes (inside updateElementAttributes)
+            expect(mockRestService.get).toHaveBeenCalled();
+            const getUrl = mockRestService.get.mock.calls[0][0];
+            expect(getUrl).toContain('ElementAttributes');
+        });
+    });
+
+    describe('update() — PATCH with response array', () => {
+        test('should send PATCH and return responses array', async () => {
+            const mockHierarchy = new Hierarchy('TestHierarchy', 'TestDimension');
+
+            mockRestService.patch.mockResolvedValue(createMockResponse({}, 200));
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            const responses = await hierarchyService.update(mockHierarchy);
+
+            expect(Array.isArray(responses)).toBe(true);
+            expect(responses).toHaveLength(1);
+            expect(mockRestService.patch).toHaveBeenCalledTimes(1);
+
+            const patchUrl = mockRestService.patch.mock.calls[0][0];
+            expect(patchUrl).toContain("/Dimensions('TestDimension')/Hierarchies('TestHierarchy')");
+        });
+
+        test('should call updateElementAttributes after PATCH', async () => {
+            const mockHierarchy = new Hierarchy('TestHierarchy', 'TestDimension');
+
+            mockRestService.patch.mockResolvedValue(createMockResponse({}, 200));
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            await hierarchyService.update(mockHierarchy);
+
+            // GET called for getElementAttributes inside updateElementAttributes
+            expect(mockRestService.get).toHaveBeenCalled();
+        });
+    });
+
+    describe('isBalanced() — server-side Structure/$value', () => {
+        test('should call Structure/$value endpoint', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse(0));
+
+            await hierarchyService.isBalanced('TestDimension', 'TestHierarchy');
+
+            const calledUrl = mockRestService.get.mock.calls[0][0];
+            expect(calledUrl).toContain('/Structure/$value');
+        });
+
+        test('should return true when structure is 0 (balanced)', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse(0));
+
+            const result = await hierarchyService.isBalanced('TestDimension', 'TestHierarchy');
+
+            expect(result).toBe(true);
+        });
+
+        test('should return false when structure is 2 (unbalanced)', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse(2));
+
+            const result = await hierarchyService.isBalanced('TestDimension', 'TestHierarchy');
+
+            expect(result).toBe(false);
+        });
+
+        test('should throw on unexpected structure value', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse(99));
+
+            await expect(hierarchyService.isBalanced('TestDimension', 'TestHierarchy'))
+                .rejects.toThrow('Unexpected return value from TM1 API request: 99');
+        });
+
+        test('should throw on structure=1 (ragged hierarchy) matching tm1py behavior', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse(1));
+
+            await expect(hierarchyService.isBalanced('TestDimension', 'TestHierarchy'))
+                .rejects.toThrow('Unexpected return value from TM1 API request: 1');
+        });
+
+        test('should handle string response from $value endpoint', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse('0'));
+
+            const result = await hierarchyService.isBalanced('TestDimension', 'TestHierarchy');
+
+            expect(result).toBe(true);
+        });
+    });
+
+    describe('removeAllEdges() — single PATCH', () => {
+        test('should send single PATCH with empty edges array', async () => {
+            mockRestService.patch.mockResolvedValue(createMockResponse({}, 200));
+
+            await hierarchyService.removeAllEdges('TestDimension', 'TestHierarchy');
+
+            expect(mockRestService.patch).toHaveBeenCalledTimes(1);
+            const [url, body] = mockRestService.patch.mock.calls[0];
+            expect(url).toContain("/Dimensions('TestDimension')/Hierarchies('TestHierarchy')");
+            expect(JSON.parse(body)).toEqual({ Edges: [] });
+        });
+
+        test('should default hierarchyName to dimensionName', async () => {
+            mockRestService.patch.mockResolvedValue(createMockResponse({}, 200));
+
+            await hierarchyService.removeAllEdges('TestDimension');
+
+            const [url] = mockRestService.patch.mock.calls[0];
+            expect(url).toContain("/Hierarchies('TestDimension')");
+        });
+
+        test('should not make any GET or DELETE calls', async () => {
+            mockRestService.patch.mockResolvedValue(createMockResponse({}, 200));
+
+            await hierarchyService.removeAllEdges('TestDimension', 'TestHierarchy');
+
+            expect(mockRestService.get).not.toHaveBeenCalled();
+            expect(mockRestService.delete).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('updateElementAttributes() — intelligent diff', () => {
+        test('should only create attributes that do not exist yet', async () => {
+            const mockHierarchy = new Hierarchy('TestHierarchy', 'TestDimension');
+            mockHierarchy.addElementAttribute(new ElementAttribute('Description', 'String'));
+            mockHierarchy.addElementAttribute(new ElementAttribute('NewAttr', 'Numeric'));
+
+            // Existing: Description (same type)
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                value: [{ Name: 'Description', Type: 'String' }]
+            }));
+            mockRestService.post.mockResolvedValue(createMockResponse({}, 201));
+
+            await hierarchyService.updateElementAttributes(mockHierarchy);
+
+            // Only NewAttr should be created (Description already exists with same type)
+            expect(mockRestService.post).toHaveBeenCalledTimes(1);
+            const postedBody = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(postedBody.Name).toBe('NewAttr');
+        });
+
+        test('should only delete attributes that are no longer present', async () => {
+            const mockHierarchy = new Hierarchy('TestHierarchy', 'TestDimension');
+            mockHierarchy.addElementAttribute(new ElementAttribute('Description', 'String'));
+
+            // Existing: Description + OldAttr (OldAttr should be deleted)
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                value: [
+                    { Name: 'Description', Type: 'String' },
+                    { Name: 'OldAttr', Type: 'Numeric' }
+                ]
+            }));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}, 204));
+
+            await hierarchyService.updateElementAttributes(mockHierarchy);
+
+            // Only OldAttr should be deleted
+            expect(mockRestService.delete).toHaveBeenCalledTimes(1);
+            const deleteUrl = mockRestService.delete.mock.calls[0][0];
+            expect(deleteUrl).toContain("ElementAttributes('OldAttr')");
+        });
+
+        test('should update attributes with changed type (delete + recreate)', async () => {
+            const mockHierarchy = new Hierarchy('TestHierarchy', 'TestDimension');
+            mockHierarchy.addElementAttribute(new ElementAttribute('Description', 'Alias'));
+
+            // Existing: Description with type String (type changed to Alias)
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                value: [{ Name: 'Description', Type: 'String' }]
+            }));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}, 204));
+            mockRestService.post.mockResolvedValue(createMockResponse({}, 201));
+
+            await hierarchyService.updateElementAttributes(mockHierarchy);
+
+            // Should delete old then create new
+            expect(mockRestService.delete).toHaveBeenCalledTimes(1);
+            expect(mockRestService.post).toHaveBeenCalledTimes(1);
+            const postedBody = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(postedBody.Name).toBe('Description');
+            expect(postedBody.Type).toBe('Alias');
+        });
+
+        test('should not delete existing attributes when keepExisting is true', async () => {
+            const mockHierarchy = new Hierarchy('TestHierarchy', 'TestDimension');
+
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                value: [{ Name: 'OldAttr', Type: 'Numeric' }]
+            }));
+
+            await hierarchyService.updateElementAttributes(mockHierarchy, true);
+
+            // Should NOT delete OldAttr because keepExisting is true
+            expect(mockRestService.delete).not.toHaveBeenCalled();
+            expect(mockRestService.post).not.toHaveBeenCalled();
+        });
+
+        test('should do nothing when attributes are unchanged', async () => {
+            const mockHierarchy = new Hierarchy('TestHierarchy', 'TestDimension');
+            mockHierarchy.addElementAttribute(new ElementAttribute('Description', 'String'));
+
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                value: [{ Name: 'Description', Type: 'String' }]
+            }));
+
+            await hierarchyService.updateElementAttributes(mockHierarchy);
+
+            expect(mockRestService.post).not.toHaveBeenCalled();
+            expect(mockRestService.delete).not.toHaveBeenCalled();
+        });
+
+        test('should use case+space insensitive comparison for attribute names', async () => {
+            const mockHierarchy = new Hierarchy('TestHierarchy', 'TestDimension');
+            mockHierarchy.addElementAttribute(new ElementAttribute('My Description', 'String'));
+
+            // Existing has slightly different casing/spacing
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                value: [{ Name: 'mydescription', Type: 'String' }]
+            }));
+
+            await hierarchyService.updateElementAttributes(mockHierarchy);
+
+            // Should recognize as same attribute — no creates or deletes
+            expect(mockRestService.post).not.toHaveBeenCalled();
+            expect(mockRestService.delete).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('Hierarchy Retrieval Operations', () => {
+        test('should get all hierarchy names for dimension', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                value: [{ Name: 'Hierarchy1' }, { Name: 'Hierarchy2' }]
+            }));
+
+            const hierarchyNames = await hierarchyService.getAllNames('TestDimension');
+
+            expect(hierarchyNames).toEqual(['Hierarchy1', 'Hierarchy2']);
+        });
+
+        test('should handle empty hierarchy lists', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            const hierarchies = await hierarchyService.getAll('EmptyDimension');
+
+            expect(hierarchies).toHaveLength(0);
         });
     });
 
     describe('Hierarchy CRUD Operations', () => {
-        test('should create new hierarchy', async () => {
-            const mockHierarchy = new Hierarchy('NewHierarchy', 'TestDimension');
-
-            // Mock exists() to return false (hierarchy doesn't exist yet)
-            const mockError = new TM1RestException('Hierarchy not found', 404, { status: 404 });
-            mockRestService.get.mockRejectedValueOnce(mockError); // for exists() check
-
-            // Mock create
-            mockRestService.post.mockResolvedValue(createMockResponse({
-                Name: 'NewHierarchy'
-            }, 201));
-
-            const result = await hierarchyService.create(mockHierarchy);
-            
-            expect(result.status).toBe(201);
-            expect(mockRestService.post).toHaveBeenCalled();
-            
-            console.log('✅ Hierarchy creation successful');
-        });
-
-        test('should update existing hierarchy', async () => {
-            const mockHierarchy = new Hierarchy('UpdatedHierarchy', 'TestDimension');
-
-            // Mock the various calls that update() makes internally
-            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] })); // removeAllElements
-            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] })); // removeAllEdges
-            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] })); // getElementAttributes
-
-            await hierarchyService.update(mockHierarchy);
-            
-            expect(mockRestService.get).toHaveBeenCalled();
-            
-            console.log('✅ Hierarchy update successful');
-        });
-
         test('should delete hierarchy', async () => {
             mockRestService.delete.mockResolvedValue(createMockResponse({}, 204));
 
             const result = await hierarchyService.delete('TestDimension', 'HierarchyToDelete');
-            
+
             expect(result.status).toBe(204);
-            
-            console.log('✅ Hierarchy deletion successful');
         });
     });
 
-    describe('Hierarchy Element Attribute Operations', () => {
+    describe('Element Attribute Utility Operations', () => {
         test('should get element attributes', async () => {
             mockRestService.get.mockResolvedValue(createMockResponse({
                 value: [
-                    { 
-                        Name: 'Description', 
-                        Type: 'String',
-                        '@odata.type': '#ibm.tm1.api.v1.ElementAttribute'
-                    },
-                    { 
-                        Name: 'Code', 
-                        Type: 'Alias',
-                        '@odata.type': '#ibm.tm1.api.v1.ElementAttribute'
-                    }
+                    { Name: 'Description', Type: 'String' },
+                    { Name: 'Code', Type: 'Alias' }
                 ]
             }));
 
             const attributes = await hierarchyService.getElementAttributes('TestDimension', 'TestHierarchy');
-            
-            expect(Array.isArray(attributes)).toBe(true);
-            expect(attributes.length).toBe(2);
+
+            expect(attributes).toHaveLength(2);
             expect(attributes[0].name).toBe('Description');
-            
-            console.log('✅ Element attributes retrieved successfully');
         });
 
         test('should check if element attribute exists', async () => {
-            // Test existing attribute
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                Name: 'ExistingAttribute'
-            }));
+            mockRestService.get.mockResolvedValue(createMockResponse({ Name: 'ExistingAttribute' }));
 
             const exists = await hierarchyService.elementAttributeExists('TestDimension', 'TestHierarchy', 'ExistingAttribute');
-            expect(exists).toBe(true);
 
-            console.log('✅ Element attribute existence check working');
+            expect(exists).toBe(true);
         });
 
-        test('should check if element attribute does not exist', async () => {
-            const mockError = new TM1RestException('Attribute not found', 404, { status: 404 });
-            mockRestService.get.mockRejectedValue(mockError);
+        test('should return false for non-existing element attribute', async () => {
+            mockRestService.get.mockRejectedValue(
+                new TM1RestException('Attribute not found', 404, { status: 404 })
+            );
 
-            const notExists = await hierarchyService.elementAttributeExists('TestDimension', 'TestHierarchy', 'NonExistentAttribute');
-            expect(notExists).toBe(false);
-            
-            console.log('✅ Element attribute non-existence check working');
+            const exists = await hierarchyService.elementAttributeExists('TestDimension', 'TestHierarchy', 'NonExistent');
+
+            expect(exists).toBe(false);
         });
 
         test('should delete element attribute', async () => {
             mockRestService.delete.mockResolvedValue(createMockResponse({}, 204));
 
-            const result = await hierarchyService.deleteElementAttribute('TestDimension', 'TestHierarchy', 'AttributeToDelete');
-            
+            const result = await hierarchyService.deleteElementAttribute('TestDimension', 'TestHierarchy', 'AttrToDelete');
+
             expect(result.status).toBe(204);
-            
-            console.log('✅ Element attribute deletion successful');
         });
     });
 
-    describe('Hierarchy Error Handling', () => {
-        test('should handle invalid hierarchy names gracefully', async () => {
+    describe('Error Handling', () => {
+        test('should propagate non-404 errors from get()', async () => {
             mockRestService.get.mockRejectedValue({
-                response: { status: 400, statusText: 'Bad Request' }
-            });
-
-            await expect(hierarchyService.get('TestDimension', ''))
-                .rejects.toMatchObject({
-                    response: { status: 400 }
-                });
-            
-            console.log('✅ Invalid hierarchy name handling working');
-        });
-
-        test('should handle network errors gracefully', async () => {
-            mockRestService.get.mockRejectedValue({
-                code: 'ECONNREFUSED'
-            });
-
-            await expect(hierarchyService.getAllNames('TestDimension'))
-                .rejects.toMatchObject({
-                    code: 'ECONNREFUSED'
-                });
-                
-            console.log('✅ Network error handling working');
-        });
-
-        test('should handle authentication errors', async () => {
-            mockRestService.get.mockRejectedValue({
-                response: { status: 401, statusText: 'Unauthorized' }
+                response: { status: 500, statusText: 'Internal Server Error' }
             });
 
             await expect(hierarchyService.get('TestDimension', 'TestHierarchy'))
-                .rejects.toMatchObject({
-                    response: { status: 401 }
-                });
-                
-            console.log('✅ Authentication error handling working');
-        });
-    });
-
-    describe('Hierarchy Service Edge Cases', () => {
-        test('should handle empty hierarchy lists', async () => {
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                value: []
-            }));
-
-            const hierarchies = await hierarchyService.getAll('EmptyDimension');
-            
-            expect(Array.isArray(hierarchies)).toBe(true);
-            expect(hierarchies.length).toBe(0);
-            
-            console.log('✅ Empty hierarchy list handling working');
+                .rejects.toMatchObject({ response: { status: 500 } });
         });
 
-        test('should handle concurrent operations efficiently', async () => {
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                value: [{ Name: 'TestHierarchy' }]
-            }));
+        test('should propagate network errors', async () => {
+            mockRestService.get.mockRejectedValue({ code: 'ECONNREFUSED' });
 
-            const operations = Array(5).fill(null).map(() => 
-                hierarchyService.getAllNames('TestDimension')
-            );
-
-            const results = await Promise.allSettled(operations);
-            
-            const successful = results.filter(r => r.status === 'fulfilled');
-            expect(successful.length).toBe(5);
-            
-            console.log('✅ Concurrent operations handling working');
-        });
-
-        test('should handle large hierarchy data efficiently', async () => {
-            const largeHierarchyData = Array(1000).fill(null).map((_, i) => ({
-                Name: `Hierarchy${i}`,
-                Visible: true,
-                Elements: []
-            }));
-
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                value: largeHierarchyData
-            }));
-
-            const startTime = Date.now();
-            const hierarchies = await hierarchyService.getAll('LargeDimension');
-            const endTime = Date.now();
-
-            expect(hierarchies.length).toBe(1000);
-            expect(endTime - startTime).toBeLessThan(1000); // Should be fast with mocking
-            
-            console.log('✅ Large hierarchy data processing efficient');
-        });
-    });
-
-    describe('Hierarchy Service Integration', () => {
-        test('should maintain data consistency across operations', async () => {
-            const hierarchyList = [
-                { Name: 'Hierarchy1' },
-                { Name: 'Hierarchy2' }
-            ];
-
-            mockRestService.get.mockResolvedValue(createMockResponse({
-                value: hierarchyList
-            }));
-
-            const names1 = await hierarchyService.getAllNames('TestDimension');
-            const names2 = await hierarchyService.getAllNames('TestDimension');
-
-            expect(names1).toEqual(names2);
-            expect(names1).toEqual(['Hierarchy1', 'Hierarchy2']);
-            
-            console.log('✅ Data consistency maintained');
-        });
-
-        test('should handle hierarchy lifecycle operations', async () => {
-            const testHierarchy = new Hierarchy('LifecycleHierarchy', 'TestDimension');
-
-            // Mock exists() to return false for create
-            const mockError = new TM1RestException('Hierarchy not found', 404, { status: 404 });
-            mockRestService.get.mockRejectedValueOnce(mockError); // for exists() in create()
-            
-            // Mock create
-            mockRestService.post.mockResolvedValue(createMockResponse({}, 201));
-            
-            // Mock get for exists() check after creation (should return true)
-            mockRestService.get.mockResolvedValueOnce(createMockResponse({
-                Name: 'LifecycleHierarchy'
-            }));
-            
-            // Mock update dependencies
-            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] })); // for removeAllElements
-            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] })); // for removeAllEdges  
-            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] })); // for getElementAttributes
-            
-            // Mock delete
-            mockRestService.delete.mockResolvedValue(createMockResponse({}, 204));
-
-            // Test lifecycle operations
-            const createResult = await hierarchyService.create(testHierarchy);
-            expect(createResult.status).toBe(201);
-
-            const exists = await hierarchyService.exists('TestDimension', 'LifecycleHierarchy');
-            expect(exists).toBe(true);
-
-            await hierarchyService.update(testHierarchy);
-            // update returns void, so just ensure it doesn't throw
-
-            const deleteResult = await hierarchyService.delete('TestDimension', 'LifecycleHierarchy');
-            expect(deleteResult.status).toBe(204);
-            
-            console.log('✅ Hierarchy lifecycle operations working');
+            await expect(hierarchyService.getAllNames('TestDimension'))
+                .rejects.toMatchObject({ code: 'ECONNREFUSED' });
         });
     });
 });

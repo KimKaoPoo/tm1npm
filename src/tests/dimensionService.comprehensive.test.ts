@@ -181,7 +181,7 @@ describe('DimensionService - Comprehensive Tests', () => {
         test('should update dimension with existing hierarchies', async () => {
             mockHierarchyService.getAllNames.mockResolvedValue(['TestDimension', 'OldHierarchy', 'AltHierarchy']);
             mockHierarchyService.exists.mockResolvedValue(true);
-            mockHierarchyService.update.mockResolvedValue();
+            mockHierarchyService.update.mockResolvedValue([mockResponse({})]);
             mockHierarchyService.delete.mockResolvedValue(mockResponse({}));
 
             await dimensionService.update(mockDimension);
@@ -196,7 +196,7 @@ describe('DimensionService - Comprehensive Tests', () => {
             mockHierarchyService.exists
                 .mockResolvedValueOnce(true)  // TestDimension exists
                 .mockResolvedValueOnce(false); // AltHierarchy doesn't exist
-            mockHierarchyService.update.mockResolvedValue();
+            mockHierarchyService.update.mockResolvedValue([mockResponse({})]);
             mockHierarchyService.create.mockResolvedValue(mockResponse({}));
 
             await dimensionService.update(mockDimension);
@@ -208,7 +208,7 @@ describe('DimensionService - Comprehensive Tests', () => {
         test('should update dimension with keepExistingAttributes flag', async () => {
             mockHierarchyService.getAllNames.mockResolvedValue(['TestDimension']);
             mockHierarchyService.exists.mockResolvedValue(true);
-            mockHierarchyService.update.mockResolvedValue();
+            mockHierarchyService.update.mockResolvedValue([mockResponse({})]);
 
             await dimensionService.update(mockDimension, true);
             
@@ -233,7 +233,7 @@ describe('DimensionService - Comprehensive Tests', () => {
 
             mockHierarchyService.getAllNames.mockResolvedValue(['TestDimension', 'Leaves']);
             mockHierarchyService.exists.mockResolvedValue(true);
-            mockHierarchyService.update.mockResolvedValue();
+            mockHierarchyService.update.mockResolvedValue([mockResponse({})]);
 
             await dimensionService.update(dimensionWithLeaves);
             
@@ -571,7 +571,7 @@ describe('DimensionService - Comprehensive Tests', () => {
         test('should handle dimension update with no hierarchy changes', async () => {
             mockHierarchyService.getAllNames.mockResolvedValue(['TestDimension', 'AltHierarchy']);
             mockHierarchyService.exists.mockResolvedValue(true);
-            mockHierarchyService.update.mockResolvedValue();
+            mockHierarchyService.update.mockResolvedValue([mockResponse({})]);
 
             await dimensionService.update(mockDimension);
             
@@ -700,7 +700,7 @@ describe('DimensionService - Comprehensive Tests', () => {
             mockHierarchyService.updateElementAttributes.mockResolvedValue();
             mockHierarchyService.getAllNames.mockResolvedValue(['TestDimension']);
             mockHierarchyService.exists.mockResolvedValue(true);
-            mockHierarchyService.update.mockResolvedValue();
+            mockHierarchyService.update.mockResolvedValue([mockResponse({})]);
 
             // Full lifecycle
             await dimensionService.create(mockDimension);
@@ -732,7 +732,7 @@ describe('DimensionService - Comprehensive Tests', () => {
             mockHierarchyService.exists
                 .mockResolvedValueOnce(true)  // ComplexDim exists
                 .mockResolvedValueOnce(false); // NewHierarchy doesn't exist
-            mockHierarchyService.update.mockResolvedValue();
+            mockHierarchyService.update.mockResolvedValue([mockResponse({})]);
             mockHierarchyService.create.mockResolvedValue(mockResponse({}));
             mockHierarchyService.delete.mockResolvedValue(mockResponse({}));
 
