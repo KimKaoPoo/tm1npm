@@ -338,70 +338,65 @@ describe('ProcessService - Comprehensive Tests', () => {
             mockRestService.post.mockResolvedValue(mockResponse({}));
 
             const prologLines = ['sMessage = "Starting";', 'WriteToMessageLog(INFO, sMessage);'];
-            const metadataLines = ['DimensionCreate("TestDim");'];
-            const dataLines = ['CellPutN(100, "TestCube", "Element1");'];
             const epilogLines = ['sMessage = "Completed";', 'WriteToMessageLog(INFO, sMessage);'];
 
-            const result = await processService.executeTiCode(
-                prologLines,
-                metadataLines,
-                dataLines,
-                epilogLines
-            );
-            
+            const result = await processService.executeTiCode(prologLines, epilogLines);
+
             expect(result).toBeDefined();
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                "/ExecuteProcessWithReturn",
-                JSON.stringify({
-                    PrologProcedure: prologLines.join('\n'),
-                    MetadataProcedure: metadataLines.join('\n'),
-                    DataProcedure: dataLines.join('\n'),
-                    EpilogProcedure: epilogLines.join('\n')
-                })
-            );
+            // Should create temp process, execute, then delete
+            expect(mockRestService.post).toHaveBeenCalledTimes(2); // create + execute
+            expect(mockRestService.delete).toHaveBeenCalledTimes(1); // cleanup
+
+            // First call: create temp process (name starts with }TM1py)
+            const createCall = mockRestService.post.mock.calls[0];
+            expect(createCall[0]).toBe('/Processes');
+
+            // Second call: execute
+            const executeCall = mockRestService.post.mock.calls[1];
+            expect(executeCall[0]).toMatch(/\/Processes\('.*'\)\/tm1\.Execute/);
         });
 
         test('should execute TI code with parameters', async () => {
             mockRestService.post.mockResolvedValue(mockResponse({}));
+            mockRestService.delete.mockResolvedValue(mockResponse({}));
 
             const prologLines = ['WriteToMessageLog(INFO, pMessage);'];
             const parameters = { pMessage: 'Test Message', pValue: 123 };
 
-            const result = await processService.executeTiCode(
-                prologLines,
-                undefined,
-                undefined,
-                undefined,
-                parameters
-            );
-            
-            expect(result).toBeDefined();
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                "/ExecuteProcessWithReturn",
-                JSON.stringify({
-                    PrologProcedure: prologLines.join('\n'),
-                    Parameters: [
-                        { Name: 'pMessage', Value: 'Test Message' },
-                        { Name: 'pValue', Value: 123 }
-                    ]
-                })
-            );
+            await processService.executeTiCode(prologLines, undefined, parameters);
+
+            // Execute call should include parameters
+            const executeCall = mockRestService.post.mock.calls[1];
+            const executeBody = JSON.parse(executeCall[1]);
+            expect(executeBody.Parameters).toEqual([
+                { Name: 'pMessage', Value: 'Test Message' },
+                { Name: 'pValue', Value: 123 }
+            ]);
         });
 
-        test('should execute TI code with partial sections', async () => {
+        test('should cleanup temp process even on execution failure', async () => {
+            mockRestService.post
+                .mockResolvedValueOnce(mockResponse({})) // create succeeds
+                .mockRejectedValueOnce(new Error('Execution failed')); // execute fails
+            mockRestService.delete.mockResolvedValue(mockResponse({}));
+
+            await expect(processService.executeTiCode(['sTest = "fail";'])).rejects.toThrow('Execution failed');
+
+            // Delete should still be called for cleanup
+            expect(mockRestService.delete).toHaveBeenCalledTimes(1);
+        });
+
+        test('should execute TI code with prolog only', async () => {
             mockRestService.post.mockResolvedValue(mockResponse({}));
+            mockRestService.delete.mockResolvedValue(mockResponse({}));
 
             const prologLines = ['sTest = "Prolog only";'];
 
             const result = await processService.executeTiCode(prologLines);
-            
+
             expect(result).toBeDefined();
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                "/ExecuteProcessWithReturn",
-                JSON.stringify({
-                    PrologProcedure: prologLines.join('\n')
-                })
-            );
+            expect(mockRestService.post).toHaveBeenCalledTimes(2);
+            expect(mockRestService.delete).toHaveBeenCalledTimes(1);
         });
 
         test('should compile single TI statement', async () => {
@@ -424,57 +419,47 @@ describe('ProcessService - Comprehensive Tests', () => {
     });
 
     describe('Process Search Operations', () => {
-        test('should search string in process code', async () => {
-            const processes = [
-                {
-                    name: 'Process1',
-                    prologProcedure: 'WriteToMessageLog(INFO, "Hello");',
-                    metadataProcedure: '',
-                    dataProcedure: '',
-                    epilogProcedure: ''
-                },
-                {
-                    name: 'Process2',
-                    prologProcedure: 'sMessage = "World";',
-                    metadataProcedure: '',
-                    dataProcedure: '',
-                    epilogProcedure: 'WriteToMessageLog(INFO, sMessage);'
-                },
-                {
-                    name: 'Process3',
-                    prologProcedure: 'CellPutN(100, "Cube", "Element");',
-                    metadataProcedure: '',
-                    dataProcedure: '',
-                    epilogProcedure: ''
-                }
-            ];
-
-            // Mock getAll method
-            jest.spyOn(processService, 'getAll').mockResolvedValue(processes as any);
+        test('should search string in process code using server-side OData filter', async () => {
+            const processData = {
+                value: [
+                    { Name: 'Process1' },
+                    { Name: 'Process2' }
+                ]
+            };
+            mockRestService.get.mockResolvedValue(mockResponse(processData));
 
             const result = await processService.searchStringInCode('WriteToMessageLog');
-            
+
             expect(result).toEqual(['Process1', 'Process2']);
-            expect(processService.getAll).toHaveBeenCalledWith(false);
+            const url = mockRestService.get.mock.calls[0][0];
+            expect(url).toContain('/Processes?$select=Name&$filter=');
+            expect(url).toContain("contains(tolower(replace(PrologProcedure,' ',''))");
+            expect(url).toContain("contains(tolower(replace(MetadataProcedure,' ',''))");
+            expect(url).toContain("contains(tolower(replace(DataProcedure,' ',''))");
+            expect(url).toContain("contains(tolower(replace(EpilogProcedure,' ',''))");
+            expect(url).toContain("'writetomessagelog'");
         });
 
         test('should search string in process code excluding control processes', async () => {
-            const processes = [
-                {
-                    name: 'Process1',
-                    prologProcedure: 'WriteToMessageLog(INFO, "Test");',
-                    metadataProcedure: '',
-                    dataProcedure: '',
-                    epilogProcedure: ''
-                }
-            ];
-
-            jest.spyOn(processService, 'getAll').mockResolvedValue(processes as any);
+            const processData = {
+                value: [{ Name: 'Process1' }]
+            };
+            mockRestService.get.mockResolvedValue(mockResponse(processData));
 
             const result = await processService.searchStringInCode('WriteToMessageLog', true);
-            
+
             expect(result).toEqual(['Process1']);
-            expect(processService.getAll).toHaveBeenCalledWith(true);
+            const url = mockRestService.get.mock.calls[0][0];
+            expect(url).toContain("and (startswith(Name, '}') eq false and startswith(Name, '{') eq false)");
+        });
+
+        test('should escape single quotes in search string', async () => {
+            mockRestService.get.mockResolvedValue(mockResponse({ value: [] }));
+
+            await processService.searchStringInCode("it's a test");
+
+            const url = mockRestService.get.mock.calls[0][0];
+            expect(url).toContain("it''satest");
         });
 
         test('should search string in process names', async () => {
@@ -863,26 +848,19 @@ describe('ProcessService - Comprehensive Tests', () => {
         });
 
         test('should handle search with no matches', async () => {
-            jest.spyOn(processService, 'getAll').mockResolvedValue([]);
+            mockRestService.get.mockResolvedValue(mockResponse({ value: [] }));
 
             const result = await processService.searchStringInCode('NonExistentString');
-            
+
             expect(result).toEqual([]);
         });
 
-        test('should handle large numbers of processes', async () => {
-            const largeProcessList = Array.from({ length: 1000 }, (_, i) => ({
-                name: `Process${i}`,
-                prologProcedure: `WriteToMessageLog(INFO, "Process ${i}");`,
-                metadataProcedure: '',
-                dataProcedure: '',
-                epilogProcedure: ''
-            }));
-
-            jest.spyOn(processService, 'getAll').mockResolvedValue(largeProcessList as any);
+        test('should handle large result sets from searchStringInCode', async () => {
+            const largeResult = Array.from({ length: 1000 }, (_, i) => ({ Name: `Process${i}` }));
+            mockRestService.get.mockResolvedValue(mockResponse({ value: largeResult }));
 
             const result = await processService.searchStringInCode('WriteToMessageLog');
-            
+
             expect(result).toHaveLength(1000);
         });
     });
@@ -1225,8 +1203,6 @@ describe('ProcessService - Comprehensive Tests', () => {
         });
 
         test('should support comprehensive process analysis', async () => {
-            const processes = [mockProcess];
-            jest.spyOn(processService, 'getAll').mockResolvedValue(processes as any);
             mockRestService.get.mockResolvedValue(mockResponse({ value: [] }));
 
             // Analysis workflow: search code, search names, get error logs
@@ -1234,8 +1210,7 @@ describe('ProcessService - Comprehensive Tests', () => {
             await processService.searchStringInName('Test');
             await processService.getErrorLogFilenames();
 
-            expect(processService.getAll).toHaveBeenCalled();
-            expect(mockRestService.get).toHaveBeenCalledTimes(2);
+            expect(mockRestService.get).toHaveBeenCalledTimes(3);
         });
     });
 });
