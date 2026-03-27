@@ -338,6 +338,13 @@ export function readObjectNameFromUrl(url: string): string {
     return match ? match[1] : '';
 }
 
+export function parseODataBindUrl(url: string): string[] {
+    // Extract all ('name') segments from OData URLs in order
+    // e.g. "Dimensions('D')/Hierarchies('H')/Subsets('S')" -> ['D', 'H', 'S']
+    const matches = [...url.matchAll(/\('([^']+)'\)/g)];
+    return matches.map(m => m[1]);
+}
+
 export function integerizeVersion(version: string): number {
     // Convert version string like "11.8.01300.1" to integer like 1180
     const parts = version.split('.');

@@ -172,36 +172,44 @@ export class SecurityService extends ObjectService {
         }
     }
 
-    public async getUsersFromGroup(groupName: string): Promise<string[]> {
+    public async getUsersFromGroup(groupName: string): Promise<User[]> {
         /** Get users that belong to a group
          *
          * :param group_name: name of the group
-         * :return: List of user names
+         * :return: List of User instances
          */
         const actualGroupName = await this.determineActualGroupName(groupName);
-        const url = formatUrl("/Groups('{}')/Users?$select=Name", actualGroupName);
+        const url = formatUrl(
+            "/Groups('{}')?$expand=Users($select=Name,FriendlyName,Password,Type,Enabled;$expand=Groups)",
+            actualGroupName
+        );
         const response = await this.rest.get(url);
-        return response.data.value.map((user: any) => user.Name);
+        return (response.data.Users ?? []).map((userDict: any) => User.fromDict(userDict));
     }
 
     public async getUserNamesFromGroup(groupName: string): Promise<string[]> {
-        return await this.getUsersFromGroup(groupName);
+        const users = await this.getUsersFromGroup(groupName);
+        return users.map(user => user.name);
     }
 
-    
-    public async addUserToGroups(userName: string, groupNames: string[]): Promise<AxiosResponse[]> {
-        /** Add user to multiple groups
+
+    public async addUserToGroups(userName: string, groupNames: string[]): Promise<AxiosResponse | undefined> {
+        /** Add user to multiple groups via a single PATCH request
          *
          * :param user_name: name of the user
          * :param group_names: list of group names
-         * :return: list of responses
+         * :return: response
          */
-        const responses: AxiosResponse[] = [];
-        for (const groupName of groupNames) {
-            const response = await this.addUserToGroup(groupName, userName);
-            responses.push(response);
+        if (groupNames.length === 0) {
+            return undefined;
         }
-        return responses;
+        const actualUserName = await this.determineActualUserName(userName);
+        const url = formatUrl("/Users('{}')", actualUserName);
+        const body = {
+            Name: actualUserName,
+            'Groups@odata.bind': groupNames.map(g => formatUrl("Groups('{}')", g))
+        };
+        return await this.rest.patch(url, JSON.stringify(body));
     }
 
     
@@ -232,8 +240,8 @@ export class SecurityService extends ObjectService {
          */
         const actualGroupName = await this.determineActualGroupName(groupName);
         const actualUserName = await this.determineActualUserName(userName);
-        
-        const url = formatUrl("/Groups('{}')/Users('{}')", actualGroupName, actualUserName);
+
+        const url = formatUrl("/Users('{}')/Groups?$id=Groups('{}')", actualUserName, actualGroupName);
         return await this.rest.delete(url);
     }
 
