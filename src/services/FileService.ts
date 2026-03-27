@@ -51,6 +51,20 @@ export class FileService extends ObjectService {
             await this.ensureFolderHierarchy(segments.slice(0, -1));
         }
 
+        // Create document metadata entry before uploading content
+        const documentName = segments[segments.length - 1];
+        const contentsUrl = this.constructContentUrl(
+            segments.length > 1 ? segments.slice(0, -1) : [],
+            false,
+            'Contents'
+        );
+        const metadataBody = {
+            '@odata.type': '#ibm.tm1.api.v1.Document',
+            'ID': documentName,
+            'Name': documentName
+        };
+        await this.rest.post(contentsUrl, JSON.stringify(metadataBody));
+
         return await this.uploadFileContent(
             segments,
             this.toBuffer(content),

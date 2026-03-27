@@ -152,43 +152,39 @@ describe('Simple Coverage Tests', () => {
         });
 
         test('ProcessService debug operations should work', async () => {
+            const debugData = { ID: 'debug-123', CallStack: [] };
             const mockRest = {
-                post: jest.fn().mockResolvedValue(mockResponse)
+                post: jest.fn().mockResolvedValue(mockResponse),
+                get: jest.fn().mockResolvedValue({ data: debugData, status: 200, statusText: 'OK', headers: {}, config: {} })
             } as any;
 
             const processService = new ProcessService(mockRest);
-            
-            await processService.debugStepOver('TestProcess');
-            await processService.debugStepIn('TestProcess');
-            await processService.debugStepOut('TestProcess');
-            await processService.debugContinue('TestProcess');
-            
+
+            await processService.debugStepOver('debug-123');
+            await processService.debugStepIn('debug-123');
+            await processService.debugStepOut('debug-123');
+            await processService.debugContinue('debug-123');
+
             expect(mockRest.post).toHaveBeenCalledTimes(4);
+            expect(mockRest.get).toHaveBeenCalledTimes(4);
         });
 
         test('ProcessService boolean expression evaluation should work', async () => {
             const mockRest = {
                 post: jest.fn().mockResolvedValue({
-                    data: { value: true },
+                    data: { ProcessExecuteStatusCode: 'CompletedSuccessfully' },
                     status: 200,
                     statusText: 'OK',
                     headers: {},
                     config: {}
-                }),
-                get: jest.fn().mockResolvedValue({
-                    data: { Cells: [{ Value: true }] },
-                    status: 200,
-                    statusText: 'OK',
-                    headers: {},
-                    config: {}
-                }),
-                delete: jest.fn().mockResolvedValue(mockResponse)
+                })
             } as any;
 
             const processService = new ProcessService(mockRest);
-            
+
             const result = await processService.evaluateBooleanTiExpression('1=1');
             expect(result).toBe(true);
+            expect(mockRest.post).toHaveBeenCalledTimes(1);
         });
     });
 
