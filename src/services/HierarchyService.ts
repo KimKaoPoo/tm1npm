@@ -4,7 +4,7 @@ import { Hierarchy } from '../objects/Hierarchy';
 import { ElementAttribute } from '../objects/ElementAttribute';
 import { TM1RestException } from '../exceptions/TM1Exception';
 import { ObjectService } from './ObjectService';
-import { caseAndSpaceInsensitiveEquals } from '../utils/Utils';
+import { CaseAndSpaceInsensitiveDict, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
 
 export class HierarchyService extends ObjectService {
     constructor(rest: RestService) {
@@ -81,7 +81,7 @@ export class HierarchyService extends ObjectService {
     public async updateElementAttributes(hierarchy: Hierarchy, keepExisting: boolean = false): Promise<void> {
         const existingAttributes = await this.getElementAttributes(hierarchy.dimensionName, hierarchy.name);
 
-        const existingByName = new Map<string, ElementAttribute>();
+        const existingByName = new CaseAndSpaceInsensitiveDict<ElementAttribute>();
         for (const ea of existingAttributes) {
             existingByName.set(ea.name, ea);
         }
@@ -91,32 +91,31 @@ export class HierarchyService extends ObjectService {
         const attributesToUpdate: ElementAttribute[] = [];
 
         for (const attr of hierarchy.elementAttributes) {
-            const existingMatch = Array.from(existingByName.entries()).find(
-                ([name]) => caseAndSpaceInsensitiveEquals(name, attr.name)
-            );
+            const existing = existingByName.get(attr.name);
 
-            if (!existingMatch) {
+            if (!existing) {
                 attributesToCreate.push(attr);
-            } else if (existingMatch[1].attributeType !== attr.attributeType) {
+            } else if (existing.attributeType !== attr.attributeType) {
                 attributesToUpdate.push(attr);
             }
         }
 
         if (!keepExisting) {
-            for (const existingName of existingByName.keys()) {
+            for (const existing of existingAttributes) {
                 const stillPresent = hierarchy.elementAttributes.some(
-                    ea => caseAndSpaceInsensitiveEquals(ea.name, existingName)
+                    ea => caseAndSpaceInsensitiveEquals(ea.name, existing.name)
                 );
                 if (!stillPresent) {
-                    attributesToDelete.push(existingName);
+                    attributesToDelete.push(existing.name);
                 }
             }
         }
 
+        const attrUrl = this.formatUrl("/Dimensions('{}')/Hierarchies('{}')/ElementAttributes",
+            hierarchy.dimensionName, hierarchy.name);
+
         for (const attr of attributesToCreate) {
-            const url = this.formatUrl("/Dimensions('{}')/Hierarchies('{}')/ElementAttributes",
-                hierarchy.dimensionName, hierarchy.name);
-            await this.rest.post(url, attr.body);
+            await this.rest.post(attrUrl, attr.body);
         }
 
         for (const attrName of attributesToDelete) {
@@ -125,9 +124,7 @@ export class HierarchyService extends ObjectService {
 
         for (const attr of attributesToUpdate) {
             await this.deleteElementAttribute(hierarchy.dimensionName, hierarchy.name, attr.name);
-            const url = this.formatUrl("/Dimensions('{}')/Hierarchies('{}')/ElementAttributes",
-                hierarchy.dimensionName, hierarchy.name);
-            await this.rest.post(url, attr.body);
+            await this.rest.post(attrUrl, attr.body);
         }
     }
 
