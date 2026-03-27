@@ -38,7 +38,7 @@ export class ApplicationService extends ObjectService {
     public async getNames(path: string, isPrivate: boolean = false): Promise<string[]> {
         const contents = this.getContentsCollection(isPrivate);
         const mid = this.buildPathSegments(path);
-        const baseUrl = "/api/v1/Contents('Applications')" + mid + "/" + contents;
+        const baseUrl = "/Contents('Applications')" + mid + "/" + contents;
         const response = await this.rest.get(baseUrl);
         return response.data.value.map((application: any) => application.Name);
     }
@@ -182,7 +182,7 @@ export class ApplicationService extends ObjectService {
                 "/Contents('Applications')" + mid + "/" + contents + "('{}')/Document/Content",
                 requestName
             );
-            return await this.rest.patch(url, application.content, {
+            return await this.rest.post(url, application.content, {
                 headers: this.binaryHttpHeader
             } as AxiosRequestConfig);
         }
@@ -191,7 +191,7 @@ export class ApplicationService extends ObjectService {
             "/Contents('Applications')" + mid + "/" + contents + "('{}')",
             requestName
         );
-        return await this.rest.patch(url, application.body);
+        return await this.rest.post(url, application.body);
     }
 
     public async delete(

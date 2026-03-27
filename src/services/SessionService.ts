@@ -40,7 +40,7 @@ export class SessionService extends ObjectService {
     }
 
     public async getThreadsForCurrent(excludeIdle: boolean = true): Promise<any[]> {
-        let url = "/ActiveSession/Threads?$filter=Function ne 'GET /ActiveSession/Threads'";
+        let url = "/ActiveSession/Threads?$filter=Function ne 'GET /api/v1/ActiveSession/Threads'";
         if (excludeIdle) {
             url += " and State ne 'Idle'";
         }
