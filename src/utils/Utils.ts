@@ -94,6 +94,10 @@ export function lowerAndDropSpaces(str: string): string {
     return str.toLowerCase().replace(/\s+/g, '');
 }
 
+export function escapeODataValue(str: string): string {
+    return str.replace(/'/g, "''");
+}
+
 export function formatUrl(template: string, ...args: string[]): string {
     let url = template;
     for (const arg of args) {
