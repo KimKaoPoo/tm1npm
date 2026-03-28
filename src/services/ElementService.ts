@@ -329,17 +329,19 @@ export class ElementService extends ObjectService {
             url += '?$expand=Parents($select=Name)';
         }
 
-        // Add element filter if specified
+        // Build combined filter
+        const filters: string[] = [];
         if (elements) {
             const elementArray = Array.isArray(elements) ? elements : [elements];
-            const filter = elementArray.map(e => `Name eq '${e}'`).join(' or ');
-            url += url.includes('?') ? `&$filter=(${filter})` : `?$filter=(${filter})`;
+            filters.push(`(${elementArray.map(e => `Name eq '${e.replace(/'/g, "''")}'`).join(' or ')})`);
         }
-
-        // Add consolidation filter if requested
         if (skip_consolidations) {
-            const filter = `Type ne ${ElementType.CONSOLIDATED}`;
-            url += url.includes('?') ? `&$filter=${filter}` : `?$filter=${filter}`;
+            filters.push(`Type ne ${ElementType.CONSOLIDATED}`);
+        }
+        if (filters.length > 0) {
+            url += url.includes('?')
+                ? `&$filter=${filters.join(' and ')}`
+                : `?$filter=${filters.join(' and ')}`;
         }
 
         const response = await this.rest.get(url);
