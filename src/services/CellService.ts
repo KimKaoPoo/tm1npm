@@ -10,7 +10,7 @@ import { ProcessService } from './ProcessService';
 import { ViewService } from './ViewService';
 import { OperationStatus, OperationType } from './AsyncOperationService';
 import { TM1Exception } from '../exceptions/TM1Exception';
-import { formatUrl } from '../utils/Utils';
+import { formatUrl, escapeODataValue } from '../utils/Utils';
 
 export interface CellsetDict {
     [coordinates: string]: string | number | boolean | null | undefined;
@@ -138,11 +138,10 @@ export class CellService {
         const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
         const url = formatUrl("/Cubes('{}')/tm1.Update", cubeName)
             + (sandbox_name ? `?$sandbox=${sandbox_name}` : '');
-        const escapeSingleQuote = (s: string) => s.replace(/'/g, "''");
         const body = {
             Cells: [{
                 'Tuple@odata.bind': dims.map((d, i) =>
-                    `Dimensions('${escapeSingleQuote(d)}')/Hierarchies('${escapeSingleQuote(d)}')/Elements('${escapeSingleQuote(coordinates[i])}')`
+                    `Dimensions('${escapeODataValue(d)}')/Hierarchies('${escapeODataValue(d)}')/Elements('${escapeODataValue(coordinates[i])}')`
                 ),
                 Value: value
             }]
@@ -192,12 +191,11 @@ export class CellService {
         options: WriteOptions = {}
     ): Promise<void> {
         const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
-        const escapeSingleQuote = (s: string) => s.replace(/'/g, "''");
         const cells = Object.entries(cellsetAsDict).map(([coordinates, value]) => {
             const elementArray = coordinates.split(',').map(s => s.trim());
             return {
                 'Tuple@odata.bind': elementArray.map((elem, i) =>
-                    `Dimensions('${escapeSingleQuote(dims[i])}')/Hierarchies('${escapeSingleQuote(dims[i])}')/Elements('${escapeSingleQuote(elem)}')`
+                    `Dimensions('${escapeODataValue(dims[i])}')/Hierarchies('${escapeODataValue(dims[i])}')/Elements('${escapeODataValue(elem)}')`
                 ),
                 Value: value
             };

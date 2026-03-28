@@ -74,6 +74,18 @@ describe('CellService Tests', () => {
             console.log('✅ Single cell value written via POST');
         });
 
+        test('should escape single quotes in OData bind paths', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            jest.spyOn(cellService, 'getDimensionNamesForWriting')
+                .mockResolvedValue(["O'Brien Dim", 'Measure', 'Version']);
+
+            await cellService.writeValue("O'Brien Dim", ["It's", 'Revenue', 'Actual'], 100, ["O'Brien Dim", 'Measure', 'Version']);
+
+            const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            const bindPath = body.Cells[0]['Tuple@odata.bind'][0];
+            expect(bindPath).toBe("Dimensions('O''Brien Dim')/Hierarchies('O''Brien Dim')/Elements('It''s')");
+        });
+
         test('should write multiple cell values', async () => {
             mockRestService.post.mockResolvedValue(createMockResponse({}));
             mockRestService.patch.mockResolvedValue(createMockResponse({}));
@@ -159,10 +171,75 @@ describe('CellService Tests', () => {
             mockRestService.post.mockResolvedValue(createMockResponse({}));
 
             await cellService.clearCube('TestCube');
-            
+
             expect(mockRestService.post).toHaveBeenCalledWith("/Cubes('TestCube')/tm1.Clear");
-            
+
             console.log('✅ Cube cleared successfully');
+        });
+
+        test('clearWithMdx should create view, call ClearCellValues, then delete view', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));
+
+            await cellService.clearWithMdx('SalesCube', 'SELECT {[Measure].[Revenue]} ON 0 FROM [SalesCube]');
+
+            const postCalls = mockRestService.post.mock.calls;
+
+            // 1st POST: create MDX view
+            expect(postCalls[0][0]).toBe("/Cubes('SalesCube')/Views");
+            const viewBody = JSON.parse(postCalls[0][1]);
+            expect(viewBody['@odata.type']).toBe('ibm.tm1.api.v1.MDXView');
+            expect(viewBody.Name).toMatch(/^\}TM1py/);
+            expect(viewBody.MDX).toBe('SELECT {[Measure].[Revenue]} ON 0 FROM [SalesCube]');
+
+            // 2nd POST: ClearCellValues on the view
+            expect(postCalls[1][0]).toMatch(/\/Cubes\('SalesCube'\)\/Views\('(%7D|\})TM1py.*'\)\/tm1\.ClearCellValues/);
+
+            // Should delete temp view in finally
+            expect(mockRestService.delete).toHaveBeenCalledWith(
+                expect.stringMatching(/\/Cubes\('SalesCube'\)\/Views\('(%7D|\})TM1py/)
+            );
+        });
+
+        test('clearWithMdx should pass sandbox_name to view creation and clear URLs', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));
+
+            await cellService.clearWithMdx('SalesCube', 'SELECT {} ON 0 FROM [SalesCube]', 'MySandbox');
+
+            const postCalls = mockRestService.post.mock.calls;
+
+            // View creation includes sandbox
+            expect(postCalls[0][0]).toContain('?$sandbox=MySandbox');
+
+            // ClearCellValues includes sandbox
+            expect(postCalls[1][0]).toContain('?$sandbox=MySandbox');
+        });
+
+        test('clearWithMdx should delete view even if ClearCellValues fails', async () => {
+            mockRestService.post
+                .mockResolvedValueOnce(createMockResponse({}))  // view creation
+                .mockRejectedValueOnce(new Error('ClearCellValues failed'));  // clear fails
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));
+
+            await expect(cellService.clearWithMdx('SalesCube', 'SELECT {} ON 0 FROM [SalesCube]'))
+                .rejects.toThrow('ClearCellValues failed');
+
+            // View should still be deleted in finally
+            expect(mockRestService.delete).toHaveBeenCalledTimes(1);
+        });
+
+        test('writeThroughCellset should escape single quotes in bind paths', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            jest.spyOn(cellService, 'getDimensionNamesForWriting')
+                .mockResolvedValue(["O'Brien Dim", 'Measure', 'Version']);
+
+            await cellService.write("O'Brien Dim", { "It's, Revenue, Actual": 42 }, ["O'Brien Dim", 'Measure', 'Version']);
+
+            const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            const bindPath = body.Cells[0]['Tuple@odata.bind'][0];
+            expect(bindPath).toContain("Dimensions('O''Brien Dim')");
+            expect(bindPath).toContain("Elements('It''s')");
         });
     });
 
