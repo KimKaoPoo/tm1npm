@@ -119,7 +119,7 @@ export class ElementService extends ObjectService {
         let url = formatUrl("/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name", dimensionName, hierarchy);
 
         if (skipConsolidatedElements) {
-            url += "&$filter=Type ne 3";
+            url += `&$filter=Type ne ${ElementType.CONSOLIDATED}`;
         }
 
         const response = await this.rest.get(url);
@@ -163,7 +163,7 @@ export class ElementService extends ObjectService {
     ): Promise<Element[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type ne 3",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type ne ${ElementType.CONSOLIDATED}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -179,7 +179,7 @@ export class ElementService extends ObjectService {
     ): Promise<string[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type ne 3",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type ne ${ElementType.CONSOLIDATED}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -195,7 +195,7 @@ export class ElementService extends ObjectService {
     ): Promise<Element[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq 3",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq ${ElementType.CONSOLIDATED}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -211,7 +211,7 @@ export class ElementService extends ObjectService {
     ): Promise<string[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq 3",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq ${ElementType.CONSOLIDATED}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -227,7 +227,7 @@ export class ElementService extends ObjectService {
     ): Promise<Element[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq 1",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq ${ElementType.NUMERIC}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -243,7 +243,7 @@ export class ElementService extends ObjectService {
     ): Promise<string[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq 1",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq ${ElementType.NUMERIC}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -259,7 +259,7 @@ export class ElementService extends ObjectService {
     ): Promise<Element[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq 2",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq ${ElementType.STRING}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -275,7 +275,7 @@ export class ElementService extends ObjectService {
     ): Promise<string[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq 2",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq ${ElementType.STRING}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -338,7 +338,7 @@ export class ElementService extends ObjectService {
 
         // Add consolidation filter if requested
         if (skip_consolidations) {
-            const filter = "Type ne 3";
+            const filter = `Type ne ${ElementType.CONSOLIDATED}`;
             url += url.includes('?') ? `&$filter=${filter}` : `?$filter=${filter}`;
         }
 
@@ -870,7 +870,7 @@ export class ElementService extends ObjectService {
             dimensionName, hierarchy);
 
         if (skipConsolidatedElements) {
-            url += "?$filter=Type ne 3";
+            url += `?$filter=Type ne ${ElementType.CONSOLIDATED}`;
         }
 
         const response = await this.rest.get(url);
