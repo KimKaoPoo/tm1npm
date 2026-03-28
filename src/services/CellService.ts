@@ -4,6 +4,7 @@
  * Full implementation based on tm1py CellService with 100% feature parity
  */
 
+import { v4 as uuidv4 } from 'uuid';
 import { RestService } from './RestService';
 import { ProcessService } from './ProcessService';
 import { ViewService } from './ViewService';
@@ -12,19 +13,19 @@ import { TM1Exception } from '../exceptions/TM1Exception';
 import { formatUrl } from '../utils/Utils';
 
 export interface CellsetDict {
-    [coordinates: string]: any;
+    [coordinates: string]: string | number | boolean | null | undefined;
 }
 
 export interface DataFrame {
     columns: string[];
-    data: any[][];
-    index?: any[];
+    data: (string | number | null)[][];
+    index?: (string | number)[];
 }
 
 export interface CellsetAxes {
-    Hierarchies: any[];
-    Tuples: any[];
-    Members: any[];
+    Hierarchies: Record<string, unknown>[];
+    Tuples: Record<string, unknown>[];
+    Members: Record<string, unknown>[];
     Cardinality: number;
 }
 
@@ -137,10 +138,11 @@ export class CellService {
         const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
         const url = formatUrl("/Cubes('{}')/tm1.Update", cubeName)
             + (sandbox_name ? `?$sandbox=${sandbox_name}` : '');
+        const escapeSingleQuote = (s: string) => s.replace(/'/g, "''");
         const body = {
             Cells: [{
                 'Tuple@odata.bind': dims.map((d, i) =>
-                    `Dimensions('${d}')/Hierarchies('${d}')/Elements('${coordinates[i]}')`
+                    `Dimensions('${escapeSingleQuote(d)}')/Hierarchies('${escapeSingleQuote(d)}')/Elements('${escapeSingleQuote(coordinates[i])}')`
                 ),
                 Value: value
             }]
@@ -190,11 +192,12 @@ export class CellService {
         options: WriteOptions = {}
     ): Promise<void> {
         const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
+        const escapeSingleQuote = (s: string) => s.replace(/'/g, "''");
         const cells = Object.entries(cellsetAsDict).map(([coordinates, value]) => {
             const elementArray = coordinates.split(',').map(s => s.trim());
             return {
                 'Tuple@odata.bind': elementArray.map((elem, i) =>
-                    `Dimensions('${dims[i]}')/Hierarchies('${dims[i]}')/Elements('${elem}')`
+                    `Dimensions('${escapeSingleQuote(dims[i])}')/Hierarchies('${escapeSingleQuote(dims[i])}')/Elements('${escapeSingleQuote(elem)}')`
                 ),
                 Value: value
             };
@@ -368,16 +371,12 @@ export class CellService {
      * Clear cube data with MDX filter
      */
     public async clearWithMdx(cubeName: string, mdx: string, sandbox_name?: string): Promise<void> {
-        /** Clear a slice in a cube based on an MDX query.
-         * Creates a temp MDX view, executes ViewZeroOut via TI, then deletes the view.
-         */
-        const { v4: uuidv4 } = require('uuid');
-        const { ProcessService } = require('./ProcessService');
-        const processService = new ProcessService(this.rest);
-
         const viewName = `}TM1py${uuidv4()}`;
-        // Create temp MDX view
-        const viewUrl = formatUrl("/Cubes('{}')/Views", cubeName);
+
+        let viewUrl = formatUrl("/Cubes('{}')/Views", cubeName);
+        if (sandbox_name) {
+            viewUrl += `?$sandbox=${sandbox_name}`;
+        }
         const viewBody = {
             '@odata.type': 'ibm.tm1.api.v1.MDXView',
             Name: viewName,
@@ -386,8 +385,11 @@ export class CellService {
         await this.rest.post(viewUrl, JSON.stringify(viewBody));
 
         try {
-            const code = `ViewZeroOut('${cubeName.replace(/'/g, "''")}','${viewName.replace(/'/g, "''")}');`;
-            await processService.executeTiCode([code]);
+            let clearUrl = formatUrl("/Cubes('{}')/Views('{}')/tm1.ClearCellValues", cubeName, viewName);
+            if (sandbox_name) {
+                clearUrl += `?$sandbox=${sandbox_name}`;
+            }
+            await this.rest.post(clearUrl);
         } finally {
             try {
                 const deleteUrl = formatUrl("/Cubes('{}')/Views('{}')", cubeName, viewName);
@@ -2137,7 +2139,7 @@ END;
      *     'Sales',
      *     ['2024', 'Q1', 'Revenue']
      * );
-     * console.log(attributes.RuleDerived, attributes.Updateable);
+     * // attributes.RuleDerived, attributes.Updateable
      * ```
      */
     public async getCellAttributes(
@@ -2180,7 +2182,7 @@ END;
      *     ['2024', 'Q1', 'Revenue']
      * );
      * if (annotation) {
-     *     console.log('Cell has annotation:', annotation);
+     *     // annotation contains the cell's text
      * }
      * ```
      */
@@ -2222,7 +2224,7 @@ END;
      *     'Sales',
      *     ['2024', 'Q1', 'Revenue']
      * );
-     * console.log('Can write:', security.canWrite);
+     * // security.canWrite indicates write permission
      * ```
      */
     public async checkCellSecurity(
@@ -2280,7 +2282,7 @@ END;
      *     'Sales',
      *     ['2024', 'Q1', 'Revenue']
      * );
-     * console.log('Dimensions:', elements); // ['2024', 'Q1', 'Revenue']
+     * // elements => ['2024', 'Q1', 'Revenue']
      * ```
      */
     public async getCellDimensionElements(
@@ -2356,7 +2358,7 @@ END;
      *     'Sales',
      *     ['2024', 'Q1', 'Revenue']
      * );
-     * console.log('Cell type:', type); // 'NUMERIC' or 'STRING' or 'CONSOLIDATED'
+     * // type => 'NUMERIC' or 'STRING' or 'CONSOLIDATED'
      * ```
      */
     public async getCellType(
@@ -2499,7 +2501,7 @@ END;
      * ```typescript
      * const status = await cellService.pollDataExecution(operationId);
      * if (status === OperationStatus.COMPLETED) {
-     *     console.log('Data operation completed!');
+     *     // data operation completed
      * }
      * ```
      */

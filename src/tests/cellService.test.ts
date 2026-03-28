@@ -198,7 +198,7 @@ describe('CellService Tests', () => {
                 response: { status: 401, statusText: 'Unauthorized' }
             });
 
-            await expect(cellService.writeValue('TestCube', ['Jan', 'Revenue'], 1000))
+            await expect(cellService.writeValue('TestCube', ['Jan', 'Revenue', 'Actual'], 1000))
                 .rejects.toMatchObject({
                     response: { status: 401 }
                 });
@@ -227,13 +227,13 @@ describe('CellService Tests', () => {
             // Test zero value
             mockRestService.post.mockResolvedValue(createMockResponse({}));
 
-            await cellService.writeValue('TestCube', ['Jan', 'Revenue'], 0);
+            await cellService.writeValue('TestCube', ['Jan', 'Revenue', 'Actual'], 0);
 
             let body = JSON.parse(mockRestService.post.mock.calls[0][1]);
             expect(body.Cells[0].Value).toBe(0);
 
             // Test null value
-            await cellService.writeValue('TestCube', ['Jan', 'Revenue'], null);
+            await cellService.writeValue('TestCube', ['Jan', 'Revenue', 'Actual'], null);
 
             body = JSON.parse(mockRestService.post.mock.calls[1][1]);
             expect(body.Cells[0].Value).toBeNull();
@@ -275,9 +275,9 @@ describe('CellService Tests', () => {
             mockRestService.patch.mockResolvedValue(createMockResponse({}));
 
             const operations = [
-                cellService.getValue('TestCube', ['Jan', 'Revenue']),
-                cellService.writeValue('TestCube', ['Feb', 'Revenue'], 2000),
-                cellService.getValue('TestCube', ['Mar', 'Revenue'])
+                cellService.getValue('TestCube', ['Jan', 'Revenue', 'Actual']),
+                cellService.writeValue('TestCube', ['Feb', 'Revenue', 'Actual'], 2000),
+                cellService.getValue('TestCube', ['Mar', 'Revenue', 'Actual'])
             ];
 
             const results = await Promise.allSettled(operations);
