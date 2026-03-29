@@ -386,6 +386,38 @@ describe('ProcessService - Comprehensive Tests', () => {
             expect(mockRestService.delete).toHaveBeenCalledTimes(1);
         });
 
+        test('should return execution status from executeTiCode', async () => {
+            const executionResult = {
+                ProcessExecuteStatusCode: 'CompletedSuccessfully',
+                ErrorLogFile: null
+            };
+            mockRestService.post
+                .mockResolvedValueOnce(mockResponse({})) // create
+                .mockResolvedValueOnce(mockResponse(executionResult)); // executeWithReturn
+            mockRestService.delete.mockResolvedValue(mockResponse({}));
+
+            const result = await processService.executeTiCode(['sTest = "hello";']);
+
+            expect(result).toEqual(executionResult);
+        });
+
+        test('should surface failed TI execution status', async () => {
+            const failedResult = {
+                ProcessExecuteStatusCode: 'Aborted',
+                ErrorLogFile: { Filename: 'TM1ProcessError_12345.log' }
+            };
+            mockRestService.post
+                .mockResolvedValueOnce(mockResponse({})) // create
+                .mockResolvedValueOnce(mockResponse(failedResult)); // executeWithReturn
+            mockRestService.delete.mockResolvedValue(mockResponse({}));
+
+            const result = await processService.executeTiCode(['InvalidFunction();']);
+
+            // The key fix: executeTiCode now returns the status so callers can detect failures
+            expect(result.ProcessExecuteStatusCode).toBe('Aborted');
+            expect(result.ErrorLogFile).toBeDefined();
+        });
+
         test('should execute TI code with prolog only', async () => {
             mockRestService.post.mockResolvedValue(mockResponse({}));
             mockRestService.delete.mockResolvedValue(mockResponse({}));
