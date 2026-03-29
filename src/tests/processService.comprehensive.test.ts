@@ -351,9 +351,9 @@ describe('ProcessService - Comprehensive Tests', () => {
             const createCall = mockRestService.post.mock.calls[0];
             expect(createCall[0]).toBe('/Processes');
 
-            // Second call: execute
+            // Second call: executeWithReturn
             const executeCall = mockRestService.post.mock.calls[1];
-            expect(executeCall[0]).toMatch(/\/Processes\('.*'\)\/tm1\.Execute/);
+            expect(executeCall[0]).toMatch(/\/Processes\('.*'\)\/tm1\.ExecuteWithReturn\?\$expand=\*/);
         });
 
         test('should execute TI code with parameters', async () => {
@@ -384,6 +384,37 @@ describe('ProcessService - Comprehensive Tests', () => {
 
             // Delete should still be called for cleanup
             expect(mockRestService.delete).toHaveBeenCalledTimes(1);
+        });
+
+        test('should return execution status from executeTiCode', async () => {
+            const executionResult = {
+                ProcessExecuteStatusCode: 'CompletedSuccessfully',
+                ErrorLogFile: null
+            };
+            mockRestService.post
+                .mockResolvedValueOnce(mockResponse({})) // create
+                .mockResolvedValueOnce(mockResponse(executionResult)); // executeWithReturn
+            mockRestService.delete.mockResolvedValue(mockResponse({}));
+
+            const result = await processService.executeTiCode(['sTest = "hello";']);
+
+            expect(result).toEqual(executionResult);
+        });
+
+        test('should surface failed TI execution status', async () => {
+            const failedResult = {
+                ProcessExecuteStatusCode: 'Aborted',
+                ErrorLogFile: { Filename: 'TM1ProcessError_12345.log' }
+            };
+            mockRestService.post
+                .mockResolvedValueOnce(mockResponse({})) // create
+                .mockResolvedValueOnce(mockResponse(failedResult)); // executeWithReturn
+            mockRestService.delete.mockResolvedValue(mockResponse({}));
+
+            const result = await processService.executeTiCode(['InvalidFunction();']);
+
+            expect(result.ProcessExecuteStatusCode).toBe('Aborted');
+            expect(result.ErrorLogFile).toBeDefined();
         });
 
         test('should execute TI code with prolog only', async () => {
