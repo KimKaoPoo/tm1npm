@@ -251,14 +251,14 @@ export class ServerService extends ObjectService {
 
     @deprecatedInVersion("12.0.0")
     
-    public async saveData(): Promise<AxiosResponse> {
+    public async saveData(): Promise<any> {
         const ti = "SaveDataAll;";
         const processService = new ProcessService(this.rest);
         return await processService.executeTiCode([ti]);
     }
 
-    
-    public async deletePersistentFeeders(): Promise<AxiosResponse> {
+
+    public async deletePersistentFeeders(): Promise<any> {
         const ti = "DeleteAllPersistentFeeders;";
         const processService = new ProcessService(this.rest);
         return await processService.executeTiCode([ti]);
