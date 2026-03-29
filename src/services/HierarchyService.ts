@@ -150,7 +150,7 @@ export class HierarchyService extends ObjectService {
     }
 
     public async deleteElementAttribute(dimensionName: string, hierarchyName: string, attributeName: string): Promise<AxiosResponse> {
-        const url = this.formatUrl("/Dimensions('{}')/Hierarchies('{}')/ElementAttributes('{}')",
+        const url = this.formatUrl("/Dimensions('}ElementAttributes_{}')/Hierarchies('}ElementAttributes_{}')/Elements('{}')",
             dimensionName, hierarchyName, attributeName);
         return await this.rest.delete(url);
     }

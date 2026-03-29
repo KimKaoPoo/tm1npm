@@ -324,7 +324,8 @@ describe('HierarchyService Tests', () => {
             // Only OldAttr should be deleted
             expect(mockRestService.delete).toHaveBeenCalledTimes(1);
             const deleteUrl = mockRestService.delete.mock.calls[0][0];
-            expect(deleteUrl).toContain("ElementAttributes('OldAttr')");
+            expect(deleteUrl).toContain("}ElementAttributes_TestDimension");
+            expect(deleteUrl).toContain("Elements('OldAttr')");
         });
 
         test('should update attributes with changed type (delete + recreate)', async () => {

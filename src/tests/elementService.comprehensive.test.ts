@@ -217,7 +217,7 @@ describe('ElementService - Comprehensive Tests', () => {
             
             expect(result).toEqual(['Element1', 'Element2']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type ne 'Consolidated'"
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type ne 3"
             );
         });
 
@@ -252,7 +252,7 @@ describe('ElementService - Comprehensive Tests', () => {
             
             expect(result).toEqual(['NumericLeaf', 'StringLeaf']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type ne 'Consolidated'"
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type ne 3"
             );
         });
 
@@ -269,7 +269,7 @@ describe('ElementService - Comprehensive Tests', () => {
             
             expect(result).toEqual(['ConsolElement1', 'ConsolElement2']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type eq 'Consolidated'"
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type eq 3"
             );
         });
 
@@ -286,7 +286,7 @@ describe('ElementService - Comprehensive Tests', () => {
             
             expect(result).toEqual(['NumericElement1', 'NumericElement2']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type eq 'Numeric'"
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type eq 1"
             );
         });
 
@@ -303,7 +303,7 @@ describe('ElementService - Comprehensive Tests', () => {
             
             expect(result).toEqual(['StringElement1', 'StringElement2']);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type eq 'String'"
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Type eq 2"
             );
         });
 
@@ -343,7 +343,7 @@ describe('ElementService - Comprehensive Tests', () => {
             
             expect(result).toBe(10);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements/$count?$filter=Type ne 'Consolidated'"
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements/$count?$filter=Type ne 3"
             );
         });
     });
@@ -438,26 +438,21 @@ describe('ElementService - Comprehensive Tests', () => {
         test('should add edges', async () => {
             mockRestService.post.mockResolvedValue(mockResponse({}));
 
-            const edges = [
-                { parent: 'Parent1', child: 'Child1', weight: 1.5 },
-                { parent: 'Parent1', child: 'Child2', weight: 2.0 },
-                { parent: 'Parent2', child: 'Child1' } // No weight specified
-            ];
+            const edges: { [parent: string]: { [child: string]: number } } = {
+                'Parent1': { 'Child1': 1.5, 'Child2': 2.0 },
+                'Parent2': { 'Child1': 1 }
+            };
 
             await elementService.addEdges('TestDim', 'TestHierarchy', edges);
-            
-            expect(mockRestService.post).toHaveBeenCalledTimes(3);
-            expect(mockRestService.post).toHaveBeenNthCalledWith(1,
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements('Parent1')/Components",
-                { Name: 'Child1', Weight: 1.5 }
-            );
-            expect(mockRestService.post).toHaveBeenNthCalledWith(2,
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements('Parent1')/Components",
-                { Name: 'Child2', Weight: 2.0 }
-            );
-            expect(mockRestService.post).toHaveBeenNthCalledWith(3,
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements('Parent2')/Components",
-                { Name: 'Child1', Weight: 1 }
+
+            expect(mockRestService.post).toHaveBeenCalledTimes(1);
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Edges",
+                JSON.stringify([
+                    { ParentName: 'Parent1', ComponentName: 'Child1', Weight: 1.5 },
+                    { ParentName: 'Parent1', ComponentName: 'Child2', Weight: 2.0 },
+                    { ParentName: 'Parent2', ComponentName: 'Child1', Weight: 1 }
+                ])
             );
         });
 
@@ -523,11 +518,23 @@ describe('ElementService - Comprehensive Tests', () => {
         test('should add multiple elements', async () => {
             mockRestService.post.mockResolvedValue(mockResponse({}));
 
-            const elements = [mockElement, mockElement, mockElement];
+            const mockEl = {
+                name: 'TestElement',
+                bodyAsDict: { Name: 'TestElement', Type: 'Numeric' }
+            } as any;
+            const elements = [mockEl, mockEl, mockEl];
 
             await elementService.addElements('TestDim', 'TestHierarchy', elements);
-            
-            expect(mockRestService.post).toHaveBeenCalledTimes(3);
+
+            expect(mockRestService.post).toHaveBeenCalledTimes(1);
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements",
+                JSON.stringify([
+                    { Name: 'TestElement', Type: 'Numeric' },
+                    { Name: 'TestElement', Type: 'Numeric' },
+                    { Name: 'TestElement', Type: 'Numeric' }
+                ])
+            );
         });
 
         test('should delete multiple elements using REST API', async () => {
@@ -617,10 +624,10 @@ describe('ElementService - Comprehensive Tests', () => {
             mockRestService.delete.mockResolvedValue(mockResponse({}));
 
             const result = await elementService.deleteElementAttribute('TestDim', 'TestHierarchy', 'TestAttribute');
-            
+
             expect(result).toBeDefined();
             expect(mockRestService.delete).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/ElementAttributes('TestAttribute')"
+                "/Dimensions('}ElementAttributes_TestDim')/Hierarchies('}ElementAttributes_TestHierarchy')/Elements('TestAttribute')"
             );
         });
 
@@ -657,70 +664,66 @@ describe('ElementService - Comprehensive Tests', () => {
         });
 
         test('should get alias element attributes', async () => {
-            const aliasAttributesData = {
-                value: [
-                    { Name: 'Caption', Type: 'Alias' },
-                    { Name: 'DisplayName', Type: 'Alias' }
-                ]
-            };
-            mockRestService.get.mockResolvedValue(mockResponse(aliasAttributesData));
+            const mockAttributes = [
+                { name: 'Caption', attributeType: 'Alias' },
+                { name: 'DisplayName', attributeType: 'Alias' },
+                { name: 'Code', attributeType: 'String' }
+            ];
+            jest.spyOn(elementService, 'getElementAttributes').mockResolvedValue(mockAttributes as any);
 
             const result = await elementService.getAliasElementAttributes('TestDim', 'TestHierarchy');
-            
-            expect(result).toHaveLength(2);
-            expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/ElementAttributes?$filter=Type eq 'Alias'"
-            );
+
+            expect(result).toEqual(['Caption', 'DisplayName']);
+            expect(elementService.getElementAttributes).toHaveBeenCalledWith('TestDim', 'TestHierarchy');
         });
     });
 
     describe('MDX and Query Operations', () => {
         test('should execute set MDX', async () => {
             const mdxResult = {
-                value: ['Element1', 'Element2', 'Element3']
+                Tuples: [
+                    { Members: [{ Name: 'Element1', Weight: 1 }] },
+                    { Members: [{ Name: 'Element2', Weight: 1 }] },
+                    { Members: [{ Name: 'Element3', Weight: 1 }] }
+                ]
             };
             mockRestService.post.mockResolvedValue(mockResponse(mdxResult));
 
             const mdx = "{[TestDim].[TestHierarchy].[All]}";
-            const result = await elementService.executeSetMdx('TestDim', 'TestHierarchy', mdx);
-            
-            expect(result).toEqual(['Element1', 'Element2', 'Element3']);
+            const result = await elementService.executeSetMdx(mdx);
+
+            expect(result).toEqual([
+                [{ Name: 'Element1', Weight: 1 }],
+                [{ Name: 'Element2', Weight: 1 }],
+                [{ Name: 'Element3', Weight: 1 }]
+            ]);
             expect(mockRestService.post).toHaveBeenCalledWith(
-                '/ExecuteMDXSetExpression',
-                {
-                    MDX: mdx,
-                    Dimension: 'TestDim',
-                    Hierarchy: 'TestHierarchy'
-                }
+                expect.stringContaining('/ExecuteMDXSetExpression?$expand=Tuples('),
+                JSON.stringify({ MDX: mdx })
             );
         });
 
         test('should execute set MDX for element names', async () => {
-            const mdxResult = {
-                Axes: [{
-                    Tuples: [
-                        { Members: [{ Name: 'Element1' }] },
-                        { Members: [{ Name: 'Element2' }] }
-                    ]
-                }]
-            };
-            mockRestService.post.mockResolvedValue(mockResponse(mdxResult));
+            // executeSetMdxElementNames delegates to executeSetMdx with ['Name'] memberProperties
+            jest.spyOn(elementService, 'executeSetMdx').mockResolvedValue([
+                [{ Name: 'Element1' }],
+                [{ Name: 'Element2' }]
+            ]);
 
             const mdx = "DESCENDANTS({[TestDim].[TestHierarchy].[Total]}, 1, LEAVES)";
             const result = await elementService.executeSetMdxElementNames(mdx);
 
             expect(result).toEqual(['Element1', 'Element2']);
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                '/ExecuteMDX',
-                { MDX: mdx }
+            expect(elementService.executeSetMdx).toHaveBeenCalledWith(
+                mdx, undefined, ['Name'], null, null
             );
         });
 
         test('should handle empty MDX results', async () => {
             mockRestService.post.mockResolvedValue(mockResponse({}));
 
-            const result = await elementService.executeSetMdx('TestDim', 'TestHierarchy', '{[Empty]}');
-            
+            const result = await elementService.executeSetMdx('{[Empty]}');
+
             expect(result).toEqual([]);
         });
     });
@@ -736,7 +739,7 @@ describe('ElementService - Comprehensive Tests', () => {
 
             expect(result).toHaveLength(1);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$expand=*&$filter=Type ne 'Consolidated'"
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$expand=*&$filter=Type ne 3"
             );
         });
 
@@ -753,7 +756,7 @@ describe('ElementService - Comprehensive Tests', () => {
             
             expect(result).toHaveLength(2);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$expand=*&$filter=Type eq 'Consolidated'"
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$expand=*&$filter=Type eq 3"
             );
         });
 
@@ -806,15 +809,14 @@ describe('ElementService - Comprehensive Tests', () => {
             ];
 
             jest.spyOn(elementService, 'create').mockResolvedValue(mockResponse({}));
-            jest.spyOn(elementService, 'addEdges').mockResolvedValue();
+            jest.spyOn(elementService, 'addEdges').mockResolvedValue(mockResponse({}) as any);
 
             await elementService.createHierarchyFromDataframe('TestDim', 'TestHierarchy', dataFrame);
-            
+
             expect(elementService.create).toHaveBeenCalledTimes(3);
-            expect(elementService.addEdges).toHaveBeenCalledWith('TestDim', 'TestHierarchy', [
-                { parent: 'Parent1', child: 'Child1', weight: 1.0 },
-                { parent: 'Parent1', child: 'Child2', weight: 2.0 }
-            ]);
+            expect(elementService.addEdges).toHaveBeenCalledWith('TestDim', 'TestHierarchy', {
+                'Parent1': { 'Child1': 1.0, 'Child2': 2.0 }
+            });
         });
 
         test('should throw error for invalid dataframe structure', async () => {
@@ -868,16 +870,20 @@ describe('ElementService - Comprehensive Tests', () => {
         });
 
         test('should get elements by level', async () => {
-            const allElements = [
-                { name: 'Leaf1', elementType: ElementType.NUMERIC },
-                { name: 'Consol1', elementType: ElementType.CONSOLIDATED }
-            ];
-            jest.spyOn(elementService, 'getElements').mockResolvedValue(allElements as any);
+            const levelData = {
+                value: [
+                    { Name: 'Consol1' },
+                    { Name: 'Consol2' }
+                ]
+            };
+            mockRestService.get.mockResolvedValue(mockResponse(levelData));
 
             const result = await elementService.getElementsByLevel('TestDim', 'TestHierarchy', 1);
-            
-            expect(result).toHaveLength(1);
-            expect(result[0].name).toBe('Consol1');
+
+            expect(result).toEqual(['Consol1', 'Consol2']);
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Elements?$select=Name&$filter=Level eq 1"
+            );
         });
 
         test('should get elements filtered by wildcard', async () => {
@@ -939,24 +945,33 @@ describe('ElementService - Comprehensive Tests', () => {
         });
 
         test('should get levels count', async () => {
-            const elements = [
-                { name: 'Leaf1', elementType: ElementType.NUMERIC },
-                { name: 'Consol1', elementType: ElementType.CONSOLIDATED },
-                { name: 'Leaf2', elementType: ElementType.STRING }
-            ];
-            jest.spyOn(elementService, 'getElements').mockResolvedValue(elements as any);
+            mockRestService.get.mockResolvedValue(mockResponse('3'));
 
             const result = await elementService.getLevelsCount('TestDim', 'TestHierarchy');
-            
-            expect(result).toBe(2); // 1 consolidated level + 1 leaf level
+
+            expect(result).toBe(3);
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Levels/$count"
+            );
         });
 
         test('should get level names', async () => {
-            jest.spyOn(elementService, 'getLevelsCount').mockResolvedValue(3);
+            const levelsData = {
+                value: [
+                    { Name: 'Level 0' },
+                    { Name: 'Level 1' },
+                    { Name: 'Level 2' }
+                ]
+            };
+            mockRestService.get.mockResolvedValue(mockResponse(levelsData));
 
             const result = await elementService.getLevelNames('TestDim', 'TestHierarchy');
-            
-            expect(result).toEqual(['Level 0', 'Level 1', 'Level 2']);
+
+            // Default descending=true reverses the order
+            expect(result).toEqual(['Level 2', 'Level 1', 'Level 0']);
+            expect(mockRestService.get).toHaveBeenCalledWith(
+                "/Dimensions('TestDim')/Hierarchies('TestHierarchy')/Levels?$select=Name"
+            );
         });
 
         test('should get leaves under consolidation using MDX', async () => {
@@ -1054,7 +1069,7 @@ describe('ElementService - Comprehensive Tests', () => {
             const error = new Error('MDX execution failed');
             mockRestService.post.mockRejectedValue(error);
 
-            await expect(elementService.executeSetMdx('TestDim', 'TestHierarchy', 'INVALID MDX'))
+            await expect(elementService.executeSetMdx('INVALID MDX'))
                 .rejects.toThrow('MDX execution failed');
         });
 
@@ -1162,33 +1177,35 @@ describe('ElementService - Comprehensive Tests', () => {
 
             // Element lifecycle: create, add relationships, update, delete
             await elementService.create('TestDim', 'TestHierarchy', mockElement);
-            await elementService.addEdges('TestDim', 'TestHierarchy', [
-                { parent: 'Parent1', child: 'TestElement', weight: 1.5 }
-            ]);
+            await elementService.addEdges('TestDim', 'TestHierarchy', {
+                'Parent1': { 'TestElement': 1.5 }
+            });
             await elementService.update('TestDim', 'TestHierarchy', mockElement);
             await elementService.delete('TestDim', 'TestHierarchy', 'TestElement');
 
-            expect(mockRestService.post).toHaveBeenCalledTimes(2); // create + add edge
+            expect(mockRestService.post).toHaveBeenCalledTimes(2); // create + add edges batch
             expect(mockRestService.patch).toHaveBeenCalledTimes(1);
             expect(mockRestService.delete).toHaveBeenCalledTimes(1);
         });
 
         test('should support hierarchy building workflow', async () => {
             mockRestService.post.mockResolvedValue(mockResponse({}));
-            jest.spyOn(elementService, 'create').mockResolvedValue(mockResponse({}));
-            jest.spyOn(elementService, 'addEdges').mockResolvedValue();
+            jest.spyOn(elementService, 'addEdges').mockResolvedValue(mockResponse({}) as any);
 
-            const elements = [mockElement, mockElement, mockElement];
-            const edges = [
-                { parent: 'Parent1', child: 'Child1', weight: 1 },
-                { parent: 'Parent1', child: 'Child2', weight: 2 }
-            ];
+            const mockEl = {
+                name: 'TestElement',
+                bodyAsDict: { Name: 'TestElement', Type: 'Numeric' }
+            } as any;
+            const elements = [mockEl, mockEl, mockEl];
+            const edges: { [parent: string]: { [child: string]: number } } = {
+                'Parent1': { 'Child1': 1, 'Child2': 2 }
+            };
 
             // Hierarchy building workflow
             await elementService.addElements('TestDim', 'TestHierarchy', elements);
             await elementService.addEdges('TestDim', 'TestHierarchy', edges);
 
-            expect(elementService.create).toHaveBeenCalledTimes(3);
+            expect(mockRestService.post).toHaveBeenCalledTimes(1); // single batch addElements
             expect(elementService.addEdges).toHaveBeenCalledWith('TestDim', 'TestHierarchy', edges);
         });
 

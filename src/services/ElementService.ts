@@ -119,7 +119,7 @@ export class ElementService extends ObjectService {
         let url = formatUrl("/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name", dimensionName, hierarchy);
 
         if (skipConsolidatedElements) {
-            url += "&$filter=Type ne 'Consolidated'";
+            url += `&$filter=Type ne ${ElementType.CONSOLIDATED}`;
         }
 
         const response = await this.rest.get(url);
@@ -163,7 +163,7 @@ export class ElementService extends ObjectService {
     ): Promise<Element[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type ne 'Consolidated'",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type ne ${ElementType.CONSOLIDATED}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -179,7 +179,7 @@ export class ElementService extends ObjectService {
     ): Promise<string[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type ne 'Consolidated'",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type ne ${ElementType.CONSOLIDATED}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -195,7 +195,7 @@ export class ElementService extends ObjectService {
     ): Promise<Element[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq 'Consolidated'",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq ${ElementType.CONSOLIDATED}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -211,7 +211,7 @@ export class ElementService extends ObjectService {
     ): Promise<string[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq 'Consolidated'",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq ${ElementType.CONSOLIDATED}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -227,7 +227,7 @@ export class ElementService extends ObjectService {
     ): Promise<Element[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq 'Numeric'",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq ${ElementType.NUMERIC}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -243,7 +243,7 @@ export class ElementService extends ObjectService {
     ): Promise<string[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq 'Numeric'",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq ${ElementType.NUMERIC}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -259,7 +259,7 @@ export class ElementService extends ObjectService {
     ): Promise<Element[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq 'String'",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$expand=*&$filter=Type eq ${ElementType.STRING}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -275,7 +275,7 @@ export class ElementService extends ObjectService {
     ): Promise<string[]> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq 'String'",
+            `/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Type eq ${ElementType.STRING}`,
             dimensionName, hierarchy
         );
         const response = await this.rest.get(url);
@@ -329,17 +329,19 @@ export class ElementService extends ObjectService {
             url += '?$expand=Parents($select=Name)';
         }
 
-        // Add element filter if specified
+        // Build combined filter
+        const filters: string[] = [];
         if (elements) {
             const elementArray = Array.isArray(elements) ? elements : [elements];
-            const filter = elementArray.map(e => `Name eq '${e}'`).join(' or ');
-            url += url.includes('?') ? `&$filter=(${filter})` : `?$filter=(${filter})`;
+            filters.push(`(${elementArray.map(e => `Name eq '${e.replace(/'/g, "''")}'`).join(' or ')})`);
         }
-
-        // Add consolidation filter if requested
         if (skip_consolidations) {
-            const filter = "Type ne 'Consolidated'";
-            url += url.includes('?') ? `&$filter=${filter}` : `?$filter=${filter}`;
+            filters.push(`Type ne ${ElementType.CONSOLIDATED}`);
+        }
+        if (filters.length > 0) {
+            url += url.includes('?')
+                ? `&$filter=${filters.join(' and ')}`
+                : `?$filter=${filters.join(' and ')}`;
         }
 
         const response = await this.rest.get(url);
@@ -398,20 +400,12 @@ export class ElementService extends ObjectService {
         dimensionName: string,
         hierarchyName: string,
         elements: Element[]
-    ): Promise<AxiosResponse[]> {
-        const results: AxiosResponse[] = [];
-
-        for (const element of elements) {
-            try {
-                const result = await this.create(dimensionName, hierarchyName, element);
-                results.push(result);
-            } catch (error) {
-                console.warn(`Failed to create element ${element.name}:`, error);
-                // Continue with other elements
-            }
-        }
-
-        return results;
+    ): Promise<AxiosResponse> {
+        const url = formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/Elements",
+            dimensionName, hierarchyName);
+        const body = elements.map(e => e.bodyAsDict);
+        return await this.rest.post(url, JSON.stringify(body));
     }
 
     /**
@@ -495,20 +489,22 @@ export class ElementService extends ObjectService {
     public async getEdges(
         dimensionName: string,
         hierarchyName?: string
-    ): Promise<{ [key: string]: number }> {
+    ): Promise<{ [parent: string]: { [child: string]: number } }> {
         const hierarchy = hierarchyName || dimensionName;
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Edges",
+            "/Dimensions('{}')/Hierarchies('{}')/Edges?$select=ParentName,ComponentName,Weight",
             dimensionName, hierarchy
         );
 
         const response = await this.rest.get(url);
-        const edges: { [key: string]: number } = {};
+        const edges: { [parent: string]: { [child: string]: number } } = {};
 
         if (response.data.value) {
             for (const edge of response.data.value) {
-                const key = `${edge.ParentName},${edge.ComponentName}`;
-                edges[key] = edge.Weight || 1;
+                if (!edges[edge.ParentName]) {
+                    edges[edge.ParentName] = {};
+                }
+                edges[edge.ParentName][edge.ComponentName] = edge.Weight;
             }
         }
 
@@ -522,26 +518,14 @@ export class ElementService extends ObjectService {
         mdx: string,
         topRecords?: number
     ): Promise<string[]> {
-        let url = '/ExecuteMDX';
-
-        if (topRecords) {
-            url += `?$top=${topRecords}`;
-        }
-
-        const body = { MDX: mdx };
-        const response = await this.rest.post(url, body);
-
-        // Extract element names from response
-        const elements: string[] = [];
-        if (response.data.Axes && response.data.Axes[0] && response.data.Axes[0].Tuples) {
-            for (const tuple of response.data.Axes[0].Tuples) {
-                if (tuple.Members && tuple.Members[0]) {
-                    elements.push(tuple.Members[0].Name);
-                }
-            }
-        }
-
-        return elements;
+        const elements = await this.executeSetMdx(
+            mdx,
+            topRecords,
+            ['Name'],
+            null,
+            null
+        );
+        return elements.map((member: any[]) => member[0].Name);
     }
 
 
@@ -649,19 +633,35 @@ export class ElementService extends ObjectService {
     }
 
     public async executeSetMdx(
-        dimensionName: string,
-        hierarchyName: string,
-        mdx: string
-    ): Promise<string[]> {
-        const url = '/ExecuteMDXSetExpression';
-        const body = {
-            MDX: mdx,
-            Dimension: dimensionName,
-            Hierarchy: hierarchyName
-        };
+        mdx: string,
+        topRecords?: number,
+        memberProperties: string[] | null = ['Name', 'Weight'],
+        parentProperties: string[] | null = ['Name', 'UniqueName'],
+        elementProperties: string[] | null = ['Type', 'Level']
+    ): Promise<any[][]> {
+        const top = topRecords ? `$top=${topRecords};` : '';
 
-        const response = await this.rest.post(url, body);
-        return response.data.value || [];
+        const effectiveMemberProperties = memberProperties || ['Name'];
+        const selectMemberProperties = `$select=${effectiveMemberProperties.join(',')}`;
+
+        const propertiesToExpand: string[] = [];
+        if (parentProperties) {
+            propertiesToExpand.push(`Parent($select=${parentProperties.join(',')})`);
+        }
+        if (elementProperties) {
+            propertiesToExpand.push(`Element($select=${elementProperties.join(',')})`);
+        }
+
+        const expandProperties = propertiesToExpand.length > 0
+            ? `;$expand=${propertiesToExpand.join(',')}`
+            : '';
+
+        const url = `/ExecuteMDXSetExpression?$expand=Tuples(${top}$expand=Members(${selectMemberProperties}${expandProperties}))`;
+
+        const payload = { MDX: mdx };
+        const response = await this.rest.post(url, JSON.stringify(payload));
+        const rawDict = response.data;
+        return (rawDict.Tuples || []).map((tuple: any) => tuple.Members);
     }
 
 
@@ -706,7 +706,7 @@ export class ElementService extends ObjectService {
         elementAttributeName: string
     ): Promise<AxiosResponse> {
         const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/ElementAttributes('{}')",
+            "/Dimensions('}ElementAttributes_{}')/Hierarchies('}ElementAttributes_{}')/Elements('{}')",
             dimensionName, hierarchyName, elementAttributeName);
         return await this.rest.delete(url);
     }
@@ -739,21 +739,19 @@ export class ElementService extends ObjectService {
     public async addEdges(
         dimensionName: string,
         hierarchyName: string,
-        edges: Array<{parent: string, child: string, weight?: number}>
-    ): Promise<void> {
-        // Add parent-child relationships with weights
-        for (const edge of edges) {
-            const url = formatUrl(
-                "/Dimensions('{}')/Hierarchies('{}')/Elements('{}')/Components",
-                dimensionName, hierarchyName, edge.parent);
-
-            const body = {
-                Name: edge.child,
-                Weight: edge.weight || 1
-            };
-
-            await this.rest.post(url, body);
+        edges: { [parent: string]: { [child: string]: number } }
+    ): Promise<AxiosResponse> {
+        const hierarchy = hierarchyName || dimensionName;
+        const url = formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/Edges",
+            dimensionName, hierarchy);
+        const body: Array<{ ParentName: string; ComponentName: string; Weight: number }> = [];
+        for (const [parent, children] of Object.entries(edges)) {
+            for (const [component, weight] of Object.entries(children)) {
+                body.push({ ParentName: parent, ComponentName: component, Weight: Number(weight) });
+            }
         }
+        return await this.rest.post(url, JSON.stringify(body));
     }
 
     public async deleteEdges(
@@ -823,12 +821,12 @@ export class ElementService extends ObjectService {
         }
 
         // Then create relationships
-        const edges: Array<{parent: string, child: string, weight?: number}> = [];
-        
+        const edges: { [parent: string]: { [child: string]: number } } = {};
+
         for (let i = 1; i < dataFrame.length; i++) {
             const row = dataFrame[i];
             const childName = row[nameIndex];
-            
+
             // Look for parent columns
             for (let j = 0; j < headers.length; j++) {
                 const header = headers[j];
@@ -836,14 +834,15 @@ export class ElementService extends ObjectService {
                     const parentName = row[j];
                     const weightIndex = headers.indexOf(header.replace('Parent', 'Weight'));
                     const weight = weightIndex !== -1 ? parseFloat(row[weightIndex]) || 1 : 1;
-                    
-                    edges.push({ parent: parentName, child: childName, weight });
+
+                    if (!edges[parentName]) edges[parentName] = {};
+                    edges[parentName][childName] = weight;
                 }
             }
         }
 
         // Add all edges
-        if (edges.length > 0) {
+        if (Object.keys(edges).length > 0) {
             await this.addEdges(dimensionName, hierarchyName, edges);
         }
     }
@@ -873,7 +872,7 @@ export class ElementService extends ObjectService {
             dimensionName, hierarchy);
 
         if (skipConsolidatedElements) {
-            url += "?$filter=Type ne 'Consolidated'";
+            url += `?$filter=Type ne ${ElementType.CONSOLIDATED}`;
         }
 
         const response = await this.rest.get(url);
@@ -942,28 +941,16 @@ export class ElementService extends ObjectService {
      * Get elements by hierarchy level
      */
     public async getElementsByLevel(
-        dimensionName: string, 
-        hierarchyName: string, 
+        dimensionName: string,
+        hierarchyName: string,
         level: number
-    ): Promise<Element[]> {
+    ): Promise<string[]> {
         const hierarchy = hierarchyName || dimensionName;
-        
-        // Get all elements first
-        const allElements = await this.getElements(dimensionName, hierarchy);
-        
-        // Filter by level (this is a simplified implementation)
-        // In a real implementation, you'd need to calculate levels based on parent-child relationships
-        const levelElements: Element[] = [];
-        
-        for (const element of allElements) {
-            // Simple level calculation - consolidated elements are typically higher levels
-            const elementLevel = element.elementType === ElementType.CONSOLIDATED ? level : 0;
-            if (elementLevel === level) {
-                levelElements.push(element);
-            }
-        }
-        
-        return levelElements;
+        const url = formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$filter=Level eq {}",
+            dimensionName, hierarchy, String(level));
+        const response = await this.rest.get(url);
+        return response.data.value.map((e: any) => e.Name);
     }
 
     /**
@@ -1054,56 +1041,45 @@ export class ElementService extends ObjectService {
      * Get the number of levels in hierarchy
      */
     public async getLevelsCount(
-        dimensionName: string, 
+        dimensionName: string,
         hierarchyName: string
     ): Promise<number> {
         const hierarchy = hierarchyName || dimensionName;
-        
-        // Get all elements and calculate maximum level
-        const elements = await this.getElements(dimensionName, hierarchy);
-        let maxLevel = 0;
-        
-        // Simple level calculation - in real implementation would need proper hierarchy traversal
-        for (const element of elements) {
-            if (element.elementType === ElementType.CONSOLIDATED) {
-                maxLevel = Math.max(maxLevel, 1);
-            }
-        }
-        
-        return maxLevel + 1; // Include leaf level
+        const url = formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/Levels/$count",
+            dimensionName, hierarchy);
+        const response = await this.rest.get(url);
+        return parseInt(response.data) || 0;
     }
 
-    /**
-     * Get level names from hierarchy
-     */
     public async getLevelNames(
-        dimensionName: string, 
-        hierarchyName: string
+        dimensionName: string,
+        hierarchyName: string,
+        descending: boolean = true
     ): Promise<string[]> {
-        const levelsCount = await this.getLevelsCount(dimensionName, hierarchyName);
-        const levelNames: string[] = [];
-        
-        for (let i = 0; i < levelsCount; i++) {
-            levelNames.push(`Level ${i}`);
+        const hierarchy = hierarchyName || dimensionName;
+        const url = formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/Levels?$select=Name",
+            dimensionName, hierarchy);
+        const response = await this.rest.get(url);
+        const levels = response.data.value.map((level: any) => level.Name);
+        if (descending) {
+            return levels.reverse();
         }
-        
-        return levelNames;
+        return levels;
     }
 
     /**
      * Get alias element attributes
      */
     public async getAliasElementAttributes(
-        dimensionName: string, 
+        dimensionName: string,
         hierarchyName: string
-    ): Promise<ElementAttribute[]> {
-        const hierarchy = hierarchyName || dimensionName;
-        const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/ElementAttributes?$filter=Type eq 'Alias'",
-            dimensionName, hierarchy);
-        
-        const response = await this.rest.get(url);
-        return response.data.value.map((attr: any) => ElementAttribute.fromDict(attr));
+    ): Promise<string[]> {
+        const attributes = await this.getElementAttributes(dimensionName, hierarchyName);
+        return attributes
+            .filter(attr => attr.attributeType === 'Alias')
+            .map(attr => attr.name);
     }
 
     /**

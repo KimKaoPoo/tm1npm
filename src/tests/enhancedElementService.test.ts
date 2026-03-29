@@ -65,21 +65,23 @@ describe('Enhanced ElementService Tests', () => {
         });
 
         test('addEdges should create parent-child relationships', async () => {
-            const edges = [
-                { parent: 'Total', child: 'Region1', weight: 1 },
-                { parent: 'Total', child: 'Region2', weight: 2 }
-            ];
+            const edges: { [parent: string]: { [child: string]: number } } = {
+                'Total': { 'Region1': 1, 'Region2': 2 }
+            };
 
             mockRestService.post.mockResolvedValue(createMockResponse({}));
 
             await elementService.addEdges('TestDim', 'TestHier', edges);
 
-            expect(mockRestService.post).toHaveBeenCalledTimes(2);
+            expect(mockRestService.post).toHaveBeenCalledTimes(1);
             expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHier')/Elements('Total')/Components",
-                { Name: 'Region1', Weight: 1 }
+                "/Dimensions('TestDim')/Hierarchies('TestHier')/Edges",
+                JSON.stringify([
+                    { ParentName: 'Total', ComponentName: 'Region1', Weight: 1 },
+                    { ParentName: 'Total', ComponentName: 'Region2', Weight: 2 }
+                ])
             );
-            
+
             console.log('✅ addEdges test passed');
         });
 
@@ -153,8 +155,8 @@ describe('Enhanced ElementService Tests', () => {
 
             await elementService.createHierarchyFromDataframe('TestDim', 'TestHier', dataFrame);
 
-            // Should create 3 elements
-            expect(mockRestService.post).toHaveBeenCalledTimes(5); // 3 creates + 2 edges
+            // Should create 3 elements + 1 batch edge POST
+            expect(mockRestService.post).toHaveBeenCalledTimes(4); // 3 creates + 1 batch edges
             
             // Check element creation calls
             expect(mockRestService.post).toHaveBeenCalledWith(
@@ -190,7 +192,7 @@ describe('Enhanced ElementService Tests', () => {
 
             expect(count).toBe(15);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHier')/Elements/$count?$filter=Type ne 'Consolidated'"
+                "/Dimensions('TestDim')/Hierarchies('TestHier')/Elements/$count?$filter=Type ne 3"
             );
             
             console.log('✅ getElementsCount with filter test passed');
@@ -208,7 +210,7 @@ describe('Enhanced ElementService Tests', () => {
 
             expect(elements).toHaveLength(2);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHier')/Elements?$expand=*&$filter=Type ne 'Consolidated'"
+                "/Dimensions('TestDim')/Hierarchies('TestHier')/Elements?$expand=*&$filter=Type ne 3"
             );
             
             console.log('✅ getLeafElements test passed');
@@ -226,7 +228,7 @@ describe('Enhanced ElementService Tests', () => {
 
             expect(elements).toHaveLength(2);
             expect(mockRestService.get).toHaveBeenCalledWith(
-                "/Dimensions('TestDim')/Hierarchies('TestHier')/Elements?$expand=*&$filter=Type eq 'Consolidated'"
+                "/Dimensions('TestDim')/Hierarchies('TestHier')/Elements?$expand=*&$filter=Type eq 3"
             );
             
             console.log('✅ getConsolidatedElements test passed');
@@ -250,28 +252,21 @@ describe('Enhanced ElementService Tests', () => {
 
     describe('MDX Operations', () => {
         test('executeSetMdxElementNames should return element names from MDX set', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({
-                Axes: [{
-                    Tuples: [
-                        { Members: [{ Name: 'Element1' }] },
-                        { Members: [{ Name: 'Element2' }] },
-                        { Members: [{ Name: 'Element3' }] }
-                    ]
-                }]
-            }));
+            // executeSetMdxElementNames delegates to executeSetMdx with ['Name'] memberProperties
+            jest.spyOn(elementService, 'executeSetMdx').mockResolvedValue([
+                [{ Name: 'Element1' }],
+                [{ Name: 'Element2' }],
+                [{ Name: 'Element3' }]
+            ]);
 
-            const elements = await elementService.executeSetMdxElementNames(
-                '{[TestDim].[TestHier].Members}'
-            );
+            const mdx = '{[TestDim].[TestHier].Members}';
+            const elements = await elementService.executeSetMdxElementNames(mdx);
 
             expect(elements).toEqual(['Element1', 'Element2', 'Element3']);
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                '/ExecuteMDX',
-                {
-                    MDX: '{[TestDim].[TestHier].Members}'
-                }
+            expect(elementService.executeSetMdx).toHaveBeenCalledWith(
+                mdx, undefined, ['Name'], null, null
             );
-            
+
             console.log('✅ executeSetMdxElementNames test passed');
         });
     });
