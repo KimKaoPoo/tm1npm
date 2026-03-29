@@ -351,9 +351,9 @@ describe('ProcessService - Comprehensive Tests', () => {
             const createCall = mockRestService.post.mock.calls[0];
             expect(createCall[0]).toBe('/Processes');
 
-            // Second call: execute
+            // Second call: executeWithReturn
             const executeCall = mockRestService.post.mock.calls[1];
-            expect(executeCall[0]).toMatch(/\/Processes\('.*'\)\/tm1\.Execute/);
+            expect(executeCall[0]).toMatch(/\/Processes\('.*'\)\/tm1\.ExecuteWithReturn\?\$expand=\*/);
         });
 
         test('should execute TI code with parameters', async () => {

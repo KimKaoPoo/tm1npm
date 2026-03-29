@@ -527,7 +527,7 @@ export class ProcessService extends ObjectService {
         );
         await this.create(p);
         try {
-            return await this.execute(name, parameters);
+            return await this.executeProcessWithReturn(name, parameters);
         } finally {
             try {
                 await this.delete(name);
