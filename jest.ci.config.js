@@ -20,6 +20,7 @@ module.exports = {
     '.*performance\\.test\\.ts$',        // May require connection
     '.*security\\.test\\.ts$',           // May require connection setup
     '.*security\\.advanced\\.test\\.ts$', // Advanced security tests with connection mocks
+    '.*mdx\\.advanced\\.test\\.ts$',     // Advanced MDX tests with complex mocks
     '.*stress\\.performance\\.test\\.ts$', // Performance tests with connections
     '.*errorHandling\\.test\\.ts$',      // May test real error scenarios
     '.*integrationTests\\.test\\.ts$'    // Additional integration test pattern
