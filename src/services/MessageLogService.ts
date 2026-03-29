@@ -163,7 +163,7 @@ export class MessageLogService extends ObjectService {
         // Execute TI code directly instead of creating a process
         const tiCode = `LogOutput('${level}', '${message}');`;
         const result = await processService.executeTiCode([tiCode]);
-        if (result?.ProcessExecuteStatusCode && result.ProcessExecuteStatusCode !== 'CompletedSuccessfully') {
+        if (result?.ProcessExecuteStatusCode !== 'CompletedSuccessfully') {
             throw new Error(`Failed to write to TM1 Message Log. Status: '${result.ProcessExecuteStatusCode}'`);
         }
     }

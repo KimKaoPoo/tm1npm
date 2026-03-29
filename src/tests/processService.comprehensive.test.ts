@@ -413,7 +413,6 @@ describe('ProcessService - Comprehensive Tests', () => {
 
             const result = await processService.executeTiCode(['InvalidFunction();']);
 
-            // The key fix: executeTiCode now returns the status so callers can detect failures
             expect(result.ProcessExecuteStatusCode).toBe('Aborted');
             expect(result.ErrorLogFile).toBeDefined();
         });
