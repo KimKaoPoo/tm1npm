@@ -4,8 +4,6 @@
 
 import { ElementService } from '../services/ElementService';
 import { RestService } from '../services/RestService';
-import { HierarchyService } from '../services/HierarchyService';
-import { ProcessService } from '../services/ProcessService';
 import { TM1RestException } from '../exceptions/TM1Exception';
 
 const createMockResponse = (data: any, status: number = 200) => ({
@@ -510,6 +508,64 @@ describe('ElementService — Issue #37: 13 missing methods', () => {
             const result = await getCardinality('SOME MDX');
 
             expect(result).toBe(0);
+        });
+    });
+
+    // ===== EDGE CASE TESTS (P2 review feedback) =====
+
+    describe('elementIsAncestor — additional edge cases', () => {
+        test('should auto-select TI method when isAdmin is true', async () => {
+            Object.defineProperty(elementService, 'isAdmin', { get: () => true });
+            const tiSpy = jest.spyOn(elementService as any, '_elementIsAncestorTi').mockResolvedValue(true);
+
+            const result = await elementService.elementIsAncestor('Dim1', 'Hier1', 'Ancestor', 'Elem');
+
+            expect(result).toBe(true);
+            expect(tiSpy).toHaveBeenCalled();
+        });
+    });
+
+    describe('getElementTypesFromAllHierarchies — additional edge cases', () => {
+        test('should handle empty Hierarchies array', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                Hierarchies: []
+            }));
+
+            const result = await elementService.getElementTypesFromAllHierarchies('EmptyDim');
+            expect(result.size).toBe(0);
+        });
+    });
+
+    describe('getParentsOfAllElements — additional edge cases', () => {
+        test('should handle empty value array', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({ value: [] }));
+
+            const result = await elementService.getParentsOfAllElements('Dim1', 'Hier1');
+            expect(Object.keys(result)).toHaveLength(0);
+        });
+    });
+
+    describe('_retrieveMdxRowsAndCellValuesAsStringSet — additional edge cases', () => {
+        test('should return empty set when Axes and Cells are missing', async () => {
+            // CellService.executeMdxRowsAndValues handles missing Axes/Cells
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+
+            const retrieve = (elementService as any)._retrieveMdxRowsAndCellValuesAsStringSet.bind(elementService);
+            const result = await retrieve('SELECT {} ON ROWS FROM [Cube]');
+
+            expect(result.size).toBe(0);
+        });
+    });
+
+    describe('getElementPrincipalName — additional edge cases', () => {
+        test('should propagate error when element not found', async () => {
+            mockRestService.get.mockRejectedValue(
+                new TM1RestException('Not found', 404, { status: 404 })
+            );
+
+            await expect(
+                elementService.getElementPrincipalName('Dim1', 'Hier1', 'NonExistent')
+            ).rejects.toThrow();
         });
     });
 });

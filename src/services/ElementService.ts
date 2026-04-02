@@ -6,9 +6,11 @@ import { ElementAttribute } from '../objects/ElementAttribute';
 import { Process } from '../objects/Process';
 import { ProcessService } from './ProcessService';
 import { HierarchyService } from './HierarchyService';
+import { CellService } from './CellService';
 import {
     formatUrl,
     escapeODataValue,
+    requireDataAdmin,
     CaseAndSpaceInsensitiveDict,
     CaseAndSpaceInsensitiveSet
 } from '../utils/Utils';
@@ -1209,8 +1211,6 @@ export class ElementService extends ObjectService {
         return elements.map(name => `[${dimensionName}].[${hierarchy}].[${name}]`);
     }
 
-    // ===== ISSUE #37: 13 MISSING METHODS FOR TM1PY PARITY =====
-
     public async getNumberOfConsolidatedElements(
         dimensionName: string,
         hierarchyName: string
@@ -1335,6 +1335,7 @@ export class ElementService extends ObjectService {
      * - 'Descendants' performs well when ancestorName and elementName are Consolidations
      *
      * If no method is passed, defaults to 'TI' for admin users, 'TM1DrillDownMember' otherwise.
+     * Note: isAdmin is determined from RestService state; if not set, defaults to 'TM1DrillDownMember'.
      */
     public async elementIsAncestor(
         dimensionName: string,
@@ -1430,8 +1431,6 @@ export class ElementService extends ObjectService {
         return this._retrieveMdxRowsAndCellValuesAsStringSet(mdx);
     }
 
-    // ===== PRIVATE HELPERS FOR ISSUE #37 =====
-
     private async _getElementCountWithFilter(
         dimensionName: string,
         hierarchyName: string,
@@ -1478,6 +1477,7 @@ export class ElementService extends ObjectService {
         return response.data.Cardinality || 0;
     }
 
+    @requireDataAdmin
     private async _elementIsAncestorTi(
         dimensionName: string,
         hierarchyName: string,
@@ -1490,28 +1490,21 @@ export class ElementService extends ObjectService {
     }
 
     private async _retrieveMdxRowsAndCellValuesAsStringSet(mdx: string): Promise<CaseAndSpaceInsensitiveSet> {
-        const url = '/ExecuteMDX';
-        const response = await this.rest.post(url, JSON.stringify({ MDX: mdx }));
-        const data = response.data;
+        const cellService = new CellService(this.rest);
+        const { rows, values } = await cellService.executeMdxRowsAndValues(mdx);
         const result = new CaseAndSpaceInsensitiveSet();
 
-        // Collect row member names from the row axis (Axes[1])
-        if (data.Axes && data.Axes.length > 1 && data.Axes[1].Tuples) {
-            for (const tuple of data.Axes[1].Tuples) {
-                for (const member of (tuple.Members || [])) {
-                    if (member.Name) {
-                        result.add(member.Name);
-                    }
+        for (const row of rows) {
+            for (const name of row) {
+                if (name) {
+                    result.add(name);
                 }
             }
         }
 
-        // Collect non-null, non-empty string cell values (alias values)
-        if (data.Cells) {
-            for (const cell of data.Cells) {
-                if (cell.Value && typeof cell.Value === 'string' && cell.Value.trim() !== '') {
-                    result.add(cell.Value);
-                }
+        for (const value of values) {
+            if (value && typeof value === 'string' && value.trim() !== '') {
+                result.add(value);
             }
         }
 
