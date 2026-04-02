@@ -38,7 +38,14 @@ export class ApplicationService extends ObjectService {
         return response.data.value.map((application: any) => application.Name);
     }
 
-    public async getNames(path: string, isPrivate: boolean = false): Promise<string[]> {
+    public async getNames(path: string, isPrivate: boolean = false, useCache: boolean = false): Promise<string[]> {
+        if (isPrivate) {
+            const resolved = await this._resolvePath(path, true, useCache);
+            const collection = resolved.inPrivateContext ? 'PrivateContents' : 'Contents';
+            const url = resolved.baseUrl + '/' + collection;
+            const response = await this.rest.get(url);
+            return response.data.value.map((application: any) => application.Name);
+        }
         const contents = this.getContentsCollection(isPrivate);
         const mid = this.buildPathSegments(path);
         const baseUrl = "/Contents('Applications')" + mid + "/" + contents;
@@ -50,7 +57,8 @@ export class ApplicationService extends ObjectService {
         path: string,
         applicationType: string | ApplicationTypes,
         name: string,
-        isPrivate: boolean = false
+        isPrivate: boolean = false,
+        useCache: boolean = false
     ): Promise<Application> {
         const appType = this.parseApplicationType(applicationType);
 
@@ -59,7 +67,14 @@ export class ApplicationService extends ObjectService {
         }
 
         const requestName = this.withLegacySuffix(name, appType);
-        const baseUrl = this.buildApplicationUrl(path, isPrivate, requestName);
+        let baseUrl: string;
+        if (isPrivate) {
+            const resolved = await this._resolvePath(path, true, useCache);
+            const collection = resolved.inPrivateContext ? 'PrivateContents' : 'Contents';
+            baseUrl = formatUrl(resolved.baseUrl + '/' + collection + "('{}')", requestName);
+        } else {
+            baseUrl = this.buildApplicationUrl(path, isPrivate, requestName);
+        }
 
         switch (appType) {
             case ApplicationTypes.CUBE: {
@@ -235,11 +250,22 @@ export class ApplicationService extends ObjectService {
         path: string,
         applicationType: ApplicationTypes,
         name: string,
-        isPrivate: boolean = false
+        isPrivate: boolean = false,
+        useCache: boolean = false
     ): Promise<boolean> {
+        const requestName = this.withLegacySuffix(name, applicationType);
+        if (isPrivate) {
+            try {
+                const resolved = await this._resolvePath(path, true, useCache);
+                const collection = resolved.inPrivateContext ? 'PrivateContents' : 'Contents';
+                const url = formatUrl(resolved.baseUrl + '/' + collection + "('{}')", requestName);
+                return await this._exists(url);
+            } catch {
+                return false;
+            }
+        }
         const contents = this.getContentsCollection(isPrivate);
         const mid = this.buildPathSegments(path);
-        const requestName = this.withLegacySuffix(name, applicationType);
         const url = formatUrl(
             "/Contents('Applications')" + mid + "/" + contents + "('{}')",
             requestName
@@ -353,7 +379,7 @@ export class ApplicationService extends ObjectService {
     ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
         const results: Array<{ type: string; name: string; path: string; is_private: boolean }> = [];
 
-        const folderPromises: Array<{ index: number; promise: Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> }> = [];
+        const folderPromises: Array<Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>>> = [];
 
         for (const item of items) {
             const odataType = item['@odata.type'] || '';
@@ -369,17 +395,15 @@ export class ApplicationService extends ObjectService {
             });
 
             if (recursive && typeName === 'Folder') {
-                folderPromises.push({
-                    index: results.length,
-                    promise: this._discoverAtPath(
+                folderPromises.push(
+                    this._discoverAtPath(
                         itemPath, includePrivate, recursive, flat, inPrivateContext || isPrivate
                     )
-                });
+                );
             }
         }
 
-        // Discover sibling folders in parallel
-        const folderResults = await Promise.all(folderPromises.map(f => f.promise));
+        const folderResults = await Promise.all(folderPromises);
         for (const subItems of folderResults) {
             results.push(...subItems);
         }

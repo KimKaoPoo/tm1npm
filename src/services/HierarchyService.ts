@@ -250,11 +250,9 @@ export class HierarchyService extends ObjectService {
         options: {
             elementColumn?: string;
             verifyUniqueElements?: boolean;
-            verifyEdges?: boolean;
             elementTypeColumn?: string;
             unwindAll?: boolean;
             unwindConsolidations?: string[];
-            updateAttributeTypes?: boolean;
             deleteOrphanedConsolidations?: boolean;
         } = {}
     ): Promise<void> {
@@ -348,9 +346,13 @@ export class HierarchyService extends ObjectService {
                 const dim = new Dimension(dimensionName, [newHierarchy]);
                 await dimensionService.create(dim);
             } catch (e: any) {
-                // 409 = dimension already exists, which is expected
-                if (!(e instanceof TM1RestException && e.statusCode === 409)) {
+                const isAlreadyExists = (e instanceof TM1RestException && e.statusCode === 409)
+                    || (e.message && e.message.includes('already exists'));
+                if (isAlreadyExists) {
+                    // Dimension exists but hierarchy doesn't — create just the hierarchy
                     await this.create(newHierarchy);
+                } else {
+                    throw e;
                 }
             }
             hierarchy = await this.get(dimensionName, hierarchyName);
@@ -424,7 +426,12 @@ export class HierarchyService extends ObjectService {
                     for (const [attrName, value] of attrs) {
                         writePromises.push(
                             cellService.writeValue(cubeName, [elementName, attrName], value)
-                                .catch(() => { /* element may not exist in control dimension */ })
+                                .catch((e: any) => {
+                                    // Expected: element may not exist in control dimension
+                                    if (!(e instanceof TM1RestException && e.statusCode === 404)) {
+                                        throw e;
+                                    }
+                                })
                         );
                     }
                 }
@@ -443,7 +450,13 @@ export class HierarchyService extends ObjectService {
                     for (const [child, weight] of Object.entries(children)) {
                         edgePromises.push(
                             this.addEdges(dimensionName, hierarchyName, { [parent]: { [child]: weight } })
-                                .catch(() => null as any)
+                                .catch((e: any) => {
+                                    // Expected: edge may already exist (409)
+                                    if (e instanceof TM1RestException && e.statusCode === 409) {
+                                        return null as any;
+                                    }
+                                    throw e;
+                                })
                         );
                     }
                 }
@@ -465,7 +478,12 @@ export class HierarchyService extends ObjectService {
                 if (element.elementType === ElementType.CONSOLIDATED && !parentNames.has(element.name)) {
                     deletePromises.push(
                         elemService.delete(dimensionName, hierarchyName, element.name)
-                            .catch(() => { /* ignore deletion errors */ })
+                            .catch((e: any) => {
+                                // Expected: element may have been deleted already (404)
+                                if (!(e instanceof TM1RestException && e.statusCode === 404)) {
+                                    throw e;
+                                }
+                            })
                     );
                 }
             }
