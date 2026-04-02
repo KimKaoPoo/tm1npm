@@ -831,12 +831,15 @@ export class ProcessService extends ObjectService {
             undefined,
             undefined,
             undefined,
-            Process.AUTO_GENERATED_STATEMENTS + prologList.join('\r\n')
+            Process.AUTO_GENERATED_STATEMENTS + prologList.join('\r\n'),
+            '',
+            '',
+            ''
         );
 
         const syntaxErrors = await this.compileProcess(p);
         if (syntaxErrors && syntaxErrors.length > 0) {
-            throw new Error(String(syntaxErrors));
+            throw new Error(syntaxErrors.map(e => `Line ${e.LineNumber}: ${e.Message}`).join('; '));
         }
 
         try {

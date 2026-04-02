@@ -751,8 +751,15 @@ export class RestService {
     public async retrieve_async_response(async_id: string): Promise<any> {
         try {
             const response = await this.get(`/AsyncOperations('${async_id}')`);
+            // Axios treats 2xx as success, but 202 means the operation is still running
+            if (response.status === 202) {
+                throw new TM1RestException('Async operation still running', 202, response);
+            }
             return response.data;
         } catch (error: any) {
+            if (error instanceof TM1RestException) {
+                throw error;
+            }
             const status = error?.status ?? error?.response?.status;
             throw new TM1RestException(
                 `Failed to retrieve async response ${async_id}: ${error}`,

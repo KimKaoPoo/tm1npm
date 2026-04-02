@@ -659,13 +659,13 @@ describe('ProcessService Tests', () => {
             expect(compilePayload.Process.PrologProcedure).toContain('sFunc = IF(1=1, "yes", "no");');
         });
 
-        test('should throw on syntax errors from compileProcess', async () => {
+        test('should throw readable error on syntax errors from compileProcess', async () => {
             mockRestService.post.mockResolvedValueOnce(createMockResponse({
                 value: [{ LineNumber: 1, Message: 'Unexpected token' }]
             }));
 
             await expect(processService.evaluateTiExpression('INVALID_FUNC();'))
-                .rejects.toThrow();
+                .rejects.toThrow('Line 1: Unexpected token');
         });
 
         test('should clean up temp process even on debug failure', async () => {
