@@ -3,10 +3,15 @@ import { v4 as uuidv4 } from 'uuid';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { Process } from '../objects/Process';
-import { ProcessDebugBreakpoint } from '../objects/ProcessDebugBreakpoint';
+import { ProcessDebugBreakpoint, BreakPointType, HitMode } from '../objects/ProcessDebugBreakpoint';
 import { TM1RestException, TM1Exception } from '../exceptions/TM1Exception';
 import { formatUrl, lowerAndDropSpaces } from '../utils/Utils';
 import { OperationStatus, OperationType } from './AsyncOperationService';
+
+export interface CompileSyntaxError {
+    LineNumber: number;
+    Message: string;
+}
 
 export class ProcessService extends ObjectService {
     /** Service to handle Object Updates for TI Processes
@@ -221,105 +226,45 @@ export class ProcessService extends ObjectService {
         return await this.rest.post(url, '{}');
     }
 
-    public async compileProcess(processName: string): Promise<{success: boolean, errors: string[]}> {
-        /** Compile a process and return detailed compilation results
+    public async compileProcess(process: Process): Promise<CompileSyntaxError[]> {
+        /** Compile an unbound process and return syntax errors
          *
-         * :param process_name: name of the process
-         * :return: compilation result with success status and error details
+         * :param process: Instance of .Process class
+         * :return: list of syntax errors (empty if successful)
          */
-        try {
-            const response = await this.compile(processName);
-            
-            // Check if compilation was successful
-            if (response.status === 200) {
-                return {
-                    success: true,
-                    errors: []
-                };
-            } else {
-                return {
-                    success: false,
-                    errors: [response.statusText || 'Compilation failed']
-                };
-            }
-        } catch (error: any) {
-            const errorMessage = error.response?.data?.error?.message || error.message || 'Unknown compilation error';
-            return {
-                success: false,
-                errors: [errorMessage]
-            };
-        }
+        const url = '/CompileProcess';
+        const payload = { Process: process.bodyAsDict };
+        const response = await this.rest.post(url, JSON.stringify(payload));
+        return response.data.value;
     }
 
     /**
-     * Poll execution status for async process execution
+     * Poll for async execution result
+     *
+     * :param asyncId: async operation ID returned from executeWithReturn with returnAsyncId=true
+     * :return: tuple of [success, status, errorLogFile] or null if not ready
      */
-    public async pollExecuteWithReturn(
-        processName: string,
-        parameters?: Record<string, any>,
-        timeout: number = 300,
-        pollInterval: number = 5
-    ): Promise<any> {
-        /** Execute process asynchronously and poll for completion
-         *
-         * :param process_name: name of the process
-         * :param parameters: dictionary of process parameters
-         * :param timeout: maximum time to wait for completion (seconds)
-         * :param poll_interval: time between status checks (seconds)
-         * :return: execution result when completed
-         */
-        
-        // Start async execution
-        const executeUrl = formatUrl("/Processes('{}')/tm1.ExecuteAsync", processName);
-        const body: any = {};
-        
-        if (parameters && Object.keys(parameters).length > 0) {
-            body.Parameters = Object.entries(parameters).map(([name, value]) => ({
-                Name: name,
-                Value: value
-            }));
-        }
-
-        const executeResponse = await this.rest.post(executeUrl, JSON.stringify(body));
-        const executionId = executeResponse.data.ID || executeResponse.data.ExecutionId;
-        
-        if (!executionId) {
-            throw new TM1Exception('Failed to start async process execution');
-        }
-
-        // Poll for completion
-        const startTime = Date.now();
-        const maxTime = timeout * 1000;
-        
-        while (Date.now() - startTime < maxTime) {
-            try {
-                // Check execution status
-                const statusUrl = `/ExecutionStatus('${executionId}')`;
-                const statusResponse = await this.rest.get(statusUrl);
-                const status = statusResponse.data;
-                
-                if (status.Status === 'Completed') {
-                    // Get execution results
-                    const resultUrl = `/ExecutionResults('${executionId}')`;
-                    const resultResponse = await this.rest.get(resultUrl);
-                    return resultResponse.data;
-                } else if (status.Status === 'Failed') {
-                    throw new TM1Exception(`Process execution failed: ${status.ErrorMessage || 'Unknown error'}`);
-                }
-                
-                // Wait before next poll
-                await new Promise(resolve => setTimeout(resolve, pollInterval * 1000));
-                
-            } catch (error) {
-                if (error instanceof TM1Exception) {
-                    throw error;
-                }
-                // If status check fails, wait and retry
-                await new Promise(resolve => setTimeout(resolve, pollInterval * 1000));
+    public async pollExecuteWithReturn(asyncId: string): Promise<[boolean, string, string | null] | null> {
+        try {
+            const response = await this.rest.retrieve_async_response(asyncId);
+            // TODO: tm1py handles TM1 < v11 binary-wrapped responses via
+            // build_response_from_binary_response. Add support if needed.
+            return this._executeWithReturnParseResponse(response);
+        } catch (error: any) {
+            // Return null for HTTP 202 (accepted/pending) or 404 (not found yet)
+            const status = error?.status ?? error?.response?.status;
+            if (status === 202 || status === 404) {
+                return null;
             }
+            throw error;
         }
-        
-        throw new TM1Exception(`Process execution timed out after ${timeout} seconds`);
+    }
+
+    private _executeWithReturnParseResponse(executionSummary: any): [boolean, string, string | null] {
+        const success = executionSummary.ProcessExecuteStatusCode === 'CompletedSuccessfully';
+        const status = executionSummary.ProcessExecuteStatusCode;
+        const errorLogFile = executionSummary.ErrorLogFile?.Filename ?? null;
+        return [success, status, errorLogFile];
     }
 
     public async executeProcessWithReturn(
@@ -347,7 +292,7 @@ export class ProcessService extends ObjectService {
         return '';
     }
 
-    public async getProcessDebugBreakpoints(debugId: string): Promise<ProcessDebugBreakpoint[]> {
+    public async debugGetBreakpoints(debugId: string): Promise<ProcessDebugBreakpoint[]> {
         /** Get debug breakpoints for a debug context
          *
          * :param debugId: debug session ID
@@ -358,25 +303,24 @@ export class ProcessService extends ObjectService {
         return response.data.value.map((bp: any) => ProcessDebugBreakpoint.fromDict(bp));
     }
 
-    public async createProcessDebugBreakpoint(
+    public async debugAddBreakpoint(
         debugId: string,
         breakpoint: ProcessDebugBreakpoint
     ): Promise<AxiosResponse> {
-        /** Create a debug breakpoint in a debug context
+        /** Add a single breakpoint to a debug context (delegates to debugAddBreakpoints)
          *
          * :param debugId: debug session ID
          * :param breakpoint: ProcessDebugBreakpoint object
          * :return: response
          */
-        const url = formatUrl("/ProcessDebugContexts('{}')/Breakpoints", debugId);
-        return await this.rest.post(url, breakpoint.body);
+        return this.debugAddBreakpoints(debugId, [breakpoint]);
     }
 
-    public async deleteProcessDebugBreakpoint(
+    public async debugRemoveBreakpoint(
         debugId: string,
         breakpointId: number
     ): Promise<AxiosResponse> {
-        /** Delete a debug breakpoint from a debug context
+        /** Remove a breakpoint from a debug context
          *
          * :param debugId: debug session ID
          * :param breakpointId: ID of the breakpoint
@@ -860,6 +804,79 @@ export class ProcessService extends ObjectService {
     }
 
     /**
+     * Evaluate a TI expression and return the string result.
+     *
+     * Creates a temporary process with sFunc = {formula}, compiles it,
+     * starts a debug session, adds a data breakpoint on sFunc, continues
+     * execution to evaluate, reads the result, and cleans up.
+     */
+    public async evaluateTiExpression(formula: string): Promise<string> {
+        // tm1py uses formula[formula.find("=") + 1:] which greedily strips at the
+        // first "=" anywhere in the string. We use a regex to only strip a leading
+        // "=" prefix (e.g. "=NOW;" → "NOW;"), avoiding mangling formulas with
+        // embedded "=" (e.g. comparisons like "IF(1=1,...)").
+        formula = formula.replace(/^\s*=\s*/, '');
+
+        // Ensure semicolon at end
+        if (!formula.trim().endsWith(';')) {
+            formula += ';';
+        }
+
+        const prologList = [`sFunc = ${formula}`, "sDebug='Stop';"];
+        const processName = `}TM1py${uuidv4()}`;
+        const p = new Process(
+            processName,
+            false,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            Process.AUTO_GENERATED_STATEMENTS + prologList.join('\r\n'),
+            '',
+            '',
+            ''
+        );
+
+        const syntaxErrors = await this.compileProcess(p);
+        if (syntaxErrors && syntaxErrors.length > 0) {
+            throw new Error(syntaxErrors.map(e => `Line ${e.LineNumber}: ${e.Message}`).join('; '));
+        }
+
+        try {
+            await this.create(p);
+            const debugContext = await this.debugProcess(processName);
+            const debugId = debugContext.ID;
+
+            const breakpoint = new ProcessDebugBreakpoint(
+                1,
+                BreakPointType.PROCESS_DEBUG_CONTEXT_DATA_BREAK_POINT,
+                true,
+                HitMode.BREAK_ALWAYS,
+                0,
+                '',
+                'sFunc'
+            );
+
+            await this.debugAddBreakpoint(debugId, breakpoint);
+            await this.debugContinue(debugId);
+            const result = await this.debugGetVariableValues(debugId);
+            await this.debugContinue(debugId);
+
+            if (!result || !('sFunc' in result)) {
+                throw new Error('unknown error: no formula result found');
+            }
+            return result['sFunc'];
+
+        } finally {
+            try {
+                await this.delete(processName);
+            } catch (_) {
+                // Cleanup failure should not mask the original error
+            }
+        }
+    }
+
+    /**
      * Analyze process dependencies (what cubes/dimensions/processes it uses)
      *
      * @param processName - Name of the process
@@ -949,23 +966,19 @@ export class ProcessService extends ObjectService {
      */
     public async validateProcessSyntax(processName: string): Promise<{isValid: boolean, errors: any[]}> {
         try {
-            const result = await this.compileProcess(processName);
-            return {
-                isValid: result.success,
-                errors: result.errors.map((error, index) => ({
-                    line: index + 1,
-                    message: error,
-                    severity: 'Error'
-                }))
-            };
-        } catch (error: any) {
+            const response = await this.compile(processName);
+            if (response.status === 200) {
+                return { isValid: true, errors: [] };
+            }
             return {
                 isValid: false,
-                errors: [{
-                    line: 0,
-                    message: error.message || 'Validation failed',
-                    severity: 'Error'
-                }]
+                errors: [{ line: 0, message: response.statusText || 'Compilation failed', severity: 'Error' }]
+            };
+        } catch (error: any) {
+            const errorMessage = error.response?.data?.error?.message || error.message || 'Validation failed';
+            return {
+                isValid: false,
+                errors: [{ line: 0, message: errorMessage, severity: 'Error' }]
             };
         }
     }

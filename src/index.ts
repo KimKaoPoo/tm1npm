@@ -11,7 +11,7 @@ export {
     CubeService,
     ElementService,
     CellService,
-    ProcessService,
+    ProcessService, CompileSyntaxError,
     ViewService,
     SecurityService,
     FileService,

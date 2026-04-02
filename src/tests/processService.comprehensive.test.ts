@@ -538,17 +538,17 @@ describe('ProcessService - Comprehensive Tests', () => {
             };
             mockRestService.get.mockResolvedValue(mockResponse(breakpointsData));
 
-            const result = await processService.getProcessDebugBreakpoints('debug-123');
+            const result = await processService.debugGetBreakpoints('debug-123');
 
             expect(result).toHaveLength(2);
             expect(ProcessDebugBreakpoint.fromDict).toHaveBeenCalledTimes(2);
             expect(mockRestService.get).toHaveBeenCalledWith("/ProcessDebugContexts('debug-123')/Breakpoints");
         });
 
-        test('should create process debug breakpoint', async () => {
+        test('should add process debug breakpoint (delegates to debugAddBreakpoints)', async () => {
             mockRestService.post.mockResolvedValue(mockResponse({}));
 
-            const result = await processService.createProcessDebugBreakpoint(
+            const result = await processService.debugAddBreakpoint(
                 'debug-123',
                 mockProcessDebugBreakpoint
             );
@@ -556,14 +556,14 @@ describe('ProcessService - Comprehensive Tests', () => {
             expect(result).toBeDefined();
             expect(mockRestService.post).toHaveBeenCalledWith(
                 "/ProcessDebugContexts('debug-123')/Breakpoints",
-                mockProcessDebugBreakpoint.body
+                JSON.stringify([mockProcessDebugBreakpoint.bodyAsDict])
             );
         });
 
         test('should delete process debug breakpoint', async () => {
             mockRestService.delete.mockResolvedValue(mockResponse({}));
 
-            const result = await processService.deleteProcessDebugBreakpoint('debug-123', 5);
+            const result = await processService.debugRemoveBreakpoint('debug-123', 5);
 
             expect(result).toBeDefined();
             expect(mockRestService.delete).toHaveBeenCalledWith("/ProcessDebugContexts('debug-123')/Breakpoints('5')");
@@ -1224,10 +1224,10 @@ describe('ProcessService - Comprehensive Tests', () => {
             mockRestService.delete.mockResolvedValue(mockResponse({}));
 
             // Debug workflow: set breakpoint, run debug commands, remove breakpoint
-            await processService.createProcessDebugBreakpoint('debug-123', mockProcessDebugBreakpoint);
+            await processService.debugAddBreakpoint('debug-123', mockProcessDebugBreakpoint);
             await processService.debugStepOver('debug-123');
             await processService.debugContinue('debug-123');
-            await processService.deleteProcessDebugBreakpoint('debug-123', 5);
+            await processService.debugRemoveBreakpoint('debug-123', 5);
 
             expect(mockRestService.post).toHaveBeenCalledTimes(3);
             expect(mockRestService.delete).toHaveBeenCalledTimes(1);

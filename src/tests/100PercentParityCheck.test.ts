@@ -65,15 +65,30 @@ describe('100% TM1py Parity Function Existence', () => {
         });
     });
 
-    describe('ProcessService - Debug Operations (5 functions)', () => {
-        test('All new ProcessService functions should exist', () => {
+    describe('ProcessService - Debug Operations & Parity (11 functions)', () => {
+        test('All ProcessService debug and parity functions should exist', () => {
+            // Debug step/continue (from #33)
             expect(typeof processService.debugStepOver).toBe('function');
             expect(typeof processService.debugStepIn).toBe('function');
             expect(typeof processService.debugStepOut).toBe('function');
             expect(typeof processService.debugContinue).toBe('function');
             expect(typeof processService.evaluateBooleanTiExpression).toBe('function');
 
-            console.log('✅ All 5 ProcessService functions exist');
+            // Debug breakpoint methods — renamed for tm1py parity (#36)
+            expect(typeof processService.debugGetBreakpoints).toBe('function');
+            expect(typeof processService.debugAddBreakpoint).toBe('function');
+            expect(typeof processService.debugRemoveBreakpoint).toBe('function');
+
+            // Async polling — rewritten for tm1py parity (#36)
+            expect(typeof processService.pollExecuteWithReturn).toBe('function');
+
+            // Unbound process compile (#36)
+            expect(typeof processService.compileProcess).toBe('function');
+
+            // TI expression evaluation (#36)
+            expect(typeof processService.evaluateTiExpression).toBe('function');
+
+            console.log('✅ All 11 ProcessService functions exist');
         });
     });
 
@@ -96,11 +111,11 @@ describe('100% TM1py Parity Function Existence', () => {
     });
 
     describe('100% Parity Achievement Summary', () => {
-        test('should confirm all 22 functions are implemented', () => {
+        test('should confirm all 28 functions are implemented', () => {
             const implementedFunctions = {
                 ElementService: [
                     'deleteElementsUseTi',
-                    'deleteEdgesUseBlob', 
+                    'deleteEdgesUseBlob',
                     'getElementsByLevel',
                     'getElementsFilteredByWildcard',
                     'getAttributeOfElements',
@@ -119,9 +134,15 @@ describe('100% TM1py Parity Function Existence', () => {
                 ProcessService: [
                     'debugStepOver',
                     'debugStepIn',
-                    'debugStepOut', 
+                    'debugStepOut',
                     'debugContinue',
-                    'evaluateBooleanTiExpression'
+                    'evaluateBooleanTiExpression',
+                    'debugGetBreakpoints',
+                    'debugAddBreakpoint',
+                    'debugRemoveBreakpoint',
+                    'pollExecuteWithReturn',
+                    'compileProcess',
+                    'evaluateTiExpression'
                 ],
                 CellService: [
                     'writeDataframeAsync',
@@ -153,7 +174,7 @@ describe('100% TM1py Parity Function Existence', () => {
             const totalFunctions = Object.values(implementedFunctions)
                 .reduce((total, funcs) => total + funcs.length, 0);
 
-            expect(totalFunctions).toBe(25); // 16 + 5 + 3 + 1
+            expect(totalFunctions).toBe(31); // 16 + 11 + 3 + 1
             
             console.log('🎉 100% TM1py Parity Achieved!');
             console.log(`✅ ${implementedFunctions.ElementService.length} ElementService functions`);
