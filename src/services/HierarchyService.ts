@@ -10,7 +10,13 @@ import { ElementService } from './ElementService';
 import { CellService } from './CellService';
 import { DimensionService } from './DimensionService';
 import { DataFrame } from '../utils/DataFrame';
-import { CaseAndSpaceInsensitiveDict, caseAndSpaceInsensitiveEquals, formatUrl, verifyVersion } from '../utils/Utils';
+import {
+    CaseAndSpaceInsensitiveDict,
+    CaseAndSpaceInsensitiveSet,
+    caseAndSpaceInsensitiveEquals,
+    formatUrl,
+    verifyVersion
+} from '../utils/Utils';
 
 export class HierarchyService extends ObjectService {
     private elementService?: ElementService;
@@ -193,22 +199,19 @@ export class HierarchyService extends ObjectService {
     ): Promise<AxiosResponse[]> {
         const hierarchy = await this.get(dimensionName, hierarchyName);
 
-        // Get all descendants (recursive) + the consolidation element itself
         const descendants = hierarchy.getDescendants(consolidationElement, true);
-        const membersUnderConsolidation = new Set<string>(descendants.map(d => d.toLowerCase()));
-        membersUnderConsolidation.add(consolidationElement.toLowerCase());
+        const membersUnderConsolidation = new CaseAndSpaceInsensitiveSet(descendants);
+        membersUnderConsolidation.add(consolidationElement);
 
-        // Collect edges to remove: where parent is under the consolidation
         const edgesToRemove: Array<[string, string]> = [];
         for (const [parent, children] of hierarchy.edges) {
-            if (membersUnderConsolidation.has(parent.toLowerCase())) {
+            if (membersUnderConsolidation.has(parent)) {
                 for (const child of children.keys()) {
                     edgesToRemove.push([parent, child]);
                 }
             }
         }
 
-        // Remove edges from hierarchy object
         for (const [parent, child] of edgesToRemove) {
             hierarchy.removeEdge(parent, child);
         }
@@ -264,13 +267,9 @@ export class HierarchyService extends ObjectService {
             deleteOrphanedConsolidations = false
         } = options;
 
-        // Step 1: Determine element column (default to first column)
         const elementColumn = elemCol || df.columns[0];
-
-        // Step 2: Get all rows as objects for easier processing
         const rows = df.toJson();
 
-        // Step 3: Identify level columns (e.g., "Level001", "Level002") and weight columns
         const levelColumns = df.columns
             .filter(c => /^Level\d+$/i.test(c))
             .sort();
@@ -278,7 +277,6 @@ export class HierarchyService extends ObjectService {
             .filter(c => /^Weight\d+$/i.test(c))
             .sort();
 
-        // Step 4: Identify attribute columns (everything that's not element, type, level, weight)
         const reservedColumns = new Set([
             elementColumn.toLowerCase(),
             elementTypeColumn.toLowerCase(),
@@ -287,19 +285,18 @@ export class HierarchyService extends ObjectService {
         ]);
         const attributeColumns = df.columns.filter(c => !reservedColumns.has(c.toLowerCase()));
 
-        // Step 5: Validate uniqueness if requested
         if (verifyUniqueElements) {
-            const seen = new Set<string>();
+            const seen = new CaseAndSpaceInsensitiveSet();
             for (const row of rows) {
-                const lower = String(row[elementColumn]).toLowerCase().replace(/\s+/g, '');
-                if (seen.has(lower)) {
-                    throw new Error(`Duplicate element found: '${row[elementColumn]}'`);
+                const name = String(row[elementColumn]);
+                if (seen.has(name)) {
+                    throw new Error(`Duplicate element found: '${name}'`);
                 }
-                seen.add(lower);
+                seen.add(name);
             }
         }
 
-        // Step 6: Build elements, edges, and attributes from DataFrame
+        // Parse DataFrame rows into elements, edges, and attribute values
         const elementsToAdd: Element[] = [];
         const edgesToAdd: { [parent: string]: { [child: string]: number } } = {};
         const attributeValues = new Map<string, Map<string, any>>();
@@ -310,15 +307,9 @@ export class HierarchyService extends ObjectService {
                 ? String(row[elementTypeColumn] || 'Numeric')
                 : 'Numeric';
 
-            let type: ElementType;
-            switch (elementTypeStr.toLowerCase()) {
-                case 'consolidated': case '3': type = ElementType.CONSOLIDATED; break;
-                case 'string': case '2': type = ElementType.STRING; break;
-                default: type = ElementType.NUMERIC;
-            }
-            elementsToAdd.push(new Element(elementName, type));
+            // Element constructor handles string→ElementType conversion
+            elementsToAdd.push(new Element(elementName, elementTypeStr));
 
-            // Process level/weight columns for edges
             for (let i = 0; i < levelColumns.length; i++) {
                 const parentName = row[levelColumns[i]];
                 if (parentName && String(parentName).trim()) {
@@ -331,7 +322,6 @@ export class HierarchyService extends ObjectService {
                 }
             }
 
-            // Collect attribute values
             if (attributeColumns.length > 0) {
                 const attrs = new Map<string, any>();
                 for (const col of attributeColumns) {
@@ -345,16 +335,10 @@ export class HierarchyService extends ObjectService {
             }
         }
 
-        // Step 7: Check if dimension/hierarchy exists
+        // Get or create the dimension/hierarchy
         const dimensionService = new DimensionService(this.rest);
-        let hierarchyExists = false;
-        try {
-            hierarchyExists = await this.exists(dimensionName, hierarchyName);
-        } catch {
-            hierarchyExists = false;
-        }
+        const hierarchyExists = await this.exists(dimensionName, hierarchyName).catch(() => false);
 
-        // Step 8: Get or create hierarchy
         let hierarchy: Hierarchy;
         if (hierarchyExists) {
             hierarchy = await this.get(dimensionName, hierarchyName);
@@ -364,47 +348,45 @@ export class HierarchyService extends ObjectService {
                 const dim = new Dimension(dimensionName, [newHierarchy]);
                 await dimensionService.create(dim);
             } catch (e: any) {
-                // Dimension may already exist, just hierarchy is missing
-                if (e.statusCode !== 409 && !(e.message && e.message.includes('already exists'))) {
-                    try {
-                        await this.create(newHierarchy);
-                    } catch {
-                        // ignore if creation fails (dimension create may have done it)
-                    }
+                // 409 = dimension already exists, which is expected
+                if (!(e instanceof TM1RestException && e.statusCode === 409)) {
+                    await this.create(newHierarchy);
                 }
             }
             hierarchy = await this.get(dimensionName, hierarchyName);
         }
 
-        // Step 9: Unwind edges if requested
+        // Unwind edges if requested
         if (unwindAll) {
             await this.removeAllEdges(dimensionName, hierarchyName);
-            hierarchy = await this.get(dimensionName, hierarchyName);
         } else if (unwindConsolidations && unwindConsolidations.length > 0) {
             for (const consolidation of unwindConsolidations) {
                 try {
                     await this.removeEdgesUnderConsolidation(dimensionName, hierarchyName, consolidation);
-                } catch {
-                    // Element may not exist yet
+                } catch (e: any) {
+                    if (!(e instanceof TM1RestException && e.statusCode === 404)) {
+                        throw e;
+                    }
                 }
             }
+        }
+
+        // Re-fetch hierarchy only if edges were modified
+        if (unwindAll || (unwindConsolidations && unwindConsolidations.length > 0)) {
             hierarchy = await this.get(dimensionName, hierarchyName);
         }
 
-        // Step 10: Add new elements that don't exist yet
-        const existingElementNames = new Set(
-            hierarchy.elements.map(e => e.name.toLowerCase())
+        // Add new elements not already in hierarchy
+        const existingElementNames = new CaseAndSpaceInsensitiveSet(
+            hierarchy.elements.map(e => e.name)
         );
-        const newElements = elementsToAdd.filter(
-            e => !existingElementNames.has(e.name.toLowerCase())
-        );
+        const newElements = elementsToAdd.filter(e => !existingElementNames.has(e.name));
 
-        // Also add parent elements from edges that aren't in the elements list
+        // Ensure parent elements from edges exist as Consolidated type
+        const newElementNames = new CaseAndSpaceInsensitiveSet(newElements.map(e => e.name));
         const parentElementsToAdd: Element[] = [];
         for (const parentName of Object.keys(edgesToAdd)) {
-            const lowerParent = parentName.toLowerCase();
-            if (!existingElementNames.has(lowerParent) &&
-                !newElements.some(e => e.name.toLowerCase() === lowerParent)) {
+            if (!existingElementNames.has(parentName) && !newElementNames.has(parentName)) {
                 parentElementsToAdd.push(new Element(parentName, ElementType.CONSOLIDATED));
             }
         }
@@ -414,18 +396,17 @@ export class HierarchyService extends ObjectService {
             await this.addElements(dimensionName, hierarchyName, allNewElements);
         }
 
-        // Step 11: Handle element attributes
+        // Create missing element attributes and write values
         if (attributeColumns.length > 0) {
             const existingAttrs = await this.getElementAttributes(dimensionName, hierarchyName);
-            const existingAttrNames = new Set(existingAttrs.map(a => a.name.toLowerCase().replace(/\s+/g, '')));
+            const existingAttrNames = new CaseAndSpaceInsensitiveSet(existingAttrs.map(a => a.name));
 
             const newAttrs: ElementAttribute[] = [];
             for (const col of attributeColumns) {
-                if (!existingAttrNames.has(col.toLowerCase().replace(/\s+/g, ''))) {
+                if (!existingAttrNames.has(col)) {
                     const values = rows.map(r => r[col]).filter(v => v !== undefined && v !== null && v !== '');
                     const isNumeric = values.length > 0 && values.every(v => !isNaN(Number(v)));
-                    const attrType = isNumeric ? 'Numeric' : 'String';
-                    newAttrs.push(new ElementAttribute(col, attrType));
+                    newAttrs.push(new ElementAttribute(col, isNumeric ? 'Numeric' : 'String'));
                 }
             }
 
@@ -433,64 +414,62 @@ export class HierarchyService extends ObjectService {
                 await this.addElementAttributes(dimensionName, hierarchyName, newAttrs);
             }
 
-            // Write attribute values via CellService
+            // Write attribute values in parallel batches
             if (attributeValues.size > 0) {
                 const cellService = new CellService(this.rest);
                 const cubeName = `}ElementAttributes_${dimensionName}`;
+                const writePromises: Promise<void>[] = [];
 
                 for (const [elementName, attrs] of attributeValues) {
                     for (const [attrName, value] of attrs) {
-                        try {
-                            await cellService.writeValue(
-                                cubeName,
-                                [elementName, attrName],
-                                value
-                            );
-                        } catch {
-                            // Skip failed writes (element may not exist in control dimension)
-                        }
+                        writePromises.push(
+                            cellService.writeValue(cubeName, [elementName, attrName], value)
+                                .catch(() => { /* element may not exist in control dimension */ })
+                        );
                     }
                 }
+                await Promise.all(writePromises);
             }
         }
 
-        // Step 12: Add edges
+        // Add edges
         if (Object.keys(edgesToAdd).length > 0) {
             try {
                 await this.addEdges(dimensionName, hierarchyName, edgesToAdd);
             } catch {
-                // Some edges may already exist; add one by one as fallback
+                // Bulk failed; fall back to individual edge adds in parallel
+                const edgePromises: Promise<AxiosResponse>[] = [];
                 for (const [parent, children] of Object.entries(edgesToAdd)) {
                     for (const [child, weight] of Object.entries(children)) {
-                        try {
-                            await this.addEdges(dimensionName, hierarchyName, { [parent]: { [child]: weight } });
-                        } catch {
-                            // Edge may already exist
-                        }
+                        edgePromises.push(
+                            this.addEdges(dimensionName, hierarchyName, { [parent]: { [child]: weight } })
+                                .catch(() => null as any)
+                        );
                     }
                 }
+                await Promise.all(edgePromises);
             }
         }
 
-        // Step 13: Delete orphaned consolidations if requested
+        // Delete orphaned consolidations (consolidated elements with no children)
         if (deleteOrphanedConsolidations) {
             const updatedHierarchy = await this.get(dimensionName, hierarchyName);
-            const hasChildren = new Set<string>();
+            const parentNames = new CaseAndSpaceInsensitiveSet();
             for (const [parent] of updatedHierarchy.edges) {
-                hasChildren.add(parent.toLowerCase());
+                parentNames.add(parent);
             }
 
             const elemService = this.getElementService();
+            const deletePromises: Promise<any>[] = [];
             for (const element of updatedHierarchy.elements) {
-                if (element.elementType === ElementType.CONSOLIDATED &&
-                    !hasChildren.has(element.name.toLowerCase())) {
-                    try {
-                        await elemService.delete(dimensionName, hierarchyName, element.name);
-                    } catch {
-                        // Ignore deletion errors
-                    }
+                if (element.elementType === ElementType.CONSOLIDATED && !parentNames.has(element.name)) {
+                    deletePromises.push(
+                        elemService.delete(dimensionName, hierarchyName, element.name)
+                            .catch(() => { /* ignore deletion errors */ })
+                    );
                 }
             }
+            await Promise.all(deletePromises);
         }
     }
 

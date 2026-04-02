@@ -353,6 +353,8 @@ export class ApplicationService extends ObjectService {
     ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
         const results: Array<{ type: string; name: string; path: string; is_private: boolean }> = [];
 
+        const folderPromises: Array<{ index: number; promise: Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> }> = [];
+
         for (const item of items) {
             const odataType = item['@odata.type'] || '';
             const typeName = this._extractTypeFromOdata(odataType);
@@ -367,11 +369,19 @@ export class ApplicationService extends ObjectService {
             });
 
             if (recursive && typeName === 'Folder') {
-                const subItems = await this._discoverAtPath(
-                    itemPath, includePrivate, recursive, flat, inPrivateContext || isPrivate
-                );
-                results.push(...subItems);
+                folderPromises.push({
+                    index: results.length,
+                    promise: this._discoverAtPath(
+                        itemPath, includePrivate, recursive, flat, inPrivateContext || isPrivate
+                    )
+                });
             }
+        }
+
+        // Discover sibling folders in parallel
+        const folderResults = await Promise.all(folderPromises.map(f => f.promise));
+        for (const subItems of folderResults) {
+            results.push(...subItems);
         }
 
         return results;
