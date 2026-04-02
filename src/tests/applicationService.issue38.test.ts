@@ -44,7 +44,7 @@ describe('ApplicationService — Issue #38 new methods', () => {
                     return createMockResponse({
                         value: [
                             { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'SalesCube' },
-                            { '@odata.type': '#ibm.tm1.api.v1.FolderApplication', Name: 'Reports' }
+                            { '@odata.type': '#ibm.tm1.api.v1.FolderApplicationApplication', Name: 'Reports' }
                         ]
                     });
                 }
@@ -88,9 +88,8 @@ describe('ApplicationService — Issue #38 new methods', () => {
         });
 
         test('should recurse into folders when recursive=true', async () => {
-            // _extractTypeFromOdata splits on '.' and takes the last segment.
-            // The recursive branch fires only when typeName === 'Folder'.
-            // Use an @odata.type value whose last '.'-segment is 'Folder'.
+            // TM1 returns @odata.type like '#ibm.tm1.api.v1.FolderApplication'.
+            // _extractTypeFromOdata strips 'Application' suffix → 'Folder', which triggers recursion.
             mockRestService.get.mockImplementation(async (url: string) => {
                 if (url.includes('PrivateContents')) {
                     return createMockResponse({ value: [] });
@@ -99,7 +98,7 @@ describe('ApplicationService — Issue #38 new methods', () => {
                 if (url.match(/Contents\('Applications'\)\/Contents$/)) {
                     return createMockResponse({
                         value: [
-                            { '@odata.type': '#ibm.tm1.api.v1.Folder', Name: 'Reports' }
+                            { '@odata.type': '#ibm.tm1.api.v1.FolderApplication', Name: 'Reports' }
                         ]
                     });
                 }
@@ -127,7 +126,7 @@ describe('ApplicationService — Issue #38 new methods', () => {
                 if (url === "/Contents('Applications')/PrivateContents") {
                     return createMockResponse({
                         value: [
-                            { '@odata.type': '#ibm.tm1.api.v1.Folder', Name: 'PrivateFolder' }
+                            { '@odata.type': '#ibm.tm1.api.v1.FolderApplication', Name: 'PrivateFolder' }
                         ]
                     });
                 }
@@ -179,7 +178,7 @@ describe('ApplicationService — Issue #38 new methods', () => {
 
             const cubeItem = results.find(r => r.name === 'MyCube');
             expect(cubeItem).toBeDefined();
-            expect(cubeItem?.type).toBe('CubeApplication');
+            expect(cubeItem?.type).toBe('Cube');
         });
     });
 

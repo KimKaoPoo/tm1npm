@@ -423,7 +423,10 @@ export class ApplicationService extends ObjectService {
     private _extractTypeFromOdata(odataType: string): string {
         if (!odataType) return 'Unknown';
         const parts = odataType.split('.');
-        return parts[parts.length - 1] || 'Unknown';
+        const raw = parts[parts.length - 1] || 'Unknown';
+        // TM1 returns types like 'FolderApplication', 'CubeApplication' — strip suffix
+        // so folder check works consistently
+        return raw.replace(/Application$/, '') || raw;
     }
 
     private async _findPrivateBoundary(segments: string[]): Promise<number> {
