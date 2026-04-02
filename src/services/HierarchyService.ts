@@ -443,15 +443,19 @@ export class HierarchyService extends ObjectService {
         if (Object.keys(edgesToAdd).length > 0) {
             try {
                 await this.addEdges(dimensionName, hierarchyName, edgesToAdd);
-            } catch {
-                // Bulk failed; fall back to individual edge adds in parallel
+            } catch (bulkError: any) {
+                // Only fall back on client errors (400, 422); re-throw server/network errors
+                if (!(bulkError instanceof TM1RestException) ||
+                    (bulkError.statusCode !== 400 && bulkError.statusCode !== 422)) {
+                    throw bulkError;
+                }
+                // Bulk failed due to validation; fall back to individual edge adds
                 const edgePromises: Promise<AxiosResponse>[] = [];
                 for (const [parent, children] of Object.entries(edgesToAdd)) {
                     for (const [child, weight] of Object.entries(children)) {
                         edgePromises.push(
                             this.addEdges(dimensionName, hierarchyName, { [parent]: { [child]: weight } })
                                 .catch((e: any) => {
-                                    // Expected: edge may already exist (409)
                                     if (e instanceof TM1RestException && e.statusCode === 409) {
                                         return null as any;
                                     }

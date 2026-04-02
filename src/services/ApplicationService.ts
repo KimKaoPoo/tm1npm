@@ -461,7 +461,7 @@ export class ApplicationService extends ObjectService {
         useCache: boolean = false
     ): Promise<{ baseUrl: string; inPrivateContext: boolean }> {
         if (!path || !path.trim()) {
-            return { baseUrl: "/Contents('Applications')", inPrivateContext: false };
+            return { baseUrl: "/Contents('Applications')", inPrivateContext: isPrivate };
         }
 
         const segments = path.split('/').filter(s => s.trim().length > 0);

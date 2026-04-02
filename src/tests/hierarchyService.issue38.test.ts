@@ -8,6 +8,7 @@ import { Hierarchy } from '../objects/Hierarchy';
 import { Element, ElementType } from '../objects/Element';
 import { ElementAttribute } from '../objects/ElementAttribute';
 import { TM1RestException } from '../exceptions/TM1Exception';
+import { DataFrame } from '../utils/DataFrame';
 
 const createMockResponse = (data: any, status: number = 200) => ({
     data,
@@ -352,6 +353,247 @@ describe('HierarchyService — Issue #38 new methods', () => {
             expect(mockRestService.post).toHaveBeenCalledTimes(1);
             const [url] = mockRestService.post.mock.calls[0];
             expect(url).toContain("Dimensions('TestDimension')/Hierarchies('TestHierarchy')/ElementAttributes");
+        });
+    });
+
+    // ===== updateOrCreateHierarchyFromDataframe =====
+
+    describe('updateOrCreateHierarchyFromDataframe', () => {
+        // Helper: mock hierarchy response with given elements/edges
+        const mockHierarchyResponse = (elements: any[] = [], edges: any[] = []) =>
+            createMockResponse({
+                Name: 'TestHierarchy',
+                Elements: elements,
+                Edges: edges,
+                ElementAttributes: [],
+                Subsets: [],
+                DefaultMember: null
+            });
+
+        // Helper: mock "hierarchy exists" check (getAllNames-style)
+        const setupExistingHierarchy = (elements: any[] = [], edges: any[] = []) => {
+            // exists() calls GET /Hierarchies?$select=Name
+            mockRestService.get.mockImplementation(async (url: string) => {
+                if (url.includes('$select=Name')) {
+                    return createMockResponse({ value: [{ Name: 'TestHierarchy' }] });
+                }
+                if (url.includes('$expand=Edges')) {
+                    return mockHierarchyResponse(elements, edges);
+                }
+                if (url.includes('ElementAttributes')) {
+                    return createMockResponse({ value: [] });
+                }
+                return createMockResponse({});
+            });
+        };
+
+        const setupNewHierarchy = () => {
+            let hierarchyCreated = false;
+            mockRestService.get.mockImplementation(async (url: string) => {
+                if (url.includes('$select=Name')) {
+                    return createMockResponse({ value: [] }); // hierarchy doesn't exist
+                }
+                if (url.includes('$expand=Edges')) {
+                    return mockHierarchyResponse(); // empty hierarchy after creation
+                }
+                if (url.includes('ElementAttributes')) {
+                    return createMockResponse({ value: [] });
+                }
+                return createMockResponse({});
+            });
+            mockRestService.post.mockImplementation(async (url: string, body: any) => {
+                hierarchyCreated = true;
+                return createMockResponse({}, 201);
+            });
+            mockRestService.patch.mockResolvedValue(createMockResponse({}, 200));
+        };
+
+        test('should add new elements from DataFrame to existing hierarchy', async () => {
+            setupExistingHierarchy([
+                { Name: 'Existing1', Type: 'Numeric' }
+            ]);
+            mockRestService.post.mockResolvedValue(createMockResponse({}, 201));
+
+            const df = new DataFrame([
+                ['Existing1', 'Numeric'],
+                ['NewElem1', 'String'],
+                ['NewElem2', 'Numeric']
+            ], { columns: ['Element', 'ElementType'] });
+
+            await hierarchyService.updateOrCreateHierarchyFromDataframe(
+                'TestDimension', 'TestHierarchy', df,
+                { elementColumn: 'Element' }
+            );
+
+            // Should POST new elements (NewElem1, NewElem2 but not Existing1)
+            const postCalls = mockRestService.post.mock.calls;
+            const elementPostCall = postCalls.find(
+                ([url]) => url.includes('/Elements') && !url.includes('ElementAttributes')
+            );
+            expect(elementPostCall).toBeDefined();
+            const postedBody = JSON.parse(elementPostCall![1]);
+            expect(postedBody).toHaveLength(2);
+            expect(postedBody.map((e: any) => e.Name).sort()).toEqual(['NewElem1', 'NewElem2']);
+        });
+
+        test('should throw on duplicate elements when verifyUniqueElements=true', async () => {
+            const df = new DataFrame([
+                ['Elem1', 'Numeric'],
+                ['elem1', 'String'], // duplicate (case-insensitive)
+            ], { columns: ['Element', 'ElementType'] });
+
+            await expect(
+                hierarchyService.updateOrCreateHierarchyFromDataframe(
+                    'TestDimension', 'TestHierarchy', df,
+                    { elementColumn: 'Element', verifyUniqueElements: true }
+                )
+            ).rejects.toThrow('Duplicate element');
+        });
+
+        test('should create dimension when hierarchy does not exist', async () => {
+            setupNewHierarchy();
+
+            const df = new DataFrame([
+                ['Elem1', 'Numeric']
+            ], { columns: ['Element', 'ElementType'] });
+
+            await hierarchyService.updateOrCreateHierarchyFromDataframe(
+                'NewDimension', 'NewHierarchy', df,
+                { elementColumn: 'Element' }
+            );
+
+            // Should have called POST for dimension creation
+            const postCalls = mockRestService.post.mock.calls;
+            const dimCreateCall = postCalls.find(([url]) => url.includes('/Dimensions'));
+            expect(dimCreateCall).toBeDefined();
+        });
+
+        test('should unwind all edges when unwindAll=true', async () => {
+            setupExistingHierarchy(
+                [{ Name: 'Parent', Type: 'Consolidated' }, { Name: 'Child', Type: 'Numeric' }],
+                [{ ParentName: 'Parent', ComponentName: 'Child', Weight: 1 }]
+            );
+            mockRestService.post.mockResolvedValue(createMockResponse({}, 201));
+            mockRestService.patch.mockResolvedValue(createMockResponse({}, 200));
+
+            const df = new DataFrame([
+                ['Child', 'Numeric']
+            ], { columns: ['Element', 'ElementType'] });
+
+            await hierarchyService.updateOrCreateHierarchyFromDataframe(
+                'TestDimension', 'TestHierarchy', df,
+                { elementColumn: 'Element', unwindAll: true }
+            );
+
+            // Should PATCH to remove all edges (empty Edges array)
+            const patchCalls = mockRestService.patch.mock.calls;
+            const edgePatch = patchCalls.find(([_, body]) => {
+                try { return JSON.parse(body).Edges !== undefined; } catch { return false; }
+            });
+            expect(edgePatch).toBeDefined();
+        });
+
+        test('should re-throw unexpected errors from bulk edge add', async () => {
+            setupExistingHierarchy();
+            mockRestService.post.mockImplementation(async (url: string) => {
+                if (url.includes('/Edges')) {
+                    throw new TM1RestException('Server error', 500, { status: 500 });
+                }
+                if (url.includes('/Elements')) {
+                    return createMockResponse({}, 201);
+                }
+                return createMockResponse({}, 201);
+            });
+
+            const df = new DataFrame([
+                ['Child', 'Numeric', 'Parent'],
+            ], { columns: ['Element', 'ElementType', 'Level001'] });
+
+            await expect(
+                hierarchyService.updateOrCreateHierarchyFromDataframe(
+                    'TestDimension', 'TestHierarchy', df,
+                    { elementColumn: 'Element' }
+                )
+            ).rejects.toThrow('Server error');
+        });
+
+        test('should fall back to individual edges on 400 from bulk', async () => {
+            setupExistingHierarchy();
+            let bulkAttempted = false;
+            mockRestService.post.mockImplementation(async (url: string, body: any) => {
+                if (url.includes('/Edges')) {
+                    if (!bulkAttempted) {
+                        bulkAttempted = true;
+                        throw new TM1RestException('Bad request', 400, { status: 400 });
+                    }
+                    // Individual edge adds succeed
+                    return createMockResponse({}, 201);
+                }
+                if (url.includes('/Elements')) {
+                    return createMockResponse({}, 201);
+                }
+                return createMockResponse({}, 201);
+            });
+
+            const df = new DataFrame([
+                ['Child', 'Numeric', 'Parent'],
+            ], { columns: ['Element', 'ElementType', 'Level001'] });
+
+            await hierarchyService.updateOrCreateHierarchyFromDataframe(
+                'TestDimension', 'TestHierarchy', df,
+                { elementColumn: 'Element' }
+            );
+
+            // Bulk failed, then individual edge was attempted
+            const edgeCalls = mockRestService.post.mock.calls.filter(
+                ([url]) => url.includes('/Edges')
+            );
+            expect(edgeCalls.length).toBeGreaterThan(1); // bulk + individual
+        });
+
+        test('should delete orphaned consolidations when requested', async () => {
+            // Setup: hierarchy has a Consolidated element "Orphan" with no children
+            const getCallCount = { n: 0 };
+            mockRestService.get.mockImplementation(async (url: string) => {
+                if (url.includes('$select=Name')) {
+                    return createMockResponse({ value: [{ Name: 'TestHierarchy' }] });
+                }
+                if (url.includes('$expand=Edges')) {
+                    getCallCount.n++;
+                    // Return hierarchy with orphaned consolidation
+                    return createMockResponse({
+                        Name: 'TestHierarchy',
+                        Elements: [
+                            { Name: 'Leaf', Type: 'Numeric' },
+                            { Name: 'Orphan', Type: 'Consolidated' }
+                        ],
+                        Edges: [], // No edges — Orphan is orphaned
+                        ElementAttributes: [],
+                        Subsets: [],
+                        DefaultMember: null
+                    });
+                }
+                if (url.includes('ElementAttributes')) {
+                    return createMockResponse({ value: [] });
+                }
+                return createMockResponse({});
+            });
+            mockRestService.post.mockResolvedValue(createMockResponse({}, 201));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}, 204));
+
+            const df = new DataFrame([
+                ['Leaf', 'Numeric']
+            ], { columns: ['Element', 'ElementType'] });
+
+            await hierarchyService.updateOrCreateHierarchyFromDataframe(
+                'TestDimension', 'TestHierarchy', df,
+                { elementColumn: 'Element', deleteOrphanedConsolidations: true }
+            );
+
+            // Should DELETE the orphaned consolidation
+            const deleteCalls = mockRestService.delete.mock.calls;
+            const orphanDelete = deleteCalls.find(([url]) => url.includes("Elements('Orphan')"));
+            expect(orphanDelete).toBeDefined();
         });
     });
 });
