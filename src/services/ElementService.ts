@@ -1305,7 +1305,8 @@ export class ElementService extends ObjectService {
      * Check if one element is a direct parent of another
      *
      * Unlike the related function in TM1 (ELISPAR or ElementIsParent), this function will return false
-     * if an invalid element is passed; but will raise an exception if an invalid dimension or hierarchy is passed.
+     * if an invalid element is passed. An invalid dimension or hierarchy will cause the underlying
+     * REST call to throw (the error propagates from the TM1 server).
      */
     public async elementIsParent(
         dimensionName: string,
