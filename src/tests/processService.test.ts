@@ -397,12 +397,232 @@ describe('ProcessService Tests', () => {
 
             const processNames = await processService.getAllNames();
             expect(processNames).toContain('DebugProcess');
-            
+
             // In a real implementation, this would set debug breakpoints
             // For now, we just verify the mock interaction
             expect(mockRestService.get).toHaveBeenCalled();
-            
+
             console.log('✅ Debug operations handled for existing processes');
+        });
+
+        test('debugGetBreakpoints should return ProcessDebugBreakpoint array', async () => {
+            mockRestService.get.mockResolvedValue(createMockResponse({
+                value: [
+                    {
+                        '@odata.type': '#ibm.tm1.api.v1.ProcessDebugContextLineBreakpoint',
+                        ID: 1,
+                        Enabled: true,
+                        HitMode: 'BreakAlways',
+                        HitCount: 0,
+                        Expression: '',
+                        ProcessName: 'TestProcess',
+                        Procedure: 'Prolog',
+                        LineNumber: 5
+                    }
+                ]
+            }));
+
+            const result = await processService.debugGetBreakpoints('debug-123');
+
+            expect(result).toHaveLength(1);
+            expect(result[0].breakpointId).toBe(1);
+            expect(mockRestService.get).toHaveBeenCalledWith("/ProcessDebugContexts('debug-123')/Breakpoints");
+        });
+
+        test('debugAddBreakpoint should delegate to debugAddBreakpoints', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+
+            const { ProcessDebugBreakpoint: BP, BreakPointType: BPType, HitMode: HM } =
+                require('../objects/ProcessDebugBreakpoint');
+            const bp = new BP(1, BPType.PROCESS_DEBUG_CONTEXT_LINE_BREAK_POINT, true, HM.BREAK_ALWAYS);
+
+            await processService.debugAddBreakpoint('debug-456', bp);
+
+            // Should POST a JSON array (delegated to debugAddBreakpoints)
+            const postCall = mockRestService.post.mock.calls[0];
+            expect(postCall[0]).toBe("/ProcessDebugContexts('debug-456')/Breakpoints");
+            const postedBody = JSON.parse(postCall[1]);
+            expect(Array.isArray(postedBody)).toBe(true);
+            expect(postedBody).toHaveLength(1);
+        });
+
+        test('debugRemoveBreakpoint should DELETE correct URL', async () => {
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));
+
+            await processService.debugRemoveBreakpoint('debug-789', 3);
+
+            expect(mockRestService.delete).toHaveBeenCalledWith(
+                "/ProcessDebugContexts('debug-789')/Breakpoints('3')"
+            );
+        });
+    });
+
+    describe('Process Async Polling', () => {
+        test('pollExecuteWithReturn should return parsed result on success', async () => {
+            (mockRestService as any).retrieve_async_response = jest.fn().mockResolvedValue({
+                ProcessExecuteStatusCode: 'CompletedSuccessfully',
+                ErrorLogFile: null
+            });
+
+            const result = await processService.pollExecuteWithReturn('async-001');
+
+            expect(result).toEqual([true, 'CompletedSuccessfully', null]);
+            expect((mockRestService as any).retrieve_async_response).toHaveBeenCalledWith('async-001');
+        });
+
+        test('pollExecuteWithReturn should return error log file when present', async () => {
+            (mockRestService as any).retrieve_async_response = jest.fn().mockResolvedValue({
+                ProcessExecuteStatusCode: 'CompletedWithMessages',
+                ErrorLogFile: { Filename: 'TM1ProcessError_20240101.log' }
+            });
+
+            const result = await processService.pollExecuteWithReturn('async-002');
+
+            expect(result).toEqual([false, 'CompletedWithMessages', 'TM1ProcessError_20240101.log']);
+        });
+
+        test('pollExecuteWithReturn should return null when async response fails', async () => {
+            (mockRestService as any).retrieve_async_response = jest.fn().mockRejectedValue(
+                new Error('Not ready')
+            );
+
+            const result = await processService.pollExecuteWithReturn('async-003');
+
+            expect(result).toBeNull();
+        });
+    });
+
+    describe('Process Compile (unbound)', () => {
+        test('compileProcess should POST Process body to /CompileProcess', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({ value: [] }));
+
+            const testProcess = new Process('TestProcess', false);
+            const result = await processService.compileProcess(testProcess);
+
+            expect(result).toEqual([]);
+            const postCall = mockRestService.post.mock.calls[0];
+            expect(postCall[0]).toBe('/CompileProcess');
+            const payload = JSON.parse(postCall[1]);
+            expect(payload.Process).toBeDefined();
+            expect(payload.Process.Name).toBe('TestProcess');
+        });
+
+        test('compileProcess should return syntax errors when present', async () => {
+            const errors = [
+                { LineNumber: 1, Message: 'Syntax error on line 1' }
+            ];
+            mockRestService.post.mockResolvedValue(createMockResponse({ value: errors }));
+
+            const testProcess = new Process('BadProcess', false);
+            const result = await processService.compileProcess(testProcess);
+
+            expect(result).toHaveLength(1);
+            expect(result[0].Message).toBe('Syntax error on line 1');
+        });
+    });
+
+    describe('evaluateTiExpression', () => {
+        test('should evaluate a TI expression and return the result', async () => {
+            // Mock compileProcess (no errors)
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({ value: [] }));
+
+            // Mock create (process creation)
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}, 201));
+
+            // Mock debugProcess
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({
+                ID: 'debug-eval-123',
+                CallStack: [],
+                Breakpoints: []
+            }));
+
+            // Mock debugAddBreakpoint (via debugAddBreakpoints)
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
+
+            // Mock debugContinue (first call - run to breakpoint)
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({
+                CallStack: [{ Variables: [{ Name: 'sFunc', Value: '2024-01-01' }] }]
+            }));
+
+            // Mock debugGetVariableValues
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({
+                CallStack: [{ Variables: [{ Name: 'sFunc', Value: '2024-01-01' }] }]
+            }));
+
+            // Mock debugContinue (second call - finish)
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({ CallStack: [] }));
+
+            // Mock delete (cleanup)
+            mockRestService.delete.mockResolvedValueOnce(createMockResponse({}, 204));
+
+            const result = await processService.evaluateTiExpression('NOW;');
+
+            expect(result).toBe('2024-01-01');
+        });
+
+        test('should strip "=" prefix from formula', async () => {
+            // Mock compileProcess
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({ value: [] }));
+            // Mock create
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}, 201));
+            // Mock debugProcess
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({
+                ID: 'debug-eq-123',
+                CallStack: []
+            }));
+            // Mock debugAddBreakpoint
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
+            // Mock debugContinue
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({
+                CallStack: [{ Variables: [{ Name: 'sFunc', Value: '42' }] }]
+            }));
+            // Mock debugGetVariableValues
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({
+                CallStack: [{ Variables: [{ Name: 'sFunc', Value: '42' }] }]
+            }));
+            // Mock debugContinue
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({ CallStack: [] }));
+            // Mock delete
+            mockRestService.delete.mockResolvedValueOnce(createMockResponse({}, 204));
+
+            const result = await processService.evaluateTiExpression('x = NumberToString(42);');
+
+            expect(result).toBe('42');
+
+            // Verify the compileProcess payload contains the stripped formula
+            const compileCall = mockRestService.post.mock.calls[0];
+            const compilePayload = JSON.parse(compileCall[1]);
+            expect(compilePayload.Process.PrologProcedure).toContain('sFunc =  NumberToString(42);');
+        });
+
+        test('should throw on syntax errors from compileProcess', async () => {
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({
+                value: [{ LineNumber: 1, Message: 'Unexpected token' }]
+            }));
+
+            await expect(processService.evaluateTiExpression('INVALID_FUNC();'))
+                .rejects.toThrow();
+        });
+
+        test('should clean up temp process even on debug failure', async () => {
+            // Mock compileProcess (no errors)
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({ value: [] }));
+            // Mock create
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}, 201));
+            // Mock debugProcess - fails
+            mockRestService.post.mockRejectedValueOnce(new Error('Debug session failed'));
+            // Mock delete (cleanup should still happen)
+            mockRestService.delete.mockResolvedValueOnce(createMockResponse({}, 204));
+
+            await expect(processService.evaluateTiExpression('NOW;'))
+                .rejects.toThrow('Debug session failed');
+
+            // Verify delete was called for cleanup
+            expect(mockRestService.delete).toHaveBeenCalled();
         });
     });
 });
