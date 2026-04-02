@@ -2,8 +2,10 @@ import { AxiosResponse } from 'axios';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { Subset } from '../objects/Subset';
+import { Element } from '../objects/Element';
 import { ElementService } from './ElementService';
 import { TM1RestException } from '../exceptions/TM1Exception';
+import { formatUrl } from '../utils/Utils';
 
 export class SubsetService extends ObjectService {
     private elementService?: ElementService;
@@ -255,6 +257,52 @@ export class SubsetService extends ObjectService {
         return await this.elementService.executeSetMdxElementNames(
             subset.expression
         );
+    }
+
+    public async updateStaticElements(
+        subsetOrName: Subset | string,
+        dimensionName?: string,
+        hierarchyName?: string,
+        isPrivate: boolean = false,
+        elements?: Array<string | Element>
+    ): Promise<AxiosResponse> {
+        let subsetName: string;
+        let dimName: string;
+        let hierName: string;
+        let elementNames: string[];
+
+        if (subsetOrName instanceof Subset) {
+            const subset = subsetOrName;
+            subsetName = subset.name;
+            dimName = dimensionName || subset.dimensionName;
+            hierName = hierarchyName || subset.hierarchyName;
+            elementNames = elements
+                ? elements.map(e => typeof e === 'string' ? e : e.name)
+                : subset.elements;
+        } else {
+            if (!dimensionName) {
+                throw new Error('dimensionName is required when passing subset name as string');
+            }
+            subsetName = subsetOrName;
+            dimName = dimensionName;
+            hierName = hierarchyName || dimName;
+            elementNames = (elements || []).map(e => typeof e === 'string' ? e : e.name);
+        }
+
+        const subsetsCollection = this.getSubsetCollection(isPrivate);
+        const url = this.formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/{}('{}')/Elements/$ref",
+            dimName, hierName, subsetsCollection, subsetName);
+
+        const body = {
+            value: elementNames.map(elementName => ({
+                '@odata.id': formatUrl(
+                    "Dimensions('{}')/Hierarchies('{}')/Elements('{}')",
+                    dimName, hierName, elementName)
+            }))
+        };
+
+        return await this.rest.put(url, JSON.stringify(body));
     }
 
     private async updateSubsetInstance(subset: Subset, isPrivate: boolean): Promise<AxiosResponse> {
