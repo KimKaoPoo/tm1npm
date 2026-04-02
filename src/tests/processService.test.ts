@@ -481,14 +481,32 @@ describe('ProcessService Tests', () => {
             expect(result).toEqual([false, 'CompletedWithMessages', 'TM1ProcessError_20240101.log']);
         });
 
-        test('pollExecuteWithReturn should return null when async response fails', async () => {
+        test('pollExecuteWithReturn should return null for 404 (not ready)', async () => {
             (mockRestService as any).retrieve_async_response = jest.fn().mockRejectedValue(
-                new Error('Not ready')
+                { statusCode: 404, message: 'Not found' }
             );
 
             const result = await processService.pollExecuteWithReturn('async-003');
 
             expect(result).toBeNull();
+        });
+
+        test('pollExecuteWithReturn should return null for 202 (accepted/pending)', async () => {
+            (mockRestService as any).retrieve_async_response = jest.fn().mockRejectedValue(
+                { statusCode: 202, message: 'Accepted' }
+            );
+
+            const result = await processService.pollExecuteWithReturn('async-004');
+
+            expect(result).toBeNull();
+        });
+
+        test('pollExecuteWithReturn should throw on unexpected errors', async () => {
+            const networkError = { statusCode: 500, message: 'Internal Server Error' };
+            (mockRestService as any).retrieve_async_response = jest.fn().mockRejectedValue(networkError);
+
+            await expect(processService.pollExecuteWithReturn('async-005'))
+                .rejects.toMatchObject({ statusCode: 500 });
         });
     });
 

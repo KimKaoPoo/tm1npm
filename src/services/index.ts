@@ -2,7 +2,7 @@
 export { CubeService } from './CubeService';
 export { ElementService } from './ElementService';
 export { CellService } from './CellService';
-export { ProcessService } from './ProcessService';
+export { ProcessService, CompileSyntaxError } from './ProcessService';
 export { ViewService } from './ViewService';
 export { SecurityService } from './SecurityService';
 export { FileService } from './FileService';

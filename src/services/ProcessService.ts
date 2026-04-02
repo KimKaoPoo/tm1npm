@@ -8,6 +8,11 @@ import { TM1RestException, TM1Exception } from '../exceptions/TM1Exception';
 import { formatUrl, lowerAndDropSpaces } from '../utils/Utils';
 import { OperationStatus, OperationType } from './AsyncOperationService';
 
+export interface CompileSyntaxError {
+    Line: number;
+    Message: string;
+}
+
 export class ProcessService extends ObjectService {
     /** Service to handle Object Updates for TI Processes
      * 
@@ -221,7 +226,7 @@ export class ProcessService extends ObjectService {
         return await this.rest.post(url, '{}');
     }
 
-    public async compileProcess(process: Process): Promise<any[]> {
+    public async compileProcess(process: Process): Promise<CompileSyntaxError[]> {
         /** Compile an unbound process and return syntax errors
          *
          * :param process: Instance of .Process class
@@ -243,8 +248,13 @@ export class ProcessService extends ObjectService {
         try {
             const response = await this.rest.retrieve_async_response(asyncId);
             return this._executeWithReturnParseResponse(response);
-        } catch {
-            return null;
+        } catch (error: any) {
+            // Return null for HTTP 202 (accepted/pending) or 404 (not found yet)
+            const status = error?.statusCode ?? error?.response?.status;
+            if (status === 202 || status === 404) {
+                return null;
+            }
+            throw error;
         }
     }
 
@@ -799,8 +809,10 @@ export class ProcessService extends ObjectService {
      * execution to evaluate, reads the result, and cleans up.
      */
     public async evaluateTiExpression(formula: string): Promise<string> {
-        // Strip leading "=" prefix (e.g. "=NOW;" → "NOW;") without mangling
-        // formulas that contain "=" internally (e.g. comparisons, string literals)
+        // tm1py uses formula[formula.find("=") + 1:] which greedily strips at the
+        // first "=" anywhere in the string. We use a regex to only strip a leading
+        // "=" prefix (e.g. "=NOW;" → "NOW;"), avoiding mangling formulas with
+        // embedded "=" (e.g. comparisons like "IF(1=1,...)").
         formula = formula.replace(/^\s*=\s*/, '');
 
         // Ensure semicolon at end
