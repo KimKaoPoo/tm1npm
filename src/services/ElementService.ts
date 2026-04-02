@@ -4,9 +4,15 @@ import { ObjectService } from './ObjectService';
 import { Element, ElementType } from '../objects/Element';
 import { ElementAttribute } from '../objects/ElementAttribute';
 import { Process } from '../objects/Process';
+import { ProcessService } from './ProcessService';
+import { HierarchyService } from './HierarchyService';
+import { CellService } from './CellService';
 import {
     formatUrl,
-    CaseAndSpaceInsensitiveDict
+    escapeODataValue,
+    requireDataAdmin,
+    CaseAndSpaceInsensitiveDict,
+    CaseAndSpaceInsensitiveSet
 } from '../utils/Utils';
 
 export interface ElementsDataFrameOptions {
@@ -1203,5 +1209,305 @@ export class ElementService extends ObjectService {
         }
         
         return elements.map(name => `[${dimensionName}].[${hierarchy}].[${name}]`);
+    }
+
+    public async getNumberOfConsolidatedElements(
+        dimensionName: string,
+        hierarchyName: string
+    ): Promise<number> {
+        return this._getElementCountWithFilter(dimensionName, hierarchyName, `Type eq ${ElementType.CONSOLIDATED}`);
+    }
+
+    public async getNumberOfLeafElements(
+        dimensionName: string,
+        hierarchyName: string
+    ): Promise<number> {
+        return this._getElementCountWithFilter(dimensionName, hierarchyName, `Type ne ${ElementType.CONSOLIDATED}`);
+    }
+
+    public async getNumberOfNumericElements(
+        dimensionName: string,
+        hierarchyName: string
+    ): Promise<number> {
+        return this._getElementCountWithFilter(dimensionName, hierarchyName, `Type eq ${ElementType.NUMERIC}`);
+    }
+
+    public async getNumberOfStringElements(
+        dimensionName: string,
+        hierarchyName: string
+    ): Promise<number> {
+        return this._getElementCountWithFilter(dimensionName, hierarchyName, `Type eq ${ElementType.STRING}`);
+    }
+
+    /**
+     * Get element types from all hierarchies in a single API call
+     */
+    public async getElementTypesFromAllHierarchies(
+        dimensionName: string,
+        skipConsolidations: boolean = false
+    ): Promise<CaseAndSpaceInsensitiveDict<string>> {
+        let url = formatUrl(
+            "/Dimensions('{}')?$expand=Hierarchies($select=Elements;$expand=Elements($select=Name,Type",
+            dimensionName
+        );
+        url += skipConsolidations ? ";$filter=Type ne 3))" : "))";
+
+        const response = await this.rest.get(url);
+        const result = new CaseAndSpaceInsensitiveDict<string>();
+        for (const hierarchy of response.data.Hierarchies) {
+            for (const element of hierarchy.Elements) {
+                result.set(element.Name, element.Type);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Check if the element attributes cube exists for a dimension
+     */
+    public async attributeCubeExists(dimensionName: string): Promise<boolean> {
+        const url = formatUrl("/Cubes('{}')", Element.ELEMENT_ATTRIBUTES_PREFIX + dimensionName);
+        return this._exists(url);
+    }
+
+    /**
+     * Get parent mapping for all elements in a hierarchy
+     */
+    public async getParentsOfAllElements(
+        dimensionName: string,
+        hierarchyName: string
+    ): Promise<{ [elementName: string]: string[] }> {
+        const url = formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/Elements?$select=Name&$expand=Parents($select=Name)",
+            dimensionName, hierarchyName
+        );
+        const response = await this.rest.get(url);
+        const result: { [elementName: string]: string[] } = {};
+        for (const child of response.data.value) {
+            result[child.Name] = (child.Parents || []).map((p: any) => p.Name);
+        }
+        return result;
+    }
+
+    /**
+     * Get the canonical/principal name of an element (resolves aliases)
+     */
+    public async getElementPrincipalName(
+        dimensionName: string,
+        hierarchyName: string,
+        elementName: string
+    ): Promise<string> {
+        const element = await this.get(dimensionName, hierarchyName, elementName);
+        return element.name;
+    }
+
+    /**
+     * Check if one element is a direct parent of another
+     *
+     * Unlike the related function in TM1 (ELISPAR or ElementIsParent), this function will return false
+     * if an invalid element is passed. An invalid dimension or hierarchy will cause the underlying
+     * REST call to throw (the error propagates from the TM1 server).
+     */
+    public async elementIsParent(
+        dimensionName: string,
+        hierarchyName: string,
+        parentName: string,
+        elementName: string
+    ): Promise<boolean> {
+        const mdx = this._buildDrillIntersectionMdx(
+            dimensionName, hierarchyName,
+            parentName, elementName,
+            'TM1DrillDownMember', false
+        );
+        const cardinality = await this._getMdxSetCardinality(mdx);
+        return cardinality > 0;
+    }
+
+    /**
+     * Check if one element is an ancestor of another
+     *
+     * Unlike the related function in TM1 (ELISANC or ElementIsAncestor), this function will return false
+     * if an invalid element is passed; but will raise an exception if an invalid dimension or hierarchy is passed.
+     *
+     * For method you can pass three values:
+     * - 'TI' performs best, but requires admin permissions
+     * - 'TM1DrillDownMember' performs well when element is a leaf
+     * - 'Descendants' performs well when ancestorName and elementName are Consolidations
+     *
+     * If no method is passed, defaults to 'TI' for admin users, 'TM1DrillDownMember' otherwise.
+     * Note: isAdmin is determined from RestService state; if not set, defaults to 'TM1DrillDownMember'.
+     */
+    public async elementIsAncestor(
+        dimensionName: string,
+        hierarchyName: string,
+        ancestorName: string,
+        elementName: string,
+        method?: string
+    ): Promise<boolean> {
+        if (!method) {
+            method = this.isAdmin ? 'TI' : 'TM1DrillDownMember';
+        }
+
+        if (method.toUpperCase() === 'TI') {
+            if (await this._elementIsAncestorTi(dimensionName, hierarchyName, elementName, ancestorName)) {
+                return true;
+            }
+            if (await this.hierarchyExists(dimensionName, hierarchyName)) {
+                return false;
+            }
+            throw new Error(`Hierarchy: '${hierarchyName}' does not exist in dimension: '${dimensionName}'`);
+        }
+
+        if (method.toUpperCase() === 'DESCENDANTS' || method.toUpperCase() === 'TM1DRILLDOWNMEMBER') {
+            if (!await this.exists(dimensionName, hierarchyName, elementName)) {
+                if (!await this.hierarchyExists(dimensionName, hierarchyName)) {
+                    throw new Error(`Hierarchy '${hierarchyName}' does not exist in dimension '${dimensionName}'`);
+                }
+                return false;
+            }
+        }
+
+        const mdx = this._buildDrillIntersectionMdx(
+            dimensionName, hierarchyName,
+            ancestorName, elementName,
+            method, true
+        );
+        const cardinality = await this._getMdxSetCardinality(mdx);
+        return cardinality > 0;
+    }
+
+    /**
+     * Remove a single edge from a hierarchy
+     */
+    public async removeEdge(
+        dimensionName: string,
+        hierarchyName: string,
+        parentName: string,
+        componentName: string
+    ): Promise<AxiosResponse> {
+        const url = formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/Elements('{}')/Edges(ParentName='{}',ComponentName='{}')",
+            dimensionName, hierarchyName, parentName, parentName, componentName
+        );
+        return this.rest.delete(url);
+    }
+
+    /**
+     * Check if a hierarchy exists in a dimension (convenience delegation to HierarchyService)
+     */
+    public async hierarchyExists(
+        dimensionName: string,
+        hierarchyName: string
+    ): Promise<boolean> {
+        const hierarchyService = new HierarchyService(this.rest);
+        return hierarchyService.exists(dimensionName, hierarchyName);
+    }
+
+    /**
+     * Get all element names and alias values for leaf elements as a case-and-space-insensitive set
+     */
+    public async getAllLeafElementIdentifiers(
+        dimensionName: string,
+        hierarchyName: string
+    ): Promise<CaseAndSpaceInsensitiveSet> {
+        const mdxElements = `{ Tm1FilterByLevel ( { Tm1SubsetAll ([${dimensionName}].[${hierarchyName}]) } , 0 ) }`;
+
+        const aliasAttributes = await this.getAliasElementAttributes(dimensionName, hierarchyName);
+
+        if (aliasAttributes.length === 0) {
+            const result = await this.executeSetMdx(mdxElements, undefined, ['Name'], null, null);
+            const identifiers = new CaseAndSpaceInsensitiveSet();
+            for (const record of result) {
+                identifiers.add(record[0].Name);
+            }
+            return identifiers;
+        }
+
+        const attrMdx = aliasAttributes.map(a =>
+            `[}ElementAttributes_${dimensionName}].[}ElementAttributes_${dimensionName}].[${a}]`
+        ).join(',');
+        const mdx = `SELECT ${mdxElements} ON ROWS, {${attrMdx}} ON COLUMNS FROM [}ElementAttributes_${dimensionName}]`;
+
+        return this._retrieveMdxRowsAndCellValuesAsStringSet(mdx);
+    }
+
+    private async _getElementCountWithFilter(
+        dimensionName: string,
+        hierarchyName: string,
+        filter: string
+    ): Promise<number> {
+        const baseUrl = formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/Elements/$count",
+            dimensionName, hierarchyName
+        );
+        const url = `${baseUrl}?$filter=${filter}`;
+        const response = await this.rest.get(url);
+        return parseInt(response.data) || 0;
+    }
+
+    private _buildDrillIntersectionMdx(
+        dimensionName: string,
+        hierarchyName: string,
+        firstElementName: string,
+        secondElementName: string,
+        mdxMethod: string,
+        recursive: boolean
+    ): string {
+        const first = `[${dimensionName}].[${hierarchyName}].[${firstElementName}]`;
+        const second = `[${dimensionName}].[${hierarchyName}].[${secondElementName}]`;
+
+        let drillSet: string;
+        if (mdxMethod.toUpperCase() === 'TM1DRILLDOWNMEMBER') {
+            drillSet = recursive
+                ? `{TM1DRILLDOWNMEMBER({${first}}, ALL, RECURSIVE)}`
+                : `{TM1DRILLDOWNMEMBER({${first}}, ALL)}`;
+        } else if (mdxMethod.toUpperCase() === 'DESCENDANTS') {
+            drillSet = `{DESCENDANTS(${first}, ${second}.Level, SELF)}`;
+        } else {
+            throw new Error("Invalid MDX Drill Method. Options: 'TM1DrillDownMember' or 'Descendants'");
+        }
+
+        return `INTERSECT(${drillSet}, {${second}})`;
+    }
+
+    private async _getMdxSetCardinality(mdx: string): Promise<number> {
+        const url = '/ExecuteMDXSetExpression?$select=Cardinality';
+        const payload = { MDX: mdx };
+        const response = await this.rest.post(url, JSON.stringify(payload));
+        return response.data.Cardinality || 0;
+    }
+
+    @requireDataAdmin
+    private async _elementIsAncestorTi(
+        dimensionName: string,
+        hierarchyName: string,
+        elementName: string,
+        ancestorName: string
+    ): Promise<boolean> {
+        const processService = new ProcessService(this.rest);
+        const code = `ElementIsAncestor('${escapeODataValue(dimensionName)}', '${escapeODataValue(hierarchyName)}', '${escapeODataValue(ancestorName)}', '${escapeODataValue(elementName)}')=1`;
+        return processService.evaluateBooleanTiExpression(code);
+    }
+
+    private async _retrieveMdxRowsAndCellValuesAsStringSet(mdx: string): Promise<CaseAndSpaceInsensitiveSet> {
+        const cellService = new CellService(this.rest);
+        const { rows, values } = await cellService.executeMdxRowsAndValues(mdx);
+        const result = new CaseAndSpaceInsensitiveSet();
+
+        for (const row of rows) {
+            for (const name of row) {
+                if (name) {
+                    result.add(name);
+                }
+            }
+        }
+
+        for (const value of values) {
+            if (value && typeof value === 'string' && value.trim() !== '') {
+                result.add(value);
+            }
+        }
+
+        return result;
     }
 }
