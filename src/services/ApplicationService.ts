@@ -97,7 +97,6 @@ export class ApplicationService extends ObjectService {
                 return new FolderApplication(path, name);
             }
             case ApplicationTypes.LINK: {
-                await this.rest.get(baseUrl);
                 const response = await this.rest.get(baseUrl + "?$expand=*");
                 return new LinkApplication(path, response.data?.Name || name, response.data?.URL || '');
             }
@@ -316,20 +315,21 @@ export class ApplicationService extends ObjectService {
         return await this.update(document, isPrivate);
     }
 
+    // NOTE: `flat` parameter is accepted for tm1py signature parity but output is always flat.
+    // Nested (tree) mode is not yet implemented.
     public async discover(
         path: string = '',
         includePrivate: boolean = false,
         recursive: boolean = false,
-        flat: boolean = false
+        _flat: boolean = false
     ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
-        return this._discoverAtPath(path, includePrivate, recursive, flat, false);
+        return this._discoverAtPath(path, includePrivate, recursive, false);
     }
 
     private async _discoverAtPath(
         path: string,
         includePrivate: boolean,
         recursive: boolean,
-        flat: boolean,
         inPrivateContext: boolean
     ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
         const results: Array<{ type: string; name: string; path: string; is_private: boolean }> = [];
@@ -337,7 +337,7 @@ export class ApplicationService extends ObjectService {
         if (!inPrivateContext) {
             const publicItems = await this._getContentsRaw(path, false, false);
             const processed = await this._processItems(
-                publicItems, path, false, includePrivate, recursive, flat, false
+                publicItems, path, false, includePrivate, recursive, false
             );
             results.push(...processed);
         }
@@ -345,7 +345,7 @@ export class ApplicationService extends ObjectService {
         if (includePrivate || inPrivateContext) {
             const privateItems = await this._getContentsRaw(path, true, inPrivateContext);
             const processed = await this._processItems(
-                privateItems, path, true, includePrivate, recursive, flat, true
+                privateItems, path, true, includePrivate, recursive, true
             );
             results.push(...processed);
         }
@@ -374,7 +374,6 @@ export class ApplicationService extends ObjectService {
         isPrivate: boolean,
         includePrivate: boolean,
         recursive: boolean,
-        flat: boolean,
         inPrivateContext: boolean
     ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
         const results: Array<{ type: string; name: string; path: string; is_private: boolean }> = [];
@@ -397,7 +396,7 @@ export class ApplicationService extends ObjectService {
             if (recursive && typeName === 'Folder') {
                 folderPromises.push(
                     this._discoverAtPath(
-                        itemPath, includePrivate, recursive, flat, inPrivateContext || isPrivate
+                        itemPath, includePrivate, recursive, inPrivateContext || isPrivate
                     )
                 );
             }
