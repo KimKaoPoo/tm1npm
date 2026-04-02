@@ -562,7 +562,7 @@ describe('ProcessService Tests', () => {
             expect(result).toBe('2024-01-01');
         });
 
-        test('should strip "=" prefix from formula', async () => {
+        test('should strip leading "=" prefix from formula', async () => {
             // Mock compileProcess
             mockRestService.post.mockResolvedValueOnce(createMockResponse({ value: [] }));
             // Mock create
@@ -589,14 +589,53 @@ describe('ProcessService Tests', () => {
             // Mock delete
             mockRestService.delete.mockResolvedValueOnce(createMockResponse({}, 204));
 
-            const result = await processService.evaluateTiExpression('x = NumberToString(42);');
+            // Leading "=" is stripped (Excel-style formula prefix)
+            const result = await processService.evaluateTiExpression('= NumberToString(42);');
 
             expect(result).toBe('42');
 
-            // Verify the compileProcess payload contains the stripped formula
+            // Verify the formula was stripped correctly
             const compileCall = mockRestService.post.mock.calls[0];
             const compilePayload = JSON.parse(compileCall[1]);
-            expect(compilePayload.Process.PrologProcedure).toContain('sFunc =  NumberToString(42);');
+            expect(compilePayload.Process.PrologProcedure).toContain('sFunc = NumberToString(42);');
+        });
+
+        test('should not mangle formulas with embedded "=" characters', async () => {
+            // Mock compileProcess
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({ value: [] }));
+            // Mock create
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}, 201));
+            // Mock debugProcess
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({
+                ID: 'debug-embed-123',
+                CallStack: []
+            }));
+            // Mock debugAddBreakpoint
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
+            // Mock debugContinue
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({
+                CallStack: [{ Variables: [{ Name: 'sFunc', Value: '1' }] }]
+            }));
+            // Mock debugGetVariableValues
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({
+                CallStack: [{ Variables: [{ Name: 'sFunc', Value: '1' }] }]
+            }));
+            // Mock debugContinue
+            mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
+            mockRestService.get.mockResolvedValueOnce(createMockResponse({ CallStack: [] }));
+            // Mock delete
+            mockRestService.delete.mockResolvedValueOnce(createMockResponse({}, 204));
+
+            // Formula with embedded "=" should NOT be mangled
+            const result = await processService.evaluateTiExpression('IF(1=1, "yes", "no");');
+
+            expect(result).toBe('1');
+
+            // Verify the full formula is preserved
+            const compileCall = mockRestService.post.mock.calls[0];
+            const compilePayload = JSON.parse(compileCall[1]);
+            expect(compilePayload.Process.PrologProcedure).toContain('sFunc = IF(1=1, "yes", "no");');
         });
 
         test('should throw on syntax errors from compileProcess', async () => {

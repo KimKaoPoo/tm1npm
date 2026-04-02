@@ -799,8 +799,9 @@ export class ProcessService extends ObjectService {
      * execution to evaluate, reads the result, and cleans up.
      */
     public async evaluateTiExpression(formula: string): Promise<string> {
-        // Grab everything to right of "=" if present
-        formula = formula.substring(formula.indexOf('=') + 1);
+        // Strip leading "=" prefix (e.g. "=NOW;" → "NOW;") without mangling
+        // formulas that contain "=" internally (e.g. comparisons, string literals)
+        formula = formula.replace(/^\s*=\s*/, '');
 
         // Ensure semicolon at end
         if (!formula.trim().endsWith(';')) {
