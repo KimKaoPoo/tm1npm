@@ -151,7 +151,7 @@ export class RestService {
                 const response = error.response;
                 if (response) {
                     const message = this.extractErrorMessage(response);
-                    throw new TM1RestException(message, response);
+                    throw new TM1RestException(message, response.status, response);
                 }
 
                 throw new TM1RestException(error.message);
