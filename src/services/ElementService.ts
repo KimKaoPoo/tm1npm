@@ -8,6 +8,7 @@ import { ProcessService } from './ProcessService';
 import { HierarchyService } from './HierarchyService';
 import {
     formatUrl,
+    escapeODataValue,
     CaseAndSpaceInsensitiveDict,
     CaseAndSpaceInsensitiveSet
 } from '../utils/Utils';
@@ -1210,64 +1211,32 @@ export class ElementService extends ObjectService {
 
     // ===== ISSUE #37: 13 MISSING METHODS FOR TM1PY PARITY =====
 
-    /**
-     * Get number of consolidated elements in a hierarchy
-     */
     public async getNumberOfConsolidatedElements(
         dimensionName: string,
         hierarchyName: string
     ): Promise<number> {
-        const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements/$count?$filter=Type eq 3",
-            dimensionName, hierarchyName
-        );
-        const response = await this.rest.get(url);
-        return parseInt(response.data) || 0;
+        return this._getElementCountWithFilter(dimensionName, hierarchyName, `Type eq ${ElementType.CONSOLIDATED}`);
     }
 
-    /**
-     * Get number of leaf (non-consolidated) elements in a hierarchy
-     */
     public async getNumberOfLeafElements(
         dimensionName: string,
         hierarchyName: string
     ): Promise<number> {
-        const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements/$count?$filter=Type ne 3",
-            dimensionName, hierarchyName
-        );
-        const response = await this.rest.get(url);
-        return parseInt(response.data) || 0;
+        return this._getElementCountWithFilter(dimensionName, hierarchyName, `Type ne ${ElementType.CONSOLIDATED}`);
     }
 
-    /**
-     * Get number of numeric elements in a hierarchy
-     */
     public async getNumberOfNumericElements(
         dimensionName: string,
         hierarchyName: string
     ): Promise<number> {
-        const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements/$count?$filter=Type eq 1",
-            dimensionName, hierarchyName
-        );
-        const response = await this.rest.get(url);
-        return parseInt(response.data) || 0;
+        return this._getElementCountWithFilter(dimensionName, hierarchyName, `Type eq ${ElementType.NUMERIC}`);
     }
 
-    /**
-     * Get number of string elements in a hierarchy
-     */
     public async getNumberOfStringElements(
         dimensionName: string,
         hierarchyName: string
     ): Promise<number> {
-        const url = formatUrl(
-            "/Dimensions('{}')/Hierarchies('{}')/Elements/$count?$filter=Type eq 2",
-            dimensionName, hierarchyName
-        );
-        const response = await this.rest.get(url);
-        return parseInt(response.data) || 0;
+        return this._getElementCountWithFilter(dimensionName, hierarchyName, `Type eq ${ElementType.STRING}`);
     }
 
     /**
@@ -1462,6 +1431,20 @@ export class ElementService extends ObjectService {
 
     // ===== PRIVATE HELPERS FOR ISSUE #37 =====
 
+    private async _getElementCountWithFilter(
+        dimensionName: string,
+        hierarchyName: string,
+        filter: string
+    ): Promise<number> {
+        const baseUrl = formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/Elements/$count",
+            dimensionName, hierarchyName
+        );
+        const url = `${baseUrl}?$filter=${filter}`;
+        const response = await this.rest.get(url);
+        return parseInt(response.data) || 0;
+    }
+
     private _buildDrillIntersectionMdx(
         dimensionName: string,
         hierarchyName: string,
@@ -1501,7 +1484,7 @@ export class ElementService extends ObjectService {
         ancestorName: string
     ): Promise<boolean> {
         const processService = new ProcessService(this.rest);
-        const code = `ElementIsAncestor('${dimensionName.replace(/'/g, "''")}', '${hierarchyName.replace(/'/g, "''")}', '${ancestorName.replace(/'/g, "''")}', '${elementName.replace(/'/g, "''")}')=1`;
+        const code = `ElementIsAncestor('${escapeODataValue(dimensionName)}', '${escapeODataValue(hierarchyName)}', '${escapeODataValue(ancestorName)}', '${escapeODataValue(elementName)}')=1`;
         return processService.evaluateBooleanTiExpression(code);
     }
 
