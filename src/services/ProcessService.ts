@@ -9,7 +9,7 @@ import { formatUrl, lowerAndDropSpaces } from '../utils/Utils';
 import { OperationStatus, OperationType } from './AsyncOperationService';
 
 export interface CompileSyntaxError {
-    Line: number;
+    LineNumber: number;
     Message: string;
 }
 
@@ -247,6 +247,8 @@ export class ProcessService extends ObjectService {
     public async pollExecuteWithReturn(asyncId: string): Promise<[boolean, string, string | null] | null> {
         try {
             const response = await this.rest.retrieve_async_response(asyncId);
+            // TODO: tm1py handles TM1 < v11 binary-wrapped responses via
+            // build_response_from_binary_response. Add support if needed.
             return this._executeWithReturnParseResponse(response);
         } catch (error: any) {
             // Return null for HTTP 202 (accepted/pending) or 404 (not found yet)
