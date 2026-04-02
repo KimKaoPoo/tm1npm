@@ -121,6 +121,38 @@ describe('ApplicationService — Issue #38 new methods', () => {
             expect(names).toContain('SalesReport');
         });
 
+        test('should use PrivateContents for nested paths in private context', async () => {
+            mockRestService.get.mockImplementation(async (url: string) => {
+                // Root private contents returns a folder
+                if (url === "/Contents('Applications')/PrivateContents") {
+                    return createMockResponse({
+                        value: [
+                            { '@odata.type': '#ibm.tm1.api.v1.Folder', Name: 'PrivateFolder' }
+                        ]
+                    });
+                }
+                // Nested private folder contents — must use PrivateContents, not Contents
+                if (url.includes("PrivateContents('PrivateFolder')/PrivateContents")) {
+                    return createMockResponse({
+                        value: [
+                            { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'DeepCube' }
+                        ]
+                    });
+                }
+                // If the code incorrectly uses Contents for nested private paths, this will 404
+                if (url.includes("Contents('PrivateFolder')/Contents")) {
+                    throw new TM1RestException('Not found', 404, { status: 404 });
+                }
+                return createMockResponse({ value: [] });
+            });
+
+            const results = await applicationService.discover('', true, true);
+
+            const names = results.map(r => r.name);
+            expect(names).toContain('PrivateFolder');
+            expect(names).toContain('DeepCube');
+        });
+
         test('should return empty array on 404', async () => {
             mockRestService.get.mockRejectedValue(
                 new TM1RestException('Not found', 404, { status: 404 })
@@ -199,7 +231,7 @@ describe('ApplicationService — Issue #38 new methods', () => {
             expect(typeof result).toBe('boolean');
         });
 
-        test('should return false when private path resolution fails', async () => {
+        test('should return false when private path resolution fails with not-found', async () => {
             mockRestService.get.mockRejectedValue(
                 new TM1RestException('Not found', 404, { status: 404 })
             );
@@ -212,6 +244,16 @@ describe('ApplicationService — Issue #38 new methods', () => {
             );
 
             expect(result).toBe(false);
+        });
+
+        test('should rethrow server errors from private exists', async () => {
+            mockRestService.get.mockRejectedValue(
+                new TM1RestException('Internal server error', 500, { status: 500 })
+            );
+
+            await expect(
+                applicationService.exists('SomePath', ApplicationTypes.CUBE, 'SomeCube', true)
+            ).rejects.toThrow('Internal server error');
         });
     });
 });

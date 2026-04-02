@@ -259,8 +259,15 @@ export class ApplicationService extends ObjectService {
                 const collection = resolved.inPrivateContext ? 'PrivateContents' : 'Contents';
                 const url = formatUrl(resolved.baseUrl + '/' + collection + "('{}')", requestName);
                 return await this._exists(url);
-            } catch {
-                return false;
+            } catch (error: any) {
+                // Path-not-found from _resolvePath means item doesn't exist
+                if (error instanceof Error && error.message.includes('not found')) {
+                    return false;
+                }
+                if (error instanceof TM1RestException && error.statusCode === 404) {
+                    return false;
+                }
+                throw error;
             }
         }
         const contents = this.getContentsCollection(isPrivate);
@@ -355,8 +362,11 @@ export class ApplicationService extends ObjectService {
 
     private async _getContentsRaw(path: string, isPrivate: boolean, inPrivateContext: boolean): Promise<any[]> {
         try {
-            const mid = this.buildPathSegments(path);
-            const collection = (inPrivateContext || isPrivate) ? 'PrivateContents' : 'Contents';
+            const usePrivate = inPrivateContext || isPrivate;
+            const mid = usePrivate
+                ? this.buildPrivatePathSegments(path)
+                : this.buildPathSegments(path);
+            const collection = usePrivate ? 'PrivateContents' : 'Contents';
             const url = "/Contents('Applications')" + mid + "/" + collection;
             const response = await this.rest.get(url);
             return response.data?.value || [];
@@ -540,6 +550,17 @@ export class ApplicationService extends ObjectService {
             .split('/')
             .filter(segment => segment.trim().length > 0)
             .map(segment => formatUrl("/Contents('{}')", segment))
+            .join('');
+    }
+
+    private buildPrivatePathSegments(path: string): string {
+        if (!path || !path.trim()) {
+            return '';
+        }
+        return path
+            .split('/')
+            .filter(segment => segment.trim().length > 0)
+            .map(segment => formatUrl("/PrivateContents('{}')", segment))
             .join('');
     }
 
