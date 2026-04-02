@@ -844,7 +844,7 @@ export class ProcessService extends ObjectService {
             const result = await this.debugGetVariableValues(debugId);
             await this.debugContinue(debugId);
 
-            if (!result || Object.keys(result).length === 0) {
+            if (!result || !('sFunc' in result)) {
                 throw new Error('unknown error: no formula result found');
             }
             return result['sFunc'];

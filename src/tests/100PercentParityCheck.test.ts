@@ -65,7 +65,7 @@ describe('100% TM1py Parity Function Existence', () => {
         });
     });
 
-    describe('ProcessService - Debug Operations & Parity (12 functions)', () => {
+    describe('ProcessService - Debug Operations & Parity (11 functions)', () => {
         test('All ProcessService debug and parity functions should exist', () => {
             // Debug step/continue (from #33)
             expect(typeof processService.debugStepOver).toBe('function');
@@ -88,7 +88,7 @@ describe('100% TM1py Parity Function Existence', () => {
             // TI expression evaluation (#36)
             expect(typeof processService.evaluateTiExpression).toBe('function');
 
-            console.log('✅ All 12 ProcessService functions exist');
+            console.log('✅ All 11 ProcessService functions exist');
         });
     });
 
