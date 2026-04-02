@@ -482,8 +482,9 @@ describe('ProcessService Tests', () => {
         });
 
         test('pollExecuteWithReturn should return null for 404 (not ready)', async () => {
+            const { TM1RestException } = require('../exceptions/TM1Exception');
             (mockRestService as any).retrieve_async_response = jest.fn().mockRejectedValue(
-                { statusCode: 404, message: 'Not found' }
+                new TM1RestException('Not found', 404)
             );
 
             const result = await processService.pollExecuteWithReturn('async-003');
@@ -492,8 +493,9 @@ describe('ProcessService Tests', () => {
         });
 
         test('pollExecuteWithReturn should return null for 202 (accepted/pending)', async () => {
+            const { TM1RestException } = require('../exceptions/TM1Exception');
             (mockRestService as any).retrieve_async_response = jest.fn().mockRejectedValue(
-                { statusCode: 202, message: 'Accepted' }
+                new TM1RestException('Accepted', 202)
             );
 
             const result = await processService.pollExecuteWithReturn('async-004');
@@ -502,11 +504,12 @@ describe('ProcessService Tests', () => {
         });
 
         test('pollExecuteWithReturn should throw on unexpected errors', async () => {
-            const networkError = { statusCode: 500, message: 'Internal Server Error' };
-            (mockRestService as any).retrieve_async_response = jest.fn().mockRejectedValue(networkError);
+            const { TM1RestException } = require('../exceptions/TM1Exception');
+            const serverError = new TM1RestException('Internal Server Error', 500);
+            (mockRestService as any).retrieve_async_response = jest.fn().mockRejectedValue(serverError);
 
             await expect(processService.pollExecuteWithReturn('async-005'))
-                .rejects.toMatchObject({ statusCode: 500 });
+                .rejects.toThrow('Internal Server Error');
         });
     });
 

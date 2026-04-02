@@ -250,7 +250,7 @@ export class ProcessService extends ObjectService {
             return this._executeWithReturnParseResponse(response);
         } catch (error: any) {
             // Return null for HTTP 202 (accepted/pending) or 404 (not found yet)
-            const status = error?.statusCode ?? error?.response?.status;
+            const status = error?.status ?? error?.response?.status;
             if (status === 202 || status === 404) {
                 return null;
             }

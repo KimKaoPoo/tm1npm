@@ -752,8 +752,13 @@ export class RestService {
         try {
             const response = await this.get(`/AsyncOperations('${async_id}')`);
             return response.data;
-        } catch (error) {
-            throw new TM1RestException(`Failed to retrieve async response ${async_id}: ${error}`);
+        } catch (error: any) {
+            const status = error?.status ?? error?.response?.status;
+            throw new TM1RestException(
+                `Failed to retrieve async response ${async_id}: ${error}`,
+                status,
+                error?.response
+            );
         }
     }
 
