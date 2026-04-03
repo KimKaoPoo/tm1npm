@@ -442,8 +442,11 @@ export class ApplicationService extends ObjectService {
                     try {
                         await this.rest.get(privateTestUrl);
                         return i;
-                    } catch {
-                        return -1;
+                    } catch (innerError: any) {
+                        if (innerError instanceof TM1RestException && innerError.statusCode === 404) {
+                            return -1;
+                        }
+                        throw innerError;
                     }
                 }
                 throw error;
@@ -505,7 +508,11 @@ export class ApplicationService extends ObjectService {
                     segments.map(s => formatUrl("/Contents('{}')", s)).join(''),
                 inPrivateContext: false
             };
-        } catch { /* fall through */ }
+        } catch (error: any) {
+            if (!(error instanceof TM1RestException && error.statusCode === 404)) {
+                throw error;
+            }
+        }
 
         // Try all-private
         try {
@@ -518,7 +525,11 @@ export class ApplicationService extends ObjectService {
                     segments.map(s => formatUrl("/PrivateContents('{}')", s)).join(''),
                 inPrivateContext: true
             };
-        } catch { /* fall through */ }
+        } catch (error: any) {
+            if (!(error instanceof TM1RestException && error.statusCode === 404)) {
+                throw error;
+            }
+        }
 
         // Iterative boundary search
         const boundary = await this._findPrivateBoundary(segments);

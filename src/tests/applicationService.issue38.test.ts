@@ -44,7 +44,7 @@ describe('ApplicationService — Issue #38 new methods', () => {
                     return createMockResponse({
                         value: [
                             { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'SalesCube' },
-                            { '@odata.type': '#ibm.tm1.api.v1.FolderApplicationApplication', Name: 'Reports' }
+                            { '@odata.type': '#ibm.tm1.api.v1.FolderApplication', Name: 'Reports' }
                         ]
                     });
                 }
