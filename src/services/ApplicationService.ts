@@ -26,6 +26,10 @@ export class ApplicationService extends ObjectService {
         super(rest);
     }
 
+    public clearPathCache(): void {
+        this.pathCache.clear();
+    }
+
     public async getAllPublicRootNames(): Promise<string[]> {
         const url = "/Contents('Applications')/Contents";
         const response = await this.rest.get(url);

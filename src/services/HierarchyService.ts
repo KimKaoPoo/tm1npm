@@ -268,12 +268,13 @@ export class HierarchyService extends ObjectService {
         const elementColumn = elemCol || df.columns[0];
         const rows = df.toJson();
 
+        const numericSuffix = (col: string) => parseInt(col.replace(/\D/g, ''), 10);
         const levelColumns = df.columns
             .filter(c => /^Level\d+$/i.test(c))
-            .sort();
+            .sort((a, b) => numericSuffix(a) - numericSuffix(b));
         const weightColumns = df.columns
             .filter(c => /^Weight\d+$/i.test(c))
-            .sort();
+            .sort((a, b) => numericSuffix(a) - numericSuffix(b));
 
         const reservedColumns = new Set([
             elementColumn.toLowerCase(),
