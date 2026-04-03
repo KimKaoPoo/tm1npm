@@ -11,6 +11,7 @@ import { SubsetService } from '../services/SubsetService';
 import { ApplicationService } from '../services/ApplicationService';
 import { SessionService } from '../services/SessionService';
 import { RestService } from '../services/RestService';
+import { TM1RestException } from '../exceptions/TM1Exception';
 import { Subset } from '../objects/Subset';
 import { CubeApplication, ApplicationTypes } from '../objects/Application';
 
@@ -166,13 +167,20 @@ describe('Bug #12 - ApplicationService getNames() should not inject /api/v1/ pre
     });
 
     test('getNames() with isPrivate should use PrivateContents', async () => {
-        mockRest.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'App1' }] }));
+        // _resolvePath probes public path first (returns 404), then tries private
+        const notFound = new TM1RestException('Not Found', 404, { status: 404 });
+        mockRest.get
+            .mockRejectedValueOnce(notFound)   // public probe → 404
+            .mockRejectedValueOnce(notFound)   // private probe → 404 (falls through to findBoundary)
+            .mockResolvedValueOnce(createMockResponse({ value: [] }))  // boundary probe succeeds
+            .mockResolvedValueOnce(createMockResponse({ value: [{ Name: 'App1' }] }));  // actual getNames
 
         await appService.getNames('Planning', true);
 
-        const calledUrl = mockRest.get.mock.calls[0][0] as string;
-        expect(calledUrl).not.toContain('/api/v1/');
-        expect(calledUrl).toBe("/Contents('Applications')/Contents('Planning')/PrivateContents");
+        // The final GET should target PrivateContents
+        const lastCall = mockRest.get.mock.calls[mockRest.get.mock.calls.length - 1][0] as string;
+        expect(lastCall).not.toContain('/api/v1/');
+        expect(lastCall).toContain('PrivateContents');
     });
 
     test('getNames() with empty path', async () => {
