@@ -41,8 +41,8 @@ export class ApplicationService extends ObjectService {
     public async getNames(path: string, isPrivate: boolean = false, useCache: boolean = false): Promise<string[]> {
         if (isPrivate) {
             const resolved = await this._resolvePath(path, true, useCache);
-            const collection = resolved.inPrivateContext ? 'PrivateContents' : 'Contents';
-            const url = resolved.baseUrl + '/' + collection;
+            // Leaf collection is always PrivateContents when isPrivate — even if parent path is public
+            const url = resolved.baseUrl + '/PrivateContents';
             const response = await this.rest.get(url);
             return response.data.value.map((application: any) => application.Name);
         }
@@ -70,8 +70,7 @@ export class ApplicationService extends ObjectService {
         let baseUrl: string;
         if (isPrivate) {
             const resolved = await this._resolvePath(path, true, useCache);
-            const collection = resolved.inPrivateContext ? 'PrivateContents' : 'Contents';
-            baseUrl = formatUrl(resolved.baseUrl + '/' + collection + "('{}')", requestName);
+            baseUrl = formatUrl(resolved.baseUrl + "/PrivateContents('{}')", requestName);
         } else {
             baseUrl = this.buildApplicationUrl(path, isPrivate, requestName);
         }
@@ -256,8 +255,7 @@ export class ApplicationService extends ObjectService {
         if (isPrivate) {
             try {
                 const resolved = await this._resolvePath(path, true, useCache);
-                const collection = resolved.inPrivateContext ? 'PrivateContents' : 'Contents';
-                const url = formatUrl(resolved.baseUrl + '/' + collection + "('{}')", requestName);
+                const url = formatUrl(resolved.baseUrl + "/PrivateContents('{}')", requestName);
                 return await this._exists(url);
             } catch (error: any) {
                 // Path-not-found from _resolvePath means item doesn't exist
@@ -362,11 +360,12 @@ export class ApplicationService extends ObjectService {
 
     private async _getContentsRaw(path: string, isPrivate: boolean, inPrivateContext: boolean): Promise<any[]> {
         try {
-            const usePrivate = inPrivateContext || isPrivate;
-            const mid = usePrivate
+            // Path segments: use PrivateContents only if we're already inside a private folder tree.
+            // Leaf collection: PrivateContents if isPrivate or inPrivateContext, else Contents.
+            const mid = inPrivateContext
                 ? this.buildPrivatePathSegments(path)
                 : this.buildPathSegments(path);
-            const collection = usePrivate ? 'PrivateContents' : 'Contents';
+            const collection = (inPrivateContext || isPrivate) ? 'PrivateContents' : 'Contents';
             const url = "/Contents('Applications')" + mid + "/" + collection;
             const response = await this.rest.get(url);
             return response.data?.value || [];

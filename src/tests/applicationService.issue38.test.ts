@@ -87,6 +87,36 @@ describe('ApplicationService — Issue #38 new methods', () => {
             expect(privateNames).toContain('PrivateReport');
         });
 
+        test('should find private items inside public folders with includePrivate', async () => {
+            mockRestService.get.mockImplementation(async (url: string) => {
+                // Public root contents: one public folder
+                if (url === "/Contents('Applications')/Contents") {
+                    return createMockResponse({
+                        value: [
+                            { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'PublicCube' }
+                        ]
+                    });
+                }
+                // Private root contents: uses public path + PrivateContents leaf
+                if (url === "/Contents('Applications')/PrivateContents") {
+                    return createMockResponse({
+                        value: [
+                            { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'PrivateInPublicRoot' }
+                        ]
+                    });
+                }
+                return createMockResponse({ value: [] });
+            });
+
+            const results = await applicationService.discover('', true, false);
+
+            const names = results.map(r => r.name);
+            expect(names).toContain('PublicCube');
+            expect(names).toContain('PrivateInPublicRoot');
+            const privateItem = results.find(r => r.name === 'PrivateInPublicRoot');
+            expect(privateItem?.is_private).toBe(true);
+        });
+
         test('should recurse into folders when recursive=true', async () => {
             // TM1 returns @odata.type like '#ibm.tm1.api.v1.FolderApplication'.
             // _extractTypeFromOdata strips 'Application' suffix → 'Folder', which triggers recursion.
@@ -185,13 +215,15 @@ describe('ApplicationService — Issue #38 new methods', () => {
     // ===== getNames with private path resolution (_resolvePath) =====
 
     describe('getNames — private path', () => {
-        test('should resolve private path via _resolvePath and use PrivateContents', async () => {
+        test('should use PrivateContents leaf collection even when parent path is public', async () => {
+            const calledUrls: string[] = [];
             mockRestService.get.mockImplementation(async (url: string) => {
-                if (url.includes('?$top=0') && url.includes("Contents('MyFolder')")) {
+                calledUrls.push(url);
+                if (url.includes('?$top=0')) {
                     // Public path probe succeeds — folder is public
                     return createMockResponse({});
                 }
-                if (url.includes('PrivateContents')) {
+                if (url.includes('/PrivateContents')) {
                     return createMockResponse({
                         value: [{ Name: 'PrivateApp' }]
                     });
@@ -203,7 +235,10 @@ describe('ApplicationService — Issue #38 new methods', () => {
 
             const names = await applicationService.getNames('MyFolder', true);
 
-            expect(Array.isArray(names)).toBe(true);
+            expect(names).toContain('PrivateApp');
+            // The final data-fetch URL must use PrivateContents for the leaf
+            const dataUrl = calledUrls.find(u => !u.includes('$top=0') && u.includes('PrivateContents'));
+            expect(dataUrl).toBeDefined();
         });
     });
 
