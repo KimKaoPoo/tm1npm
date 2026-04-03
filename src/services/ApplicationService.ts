@@ -17,10 +17,17 @@ import {
     getApplicationMetadata
 } from '../objects/Application';
 import { formatUrl, verifyVersion } from '../utils/Utils';
+import { TM1RestException } from '../exceptions/TM1Exception';
 
 export class ApplicationService extends ObjectService {
+    private pathCache: Map<string, number> = new Map();
+
     constructor(rest: RestService) {
         super(rest);
+    }
+
+    public clearPathCache(): void {
+        this.pathCache.clear();
     }
 
     public async getAllPublicRootNames(): Promise<string[]> {
@@ -35,7 +42,14 @@ export class ApplicationService extends ObjectService {
         return response.data.value.map((application: any) => application.Name);
     }
 
-    public async getNames(path: string, isPrivate: boolean = false): Promise<string[]> {
+    public async getNames(path: string, isPrivate: boolean = false, useCache: boolean = false): Promise<string[]> {
+        if (isPrivate) {
+            const resolved = await this._resolvePath(path, true, useCache);
+            // Leaf collection is always PrivateContents when isPrivate — even if parent path is public
+            const url = resolved.baseUrl + '/PrivateContents';
+            const response = await this.rest.get(url);
+            return response.data.value.map((application: any) => application.Name);
+        }
         const contents = this.getContentsCollection(isPrivate);
         const mid = this.buildPathSegments(path);
         const baseUrl = "/Contents('Applications')" + mid + "/" + contents;
@@ -47,7 +61,8 @@ export class ApplicationService extends ObjectService {
         path: string,
         applicationType: string | ApplicationTypes,
         name: string,
-        isPrivate: boolean = false
+        isPrivate: boolean = false,
+        useCache: boolean = false
     ): Promise<Application> {
         const appType = this.parseApplicationType(applicationType);
 
@@ -56,7 +71,13 @@ export class ApplicationService extends ObjectService {
         }
 
         const requestName = this.withLegacySuffix(name, appType);
-        const baseUrl = this.buildApplicationUrl(path, isPrivate, requestName);
+        let baseUrl: string;
+        if (isPrivate) {
+            const resolved = await this._resolvePath(path, true, useCache);
+            baseUrl = formatUrl(resolved.baseUrl + "/PrivateContents('{}')", requestName);
+        } else {
+            baseUrl = this.buildApplicationUrl(path, isPrivate, requestName);
+        }
 
         switch (appType) {
             case ApplicationTypes.CUBE: {
@@ -79,7 +100,6 @@ export class ApplicationService extends ObjectService {
                 return new FolderApplication(path, name);
             }
             case ApplicationTypes.LINK: {
-                await this.rest.get(baseUrl);
                 const response = await this.rest.get(baseUrl + "?$expand=*");
                 return new LinkApplication(path, response.data?.Name || name, response.data?.URL || '');
             }
@@ -232,11 +252,28 @@ export class ApplicationService extends ObjectService {
         path: string,
         applicationType: ApplicationTypes,
         name: string,
-        isPrivate: boolean = false
+        isPrivate: boolean = false,
+        useCache: boolean = false
     ): Promise<boolean> {
+        const requestName = this.withLegacySuffix(name, applicationType);
+        if (isPrivate) {
+            try {
+                const resolved = await this._resolvePath(path, true, useCache);
+                const url = formatUrl(resolved.baseUrl + "/PrivateContents('{}')", requestName);
+                return await this._exists(url);
+            } catch (error: any) {
+                // Path-not-found from _resolvePath means item doesn't exist
+                if (error instanceof Error && error.message.includes('not found')) {
+                    return false;
+                }
+                if (error instanceof TM1RestException && error.statusCode === 404) {
+                    return false;
+                }
+                throw error;
+            }
+        }
         const contents = this.getContentsCollection(isPrivate);
         const mid = this.buildPathSegments(path);
-        const requestName = this.withLegacySuffix(name, applicationType);
         const url = formatUrl(
             "/Contents('Applications')" + mid + "/" + contents + "('{}')",
             requestName
@@ -287,6 +324,230 @@ export class ApplicationService extends ObjectService {
         return await this.update(document, isPrivate);
     }
 
+    // NOTE: `flat` parameter is accepted for tm1py signature parity but output is always flat.
+    // Nested (tree) mode is not yet implemented.
+    public async discover(
+        path: string = '',
+        includePrivate: boolean = false,
+        recursive: boolean = false,
+        _flat: boolean = false
+    ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
+        return this._discoverAtPath(path, includePrivate, recursive, false);
+    }
+
+    private async _discoverAtPath(
+        path: string,
+        includePrivate: boolean,
+        recursive: boolean,
+        inPrivateContext: boolean
+    ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
+        const results: Array<{ type: string; name: string; path: string; is_private: boolean }> = [];
+
+        if (!inPrivateContext) {
+            const publicItems = await this._getContentsRaw(path, false, false);
+            const processed = await this._processItems(
+                publicItems, path, false, includePrivate, recursive, false
+            );
+            results.push(...processed);
+        }
+
+        if (includePrivate || inPrivateContext) {
+            const privateItems = await this._getContentsRaw(path, true, inPrivateContext);
+            const processed = await this._processItems(
+                privateItems, path, true, includePrivate, recursive, true
+            );
+            results.push(...processed);
+        }
+
+        return results;
+    }
+
+    private async _getContentsRaw(path: string, isPrivate: boolean, inPrivateContext: boolean): Promise<any[]> {
+        try {
+            // Path segments: use PrivateContents only if we're already inside a private folder tree.
+            // Leaf collection: PrivateContents if isPrivate or inPrivateContext, else Contents.
+            const mid = inPrivateContext
+                ? this.buildPrivatePathSegments(path)
+                : this.buildPathSegments(path);
+            const collection = (inPrivateContext || isPrivate) ? 'PrivateContents' : 'Contents';
+            const url = "/Contents('Applications')" + mid + "/" + collection;
+            const response = await this.rest.get(url);
+            return response.data?.value || [];
+        } catch (error: any) {
+            if (error instanceof TM1RestException && error.statusCode === 404) {
+                return [];
+            }
+            throw error;
+        }
+    }
+
+    private async _processItems(
+        items: any[],
+        path: string,
+        isPrivate: boolean,
+        includePrivate: boolean,
+        recursive: boolean,
+        inPrivateContext: boolean
+    ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
+        const results: Array<{ type: string; name: string; path: string; is_private: boolean }> = [];
+
+        const folderPromises: Array<Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>>> = [];
+
+        for (const item of items) {
+            const odataType = item['@odata.type'] || '';
+            const typeName = this._extractTypeFromOdata(odataType);
+            const itemName = item.Name || '';
+            const itemPath = path ? `${path}/${itemName}` : itemName;
+
+            results.push({
+                type: typeName,
+                name: itemName,
+                path: itemPath,
+                is_private: isPrivate || inPrivateContext
+            });
+
+            if (recursive && typeName === 'Folder') {
+                folderPromises.push(
+                    this._discoverAtPath(
+                        itemPath, includePrivate, recursive, inPrivateContext || isPrivate
+                    )
+                );
+            }
+        }
+
+        const folderResults = await Promise.all(folderPromises);
+        for (const subItems of folderResults) {
+            results.push(...subItems);
+        }
+
+        return results;
+    }
+
+    private _extractTypeFromOdata(odataType: string): string {
+        if (!odataType) return 'Unknown';
+        const parts = odataType.split('.');
+        const raw = parts[parts.length - 1] || 'Unknown';
+        // TM1 returns types like 'FolderApplication', 'CubeApplication' — strip suffix
+        // so folder check works consistently
+        return raw.replace(/Application$/, '') || raw;
+    }
+
+    private async _findPrivateBoundary(segments: string[]): Promise<number> {
+        let publicUrl = "/Contents('Applications')";
+        for (let i = 0; i < segments.length; i++) {
+            const testUrl = publicUrl + formatUrl("/Contents('{}')", segments[i]) + "?$top=0";
+            try {
+                await this.rest.get(testUrl);
+                publicUrl += formatUrl("/Contents('{}')", segments[i]);
+            } catch (error: any) {
+                if (error instanceof TM1RestException && error.statusCode === 404) {
+                    const privateTestUrl = publicUrl + formatUrl("/PrivateContents('{}')", segments[i]) + "?$top=0";
+                    try {
+                        await this.rest.get(privateTestUrl);
+                        return i;
+                    } catch (innerError: any) {
+                        if (innerError instanceof TM1RestException && innerError.statusCode === 404) {
+                            return -1;
+                        }
+                        throw innerError;
+                    }
+                }
+                throw error;
+            }
+        }
+        return segments.length;
+    }
+
+    private _buildPathUrl(segments: string[], privateBoundary?: number): string {
+        if (!segments.length) return '';
+
+        let url = '';
+        const boundary = privateBoundary ?? segments.length;
+
+        for (let i = 0; i < segments.length; i++) {
+            if (i < boundary) {
+                url += formatUrl("/Contents('{}')", segments[i]);
+            } else {
+                url += formatUrl("/PrivateContents('{}')", segments[i]);
+            }
+        }
+        return url;
+    }
+
+    private async _resolvePath(
+        path: string,
+        isPrivate: boolean = false,
+        useCache: boolean = false
+    ): Promise<{ baseUrl: string; inPrivateContext: boolean }> {
+        if (!path || !path.trim()) {
+            return { baseUrl: "/Contents('Applications')", inPrivateContext: isPrivate };
+        }
+
+        const segments = path.split('/').filter(s => s.trim().length > 0);
+
+        if (!isPrivate) {
+            const mid = segments.map(s => formatUrl("/Contents('{}')", s)).join('');
+            return { baseUrl: "/Contents('Applications')" + mid, inPrivateContext: false };
+        }
+
+        const cacheKey = path;
+        if (useCache && this.pathCache.has(cacheKey)) {
+            const boundary = this.pathCache.get(cacheKey)!;
+            const mid = this._buildPathUrl(segments, boundary);
+            return {
+                baseUrl: "/Contents('Applications')" + mid,
+                inPrivateContext: boundary < segments.length
+            };
+        }
+
+        // Try all-public first (optimistic)
+        try {
+            const publicUrl = "/Contents('Applications')" +
+                segments.map(s => formatUrl("/Contents('{}')", s)).join('') + "?$top=0";
+            await this.rest.get(publicUrl);
+            if (useCache) this.pathCache.set(cacheKey, segments.length);
+            return {
+                baseUrl: "/Contents('Applications')" +
+                    segments.map(s => formatUrl("/Contents('{}')", s)).join(''),
+                inPrivateContext: false
+            };
+        } catch (error: any) {
+            if (!(error instanceof TM1RestException && error.statusCode === 404)) {
+                throw error;
+            }
+        }
+
+        // Try all-private
+        try {
+            const privateUrl = "/Contents('Applications')" +
+                segments.map(s => formatUrl("/PrivateContents('{}')", s)).join('') + "?$top=0";
+            await this.rest.get(privateUrl);
+            if (useCache) this.pathCache.set(cacheKey, 0);
+            return {
+                baseUrl: "/Contents('Applications')" +
+                    segments.map(s => formatUrl("/PrivateContents('{}')", s)).join(''),
+                inPrivateContext: true
+            };
+        } catch (error: any) {
+            if (!(error instanceof TM1RestException && error.statusCode === 404)) {
+                throw error;
+            }
+        }
+
+        // Iterative boundary search
+        const boundary = await this._findPrivateBoundary(segments);
+        if (boundary === -1) {
+            throw new Error(`Application path not found: ${path}`);
+        }
+
+        if (useCache) this.pathCache.set(cacheKey, boundary);
+        const mid = this._buildPathUrl(segments, boundary);
+        return {
+            baseUrl: "/Contents('Applications')" + mid,
+            inPrivateContext: boundary < segments.length
+        };
+    }
+
     private parseApplicationType(applicationType: string | ApplicationTypes): ApplicationTypes {
         if (typeof applicationType === 'string') {
             const upper = applicationType.toUpperCase();
@@ -306,6 +567,17 @@ export class ApplicationService extends ObjectService {
             .split('/')
             .filter(segment => segment.trim().length > 0)
             .map(segment => formatUrl("/Contents('{}')", segment))
+            .join('');
+    }
+
+    private buildPrivatePathSegments(path: string): string {
+        if (!path || !path.trim()) {
+            return '';
+        }
+        return path
+            .split('/')
+            .filter(segment => segment.trim().length > 0)
+            .map(segment => formatUrl("/PrivateContents('{}')", segment))
             .join('');
     }
 

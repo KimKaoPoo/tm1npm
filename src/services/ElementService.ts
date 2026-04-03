@@ -415,6 +415,21 @@ export class ElementService extends ObjectService {
     }
 
     /**
+     * Add multiple element attributes in bulk
+     */
+    public async addElementAttributes(
+        dimensionName: string,
+        hierarchyName: string,
+        elementAttributes: ElementAttribute[]
+    ): Promise<AxiosResponse> {
+        const url = formatUrl(
+            "/Dimensions('{}')/Hierarchies('{}')/ElementAttributes",
+            dimensionName, hierarchyName);
+        const body = elementAttributes.map(ea => ea.bodyAsDict);
+        return await this.rest.post(url, JSON.stringify(body));
+    }
+
+    /**
      * Delete multiple elements in bulk
      */
     public async deleteElements(
