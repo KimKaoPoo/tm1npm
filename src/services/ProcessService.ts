@@ -1,6 +1,6 @@
 import { AxiosResponse } from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { RestService } from './RestService';
+import { RequestOptions, RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { Process } from '../objects/Process';
 import { ProcessDebugBreakpoint, BreakPointType, HitMode } from '../objects/ProcessDebugBreakpoint';
@@ -208,9 +208,9 @@ export class ProcessService extends ObjectService {
             }));
         }
 
-        const config: any = {};
+        const config: RequestOptions = {};
         if (timeout) {
-            config.timeout = timeout * 1000;
+            config.timeout = timeout;
         }
 
         return await this.rest.post(url, JSON.stringify(body), config);
@@ -249,7 +249,7 @@ export class ProcessService extends ObjectService {
             const response = await this.rest.retrieve_async_response(asyncId);
             // TODO: tm1py handles TM1 < v11 binary-wrapped responses via
             // build_response_from_binary_response. Add support if needed.
-            return this._executeWithReturnParseResponse(response);
+            return this._executeWithReturnParseResponse(response.data);
         } catch (error: any) {
             // Return null for HTTP 202 (accepted/pending) or 404 (not found yet)
             const status = error?.status ?? error?.response?.status;
@@ -681,9 +681,9 @@ export class ProcessService extends ObjectService {
             }));
         }
 
-        const config: any = {};
+        const config: RequestOptions = {};
         if (timeout) {
-            config.timeout = timeout * 1000;
+            config.timeout = timeout;
         }
 
         const response = await this.rest.post(url, JSON.stringify(body), config);
