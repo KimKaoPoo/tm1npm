@@ -28,6 +28,9 @@ export interface RestServiceConfig {
     timeout?: number;
     cancelAtTimeout?: boolean;
     asyncRequestsMode?: boolean;
+    asyncPollingInitialDelay?: number;
+    asyncPollingMaxDelay?: number;
+    asyncPollingBackoffFactor?: number;
     connectionPoolSize?: number;
     poolConnections?: number;
     instance?: string;
@@ -39,6 +42,15 @@ export interface RestServiceConfig {
     apiKey?: string;
     accessToken?: string;
     tenant?: string;
+}
+
+export interface RequestOptions extends Omit<AxiosRequestConfig, 'timeout'> {
+    asyncRequestsMode?: boolean;
+    returnAsyncId?: boolean;
+    timeout?: number;
+    cancelAtTimeout?: boolean;
+    idempotent?: boolean;
+    verifyResponse?: boolean;
 }
 
 export class RestService {
@@ -59,6 +71,12 @@ export class RestService {
     private sandboxName?: string;
     private isConnected: boolean = false;
     private _serverVersion?: string;
+    private _asyncRequestsMode: boolean;
+    private _cancelAtTimeout: boolean;
+    private _timeout: number;
+    private _asyncPollingInitialDelay: number;
+    private _asyncPollingMaxDelay: number;
+    private _asyncPollingBackoffFactor: number;
 
     public get version(): string | undefined {
         return this._serverVersion;
@@ -66,6 +84,12 @@ export class RestService {
 
     constructor(config: RestServiceConfig) {
         this.config = { ...config };
+        this._asyncRequestsMode = config.asyncRequestsMode ?? false;
+        this._cancelAtTimeout = config.cancelAtTimeout ?? false;
+        this._timeout = config.timeout ?? 60;
+        this._asyncPollingInitialDelay = config.asyncPollingInitialDelay ?? 0.1;
+        this._asyncPollingMaxDelay = config.asyncPollingMaxDelay ?? 1.0;
+        this._asyncPollingBackoffFactor = config.asyncPollingBackoffFactor ?? 2.0;
         this.setupAxiosInstance();
     }
 
@@ -74,7 +98,7 @@ export class RestService {
         
         this.axiosInstance = axios.create({
             baseURL,
-            timeout: (this.config.timeout || 60) * 1000,
+            timeout: this._timeout * 1000,
             headers: {
                 ...RestService.HEADERS,
                 ...(this.config.sessionContext && { 'TM1-SessionContext': this.config.sessionContext })
@@ -118,12 +142,12 @@ export class RestService {
                 const originalRequest = error.config;
 
                 // Handle timeout errors
-                if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+                if (error.code === 'ECONNABORTED' || error.message?.includes?.('timeout')) {
                     throw new TM1TimeoutException(`Request timeout: ${error.message}`);
                 }
 
                 // Handle authentication errors with retry
-                if (error.response?.status === 401 && !originalRequest._retry) {
+                if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
                     originalRequest._retry = true;
 
                     try {
@@ -144,7 +168,7 @@ export class RestService {
                 }
 
                 // Handle connection errors with retry
-                if (this.shouldRetryRequest(error) && this.canRetryRequest(originalRequest)) {
+                if (originalRequest && this.shouldRetryRequest(error) && this.canRetryRequest(originalRequest)) {
                     return this.retryRequest(originalRequest);
                 }
 
@@ -175,6 +199,9 @@ export class RestService {
      * Check if a request can be retried
      */
     private canRetryRequest(config: any): boolean {
+        if (config._idempotent === false) {
+            return false;
+        }
         // Don't retry if already retried maximum times
         config._retryCount = config._retryCount || 0;
         return config._retryCount < 3;
@@ -205,6 +232,172 @@ export class RestService {
         } catch {
             return `HTTP ${response.status}: ${response.statusText}`;
         }
+    }
+
+    private *waitTimeGenerator(timeout: number): Generator<number> {
+        let delay = this._asyncPollingInitialDelay;
+        let elapsed = 0;
+
+        if (timeout) {
+            while (elapsed < timeout) {
+                yield delay;
+                elapsed += delay;
+                delay = Math.min(delay * this._asyncPollingBackoffFactor, this._asyncPollingMaxDelay);
+            }
+        } else {
+            while (true) {
+                yield delay;
+                delay = Math.min(delay * this._asyncPollingBackoffFactor, this._asyncPollingMaxDelay);
+            }
+        }
+    }
+
+    private async _executeSyncRequest(
+        method: string,
+        url: string,
+        data?: any,
+        timeout?: number,
+        idempotent?: boolean,
+        axiosExtras?: Partial<AxiosRequestConfig>
+    ): Promise<AxiosResponse> {
+        const config: AxiosRequestConfig = {
+            method: method as AxiosRequestConfig['method'],
+            url,
+            data,
+            ...axiosExtras
+        };
+
+        if (timeout !== undefined) {
+            config.timeout = timeout * 1000;
+        }
+
+        (config as any)._idempotent = idempotent ?? false;
+
+        return this.axiosInstance.request(config);
+    }
+
+    private async _executeAsyncRequest(
+        method: string,
+        url: string,
+        data?: any,
+        timeout?: number,
+        cancelAtTimeout?: boolean,
+        returnAsyncId?: boolean,
+        idempotent?: boolean,
+        axiosExtras?: Partial<AxiosRequestConfig>
+    ): Promise<AxiosResponse | string> {
+        const preferValue = returnAsyncId ? 'respond-async' : 'respond-async,wait=55';
+        const config: AxiosRequestConfig = {
+            method: method as AxiosRequestConfig['method'],
+            url,
+            data,
+            ...axiosExtras,
+            headers: {
+                ...axiosExtras?.headers,
+                Prefer: preferValue
+            }
+        };
+
+        if (timeout !== undefined) {
+            config.timeout = timeout * 1000;
+        }
+
+        (config as any)._idempotent = idempotent ?? false;
+
+        const response = await this.axiosInstance.request(config);
+
+        if (response.status !== 202) {
+            return response;
+        }
+
+        const location = response.headers['location'] || response.headers['Location'] || '';
+        const asyncId = typeof location === 'string' ? location.split("'")[1] : undefined;
+
+        if (!asyncId) {
+            throw new TM1RestException(
+                `Async request returned 202 but no valid async ID in Location header: ${location}`
+            );
+        }
+
+        if (returnAsyncId) {
+            return asyncId;
+        }
+
+        return this._pollAsyncResponse(
+            asyncId,
+            timeout ?? this._timeout,
+            cancelAtTimeout ?? this._cancelAtTimeout
+        );
+    }
+
+    private async _pollAsyncResponse(
+        asyncId: string,
+        timeout: number,
+        cancelAtTimeout: boolean
+    ): Promise<AxiosResponse> {
+        for (const wait of this.waitTimeGenerator(timeout)) {
+            const response = await this.axiosInstance.get(`/_async('${asyncId}')`);
+
+            if (response.status === 200 || response.status === 201) {
+                return response;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, wait * 1000));
+        }
+
+        if (cancelAtTimeout) {
+            try {
+                await this.axiosInstance.delete(`/_async('${asyncId}')`);
+            } catch {
+                // Best-effort cancellation on timeout.
+            }
+        }
+
+        throw new TM1TimeoutException(
+            `Async operation ${asyncId} timed out after ${timeout} seconds`,
+            timeout
+        );
+    }
+
+    private async _request(
+        method: string,
+        url: string,
+        data?: any,
+        options?: RequestOptions
+    ): Promise<AxiosResponse | string> {
+        const timeout = options?.timeout ?? this._timeout;
+        const cancelAtTimeout = options?.cancelAtTimeout ?? this._cancelAtTimeout;
+        const asyncMode = options?.returnAsyncId || (options?.asyncRequestsMode ?? this._asyncRequestsMode);
+        const verifyResponse = options?.verifyResponse ?? true;
+        const idempotent = options?.idempotent ?? false;
+        const {
+            asyncRequestsMode,
+            returnAsyncId,
+            cancelAtTimeout: _cancelAtTimeout,
+            idempotent: _idempotent,
+            verifyResponse: _verifyResponse,
+            timeout: _timeout,
+            ...axiosExtras
+        } = options ?? {};
+
+        if (!verifyResponse) {
+            axiosExtras.validateStatus = () => true;
+        }
+
+        if (asyncMode) {
+            return this._executeAsyncRequest(
+                method,
+                url,
+                data,
+                timeout,
+                cancelAtTimeout,
+                returnAsyncId,
+                idempotent,
+                axiosExtras
+            );
+        }
+
+        return this._executeSyncRequest(method, url, data, timeout, idempotent, axiosExtras);
     }
 
     public async connect(): Promise<void> {
@@ -245,24 +438,34 @@ export class RestService {
         }
     }
 
-    public async get(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.get(url, config);
+    public async get(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
+    public async get(url: string, options?: RequestOptions): Promise<AxiosResponse>;
+    public async get(url: string, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('GET', url, undefined, { idempotent: true, ...options });
     }
 
-    public async post(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.post(url, data, config);
+    public async post(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
+    public async post(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
+    public async post(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('POST', url, data, options);
     }
 
-    public async patch(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.patch(url, data, config);
+    public async patch(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
+    public async patch(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
+    public async patch(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('PATCH', url, data, options);
     }
 
-    public async put(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.put(url, data, config);
+    public async put(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
+    public async put(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
+    public async put(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('PUT', url, data, options);
     }
 
-    public async delete(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.delete(url, config);
+    public async delete(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
+    public async delete(url: string, options?: RequestOptions): Promise<AxiosResponse>;
+    public async delete(url: string, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('DELETE', url, undefined, options);
     }
 
     public getSessionId(): string | undefined {
@@ -516,7 +719,7 @@ export class RestService {
             sessionId: this.sessionId,
             authMode: this.getAuthenticationMode(),
             baseUrl: this.buildBaseUrl(),
-            timeout: (this.config.timeout || 60) * 1000,
+            timeout: this._timeout,
             sandbox: this.sandboxName
         };
     }
@@ -738,47 +941,22 @@ export class RestService {
      * Cancel an async operation by ID
      */
     public async cancel_async_operation(async_id: string): Promise<void> {
-        try {
-            await this.post(`/AsyncOperations('${async_id}')/tm1.Cancel`);
-        } catch (error) {
-            throw new TM1RestException(`Failed to cancel async operation ${async_id}: ${error}`);
-        }
+        await this.delete(`/_async('${async_id}')`, { asyncRequestsMode: false });
     }
 
     /**
      * Retrieve async operation response
      */
-    public async retrieve_async_response(async_id: string): Promise<any> {
-        try {
-            const response = await this.get(`/AsyncOperations('${async_id}')`);
-            // Axios treats 2xx as success, but 202 means the operation is still running
-            if (response.status === 202) {
-                throw new TM1RestException('Async operation still running', 202, response);
-            }
-            return response.data;
-        } catch (error: any) {
-            if (error instanceof TM1RestException) {
-                throw error;
-            }
-            const status = error?.status ?? error?.response?.status;
-            throw new TM1RestException(
-                `Failed to retrieve async response ${async_id}: ${error}`,
-                status,
-                error?.response
-            );
-        }
+    public async retrieve_async_response(async_id: string): Promise<AxiosResponse> {
+        return this.get(`/_async('${async_id}')`, { asyncRequestsMode: false }) as Promise<AxiosResponse>;
     }
 
     /**
      * Get async operation status
      */
     public async get_async_operation_status(async_id: string): Promise<string> {
-        try {
-            const response = await this.get(`/AsyncOperations('${async_id}')/Status/$value`);
-            return response.data;
-        } catch (error) {
-            throw new TM1RestException(`Failed to get async operation status ${async_id}: ${error}`);
-        }
+        const response = await this.retrieve_async_response(async_id);
+        return response.data?.Status || 'Unknown';
     }
 
     /**
@@ -787,29 +965,10 @@ export class RestService {
     public async wait_for_async_operation(
         async_id: string,
         timeout_seconds: number = 300,
-        poll_interval_seconds: number = 1
+        cancel_at_timeout: boolean = false
     ): Promise<any> {
-        const start_time = Date.now();
-        const timeout_ms = timeout_seconds * 1000;
-        const poll_interval_ms = poll_interval_seconds * 1000;
-
-        while (Date.now() - start_time < timeout_ms) {
-            const status = await this.get_async_operation_status(async_id);
-
-            if (status === 'Completed' || status === 'CompletedSuccessfully') {
-                return await this.retrieve_async_response(async_id);
-            }
-
-            if (status === 'Failed' || status === 'CompletedWithError') {
-                const response = await this.retrieve_async_response(async_id);
-                throw new TM1RestException(`Async operation failed: ${JSON.stringify(response)}`);
-            }
-
-            // Wait before polling again
-            await new Promise(resolve => setTimeout(resolve, poll_interval_ms));
-        }
-
-        throw new TM1TimeoutException(`Async operation ${async_id} timed out after ${timeout_seconds} seconds`);
+        const response = await this._pollAsyncResponse(async_id, timeout_seconds, cancel_at_timeout);
+        return response.data;
     }
 
     /**

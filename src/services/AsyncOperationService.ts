@@ -115,7 +115,7 @@ export class AsyncOperationService {
 
         // Poll TM1 server for updated status
         try {
-            const url = formatUrl("/AsyncOperations('{}')", operationId);
+            const url = formatUrl("/_async('{}')", operationId);
             const response = await this.rest.get(url);
             const serverStatus = this.mapServerStatus(response.data.Status);
 
@@ -179,8 +179,8 @@ export class AsyncOperationService {
 
         try {
             // Try to cancel on server if supported
-            const url = formatUrl("/AsyncOperations('{}')/Cancel", operationId);
-            await this.rest.post(url, {});
+            const url = formatUrl("/_async('{}')", operationId);
+            await this.rest.delete(url);
         } catch (error) {
             // If server doesn't support cancellation, just mark as cancelled locally
         }
