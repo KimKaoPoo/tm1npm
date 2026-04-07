@@ -460,8 +460,10 @@ describe('ProcessService Tests', () => {
     describe('Process Async Polling', () => {
         test('pollExecuteWithReturn should return parsed result on success', async () => {
             (mockRestService as any).retrieve_async_response = jest.fn().mockResolvedValue({
-                ProcessExecuteStatusCode: 'CompletedSuccessfully',
-                ErrorLogFile: null
+                data: {
+                    ProcessExecuteStatusCode: 'CompletedSuccessfully',
+                    ErrorLogFile: null
+                }
             });
 
             const result = await processService.pollExecuteWithReturn('async-001');
@@ -472,8 +474,10 @@ describe('ProcessService Tests', () => {
 
         test('pollExecuteWithReturn should return error log file when present', async () => {
             (mockRestService as any).retrieve_async_response = jest.fn().mockResolvedValue({
-                ProcessExecuteStatusCode: 'CompletedWithMessages',
-                ErrorLogFile: { Filename: 'TM1ProcessError_20240101.log' }
+                data: {
+                    ProcessExecuteStatusCode: 'CompletedWithMessages',
+                    ErrorLogFile: { Filename: 'TM1ProcessError_20240101.log' }
+                }
             });
 
             const result = await processService.pollExecuteWithReturn('async-002');
