@@ -261,7 +261,7 @@ export class RestService {
         if (!address || !tenant || !database) {
             throw new Error("'address', 'tenant' and 'database' must be provided to connect to TM1 > v12 in IBM Cloud");
         }
-        if (ssl === false) {
+        if (!ssl) {
             throw new Error("'ssl' must be true to connect to TM1 > v12 in IBM Cloud");
         }
         const t = encodeURIComponent(tenant);
