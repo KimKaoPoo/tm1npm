@@ -609,14 +609,19 @@ describe('RestService Tests', () => {
                 expect(instance.get).toHaveBeenCalledTimes(1);
             });
 
-            test('failed /ActiveUser/Groups sets all 4 to false and caches', async () => {
+            test('failed /ActiveUser/Groups returns false transiently without caching', async () => {
+                const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
                 const { svc, instance } = makeSvc({ user: 'alice' });
-                instance.get.mockRejectedValue(new Error('network down'));
+                instance.get.mockRejectedValueOnce(new Error('network down'));
                 expect(await svc.is_admin()).toBe(false);
-                expect(await svc.is_data_admin()).toBe(false);
-                expect(await svc.is_security_admin()).toBe(false);
-                expect(await svc.is_ops_admin()).toBe(false);
-                expect(instance.get).toHaveBeenCalledTimes(1);
+                // Cache must NOT be poisoned by the transient failure.
+                expect((svc as any)._isAdmin).toBeUndefined();
+                expect((svc as any)._rolesLoading).toBeUndefined();
+
+                instance.get.mockResolvedValueOnce(createMockResponse({ value: [{ Name: 'ADMIN' }] }));
+                expect(await svc.is_admin()).toBe(true);
+                expect(instance.get).toHaveBeenCalledTimes(2);
+                warnSpy.mockRestore();
             });
         });
 

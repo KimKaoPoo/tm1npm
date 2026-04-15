@@ -769,38 +769,44 @@ export class RestService {
                 if (this._isDataAdmin === undefined)     this._isDataAdmin     = groups.has('ADMIN') || groups.has('DataAdmin');
                 if (this._isSecurityAdmin === undefined) this._isSecurityAdmin = groups.has('ADMIN') || groups.has('SecurityAdmin');
                 if (this._isOpsAdmin === undefined)      this._isOpsAdmin      = groups.has('ADMIN') || groups.has('OperationsAdmin');
-            } catch {
-                if (this._isAdmin === undefined)         this._isAdmin = false;
-                if (this._isDataAdmin === undefined)     this._isDataAdmin = false;
-                if (this._isSecurityAdmin === undefined) this._isSecurityAdmin = false;
-                if (this._isOpsAdmin === undefined)      this._isOpsAdmin = false;
+            } catch (err) {
+                // Transient errors must not poison the cache: leave _is*Admin undefined so the
+                // next call retries the fetch. Clear _rolesLoading so the next call doesn't
+                // await this same already-failed promise.
+                console.warn('Failed to load /ActiveUser/Groups; admin role flags will retry on next call:', err);
+                this._rolesLoading = undefined;
+                throw err;
             }
         })();
         return this._rolesLoading;
     }
 
+    private async tryLoadActiveUserRoles(): Promise<void> {
+        try { await this.loadActiveUserRoles(); } catch { /* transient — caller returns false */ }
+    }
+
     /** Check if current user is admin (cached, case/space-insensitive). */
     public async is_admin(): Promise<boolean> {
-        if (this._isAdmin === undefined) await this.loadActiveUserRoles();
-        return this._isAdmin!;
+        if (this._isAdmin === undefined) await this.tryLoadActiveUserRoles();
+        return this._isAdmin ?? false;
     }
 
     /** Check if current user is data admin (cached, case/space-insensitive). */
     public async is_data_admin(): Promise<boolean> {
-        if (this._isDataAdmin === undefined) await this.loadActiveUserRoles();
-        return this._isDataAdmin!;
+        if (this._isDataAdmin === undefined) await this.tryLoadActiveUserRoles();
+        return this._isDataAdmin ?? false;
     }
 
     /** Check if current user is ops admin (cached, case/space-insensitive). */
     public async is_ops_admin(): Promise<boolean> {
-        if (this._isOpsAdmin === undefined) await this.loadActiveUserRoles();
-        return this._isOpsAdmin!;
+        if (this._isOpsAdmin === undefined) await this.tryLoadActiveUserRoles();
+        return this._isOpsAdmin ?? false;
     }
 
     /** Check if current user is security admin (cached, case/space-insensitive). */
     public async is_security_admin(): Promise<boolean> {
-        if (this._isSecurityAdmin === undefined) await this.loadActiveUserRoles();
-        return this._isSecurityAdmin!;
+        if (this._isSecurityAdmin === undefined) await this.tryLoadActiveUserRoles();
+        return this._isSecurityAdmin ?? false;
     }
 
     /**
@@ -818,7 +824,8 @@ export class RestService {
         if (typeof value === 'boolean') return value;
         if (typeof value === 'number') return Boolean(value);
         if (typeof value === 'string') return value.replace(/\s+/g, '').toLowerCase() === 'true';
-        throw new Error(`Invalid argument: '${value}'. Must be of type 'bool', 'number', or 'str'`);
+        const rendered = (() => { try { return JSON.stringify(value); } catch { return String(value); } })();
+        throw new Error(`Invalid argument: '${rendered}'. Must be of type 'bool', 'number', or 'str'`);
     }
 
     /**
