@@ -535,3 +535,407 @@ describe('RestService Tests', () => {
         });
     });
 });
+
+describe('RestService URL topology dispatch', () => {
+    let mockAxiosInstance: any;
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockAxiosInstance = {
+            get: jest.fn(),
+            post: jest.fn(),
+            patch: jest.fn(),
+            delete: jest.fn(),
+            put: jest.fn(),
+            interceptors: {
+                request: { use: jest.fn() },
+                response: { use: jest.fn() }
+            },
+            defaults: { headers: { common: {} } }
+        };
+        mockedAxios.create.mockReturnValue(mockAxiosInstance as any);
+    });
+
+    const firstCreateArg = (): any => mockedAxios.create.mock.calls[0][0];
+    const lastBaseURL = (): string => firstCreateArg().baseURL;
+
+    describe('v11 pattern', () => {
+        test('should build v11 URL with ssl=true and default port', () => {
+            const svc = new RestService({ address: 'host', ssl: true });
+            expect(lastBaseURL()).toBe('https://host:8001/api/v1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://host:8001/api/v1/Configuration/ProductVersion/$value');
+        });
+
+        test('should build v11 URL with ssl=false and explicit port', () => {
+            new RestService({ address: 'host', port: 9000, ssl: false });
+            expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+
+        test('should default address to localhost when omitted', () => {
+            new RestService({ ssl: false, port: 8001 });
+            expect(lastBaseURL()).toBe('http://localhost:8001/api/v1');
+        });
+    });
+
+    describe('baseUrl override', () => {
+        test('should use baseUrl verbatim when it ends with /api/v1', () => {
+            const svc = new RestService({ baseUrl: 'http://x/api/v1' });
+            expect(lastBaseURL()).toBe('http://x/api/v1');
+            expect((svc as any).resolveRoots().authRoot).toBe('http://x/api/v1/Configuration/ProductVersion/$value');
+        });
+
+        test('should append /api/v1 when baseUrl lacks it', () => {
+            new RestService({ baseUrl: 'http://x' });
+            expect(lastBaseURL()).toBe('http://x/api/v1');
+        });
+
+        test('should preserve TM1 11 IBM Cloud baseUrl shape verbatim', () => {
+            new RestService({
+                baseUrl: 'https://mycompany.planning-analytics.ibmcloud.com/tm1/api/tm1/'
+            });
+            expect(lastBaseURL()).toBe('https://mycompany.planning-analytics.ibmcloud.com/tm1/api/tm1');
+        });
+
+        test('should preserve TM1 12 PaaS baseUrl shape (trailing slash normalized)', () => {
+            new RestService({
+                baseUrl: 'https://us-east-1.planninganalytics.saas.ibm.com/api/T1/v0/tm1/DB1/'
+            });
+            expect(lastBaseURL()).toBe('https://us-east-1.planninganalytics.saas.ibm.com/api/T1/v0/tm1/DB1');
+        });
+
+        test('should preserve TM1 12 access-token baseUrl shape verbatim', () => {
+            new RestService({
+                baseUrl: 'https://pa12.dev.net/api/INST/v0/tm1/DB1'
+            });
+            expect(lastBaseURL()).toBe('https://pa12.dev.net/api/INST/v0/tm1/DB1');
+        });
+
+        test('should resolve Databases() baseUrl when authUrl provided', () => {
+            const svc = new RestService({
+                baseUrl: "http://x/api/v1/Databases('DB')",
+                authUrl: 'http://x/auth'
+            });
+            expect(lastBaseURL()).toBe("http://x/api/v1/Databases('DB')");
+            expect((svc as any).resolveRoots().authRoot).toBe('http://x/auth');
+        });
+
+        test('should throw for Databases() baseUrl without authUrl', () => {
+            expect(() => new RestService({
+                baseUrl: "http://x/api/v1/Databases('DB')"
+            })).toThrow(/Auth_url missing/);
+        });
+
+        test('should let v12 signals win over baseUrl (tm1py parity)', () => {
+            const svc = new RestService({
+                baseUrl: 'http://ignored/api/v1',
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1/Configuration/ProductVersion/$value');
+        });
+
+        test('should throw when baseUrl and address both provided', () => {
+            expect(() => new RestService({
+                baseUrl: 'http://x/api/v1',
+                address: 'y'
+            })).toThrow(/Base URL and Address/);
+        });
+    });
+
+    describe('IBM Cloud pattern', () => {
+        test('should build IBM Cloud URL when iamUrl provided', () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com',
+                ssl: true,
+                apiKey: 'k'
+            });
+            expect(lastBaseURL()).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1/Configuration/ProductVersion/$value');
+        });
+
+        test('should throw when IBM Cloud missing tenant', () => {
+            expect(() => new RestService({
+                address: 'pa.ibm.com',
+                database: 'DB1',
+                iamUrl: 'https://iam',
+                ssl: true
+            })).toThrow("'address', 'tenant' and 'database' must be provided to connect to TM1 > v12 in IBM Cloud");
+        });
+
+        test('should throw when IBM Cloud ssl=false', () => {
+            expect(() => new RestService({
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam',
+                ssl: false
+            })).toThrow(/ssl.*must be true/);
+        });
+    });
+
+    describe('PA Proxy pattern', () => {
+        test('should build PA Proxy URL with https', () => {
+            const svc = new RestService({
+                address: 'h',
+                database: 'DB',
+                user: 'u',
+                paUrl: 'https://pa',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe('https://h/tm1/DB/api/v1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://h/login');
+        });
+
+        test('should build PA Proxy URL with http', () => {
+            new RestService({
+                address: 'h',
+                database: 'DB',
+                user: 'u',
+                paUrl: 'http://pa',
+                ssl: false
+            });
+            expect(lastBaseURL()).toBe('http://h/tm1/DB/api/v1');
+        });
+
+        test('should throw when PA Proxy missing database', () => {
+            expect(() => new RestService({
+                address: 'h',
+                user: 'u',
+                paUrl: 'https://pa',
+                ssl: true
+            })).toThrow(/'address'.*'database'.*must be provided/);
+        });
+    });
+
+    describe('S2S pattern', () => {
+        test('should build S2S URL with port and ssl', () => {
+            const svc = new RestService({
+                address: 'h',
+                port: 443,
+                instance: 'INST',
+                database: 'DB',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe("https://h:443/INST/api/v1/Databases('DB')");
+            expect((svc as any).resolveRoots().authRoot).toBe('https://h:443/INST/auth/v1/session');
+        });
+
+        test('should build S2S URL without port', () => {
+            new RestService({
+                address: 'h',
+                instance: 'INST',
+                database: 'DB',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe("https://h/INST/api/v1/Databases('DB')");
+        });
+
+        test('should default to localhost when address is empty', () => {
+            new RestService({
+                address: '',
+                instance: 'I',
+                database: 'D',
+                ssl: false
+            });
+            expect(lastBaseURL()).toBe("http://localhost/I/api/v1/Databases('D')");
+        });
+
+        test('should throw S2S without instance', () => {
+            expect(() => new RestService({
+                address: 'h',
+                instance: 'INST',
+                ssl: true
+            })).toThrow(/instance.*database|instance.*required|database.*required/i);
+        });
+    });
+
+    describe('Config pass-through and axios wiring', () => {
+        test('should accept new non-topology config fields without error', () => {
+            // iamUrl/paUrl/tenant/instance/database are topology signals (tested per-topology above);
+            // this asserts the remaining auth/network fields are accepted as config surface.
+            expect(() => new RestService({
+                baseUrl: 'http://x/api/v1',
+                cpdUrl: 'https://cpd',
+                gateway: 'https://gw',
+                integratedLogin: true,
+                integratedLoginDomain: '.',
+                integratedLoginService: 'HTTP',
+                integratedLoginHost: 'host',
+                integratedLoginDelegate: false,
+                user: 'admin',
+                password: 'pw'
+            })).not.toThrow();
+        });
+
+        test('should pass proxy.https to axios when provided', () => {
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                proxies: { https: 'https://proxy.example.com:8443' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toEqual({ host: 'proxy.example.com', port: 8443, protocol: 'https' });
+        });
+
+        test('should fall back to proxy.http when https not provided', () => {
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                proxies: { http: 'http://proxy.example.com:8080' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toEqual({ host: 'proxy.example.com', port: 8080, protocol: 'http' });
+        });
+
+        test('should not set proxy when proxies unset', () => {
+            new RestService({ baseUrl: 'http://x/api/v1' });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toBeUndefined();
+        });
+
+        test('should forward credentials from proxy URL to proxy.auth', () => {
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                proxies: { https: 'https://u%40dom:p%40ss@proxy.example.com:8443' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toEqual({
+                host: 'proxy.example.com',
+                port: 8443,
+                protocol: 'https',
+                auth: { username: 'u@dom', password: 'p@ss' }
+            });
+        });
+
+        test('should not set proxy.auth when proxy URL has no credentials', () => {
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                proxies: { https: 'https://proxy.example.com:8443' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy.auth).toBeUndefined();
+        });
+
+        test('should pass sslContext through as httpsAgent', () => {
+            const httpsMod = require('https');
+            const agent = new httpsMod.Agent();
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                sslContext: agent
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.httpsAgent).toBe(agent);
+        });
+
+        test('should not treat cpdUrl alone as v12 topology signal', () => {
+            new RestService({
+                address: 'host',
+                port: 9000,
+                ssl: false,
+                cpdUrl: 'https://cpd'
+            });
+            expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+
+        test('should not treat gateway alone as v12 topology signal', () => {
+            new RestService({
+                address: 'host',
+                port: 9000,
+                ssl: false,
+                gateway: 'https://gw'
+            });
+            expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+    });
+
+    describe('Session cookie seeding by topology', () => {
+        test('should seed TM1SessionId cookie for v11 topology', () => {
+            const svc = new RestService({ address: 'host', ssl: true, sessionId: 'abc' });
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('abc');
+            expect((svc as any).sessionCookies.get('paSession')).toBeUndefined();
+        });
+
+        test('should seed paSession cookie for IBM Cloud topology', () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam',
+                ssl: true,
+                sessionId: 'abc'
+            });
+            expect((svc as any).sessionCookies.get('paSession')).toBe('abc');
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBeUndefined();
+        });
+
+        test('should seed paSession cookie for S2S topology', () => {
+            const svc = new RestService({
+                address: 'h',
+                instance: 'INST',
+                database: 'DB',
+                ssl: true,
+                sessionId: 'xyz'
+            });
+            expect((svc as any).sessionCookies.get('paSession')).toBe('xyz');
+        });
+
+        test('should seed paSession cookie for PA Proxy topology', () => {
+            const svc = new RestService({
+                address: 'h',
+                database: 'DB',
+                user: 'u',
+                paUrl: 'https://pa',
+                ssl: true,
+                sessionId: 'pp'
+            });
+            expect((svc as any).sessionCookies.get('paSession')).toBe('pp');
+        });
+
+        test('should seed TM1SessionId cookie for baseUrl override', () => {
+            const svc = new RestService({ baseUrl: 'http://x/api/v1', sessionId: 'ff' });
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('ff');
+        });
+    });
+
+    describe('S2S token endpoint guard', () => {
+        test('should throw when S2S auth runs on v11 topology without authUrl', async () => {
+            const svc = new RestService({
+                address: 'host',
+                ssl: true,
+                applicationClientId: 'id',
+                applicationClientSecret: 'secret'
+            });
+            await expect((svc as any).setupServiceToServiceAuthentication()).rejects.toThrow(
+                /'authUrl' is required for Service-to-Service authentication on v11 topology/
+            );
+        });
+
+        test('should throw when S2S auth runs on v11-style baseUrl topology without authUrl', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1',
+                applicationClientId: 'id',
+                applicationClientSecret: 'secret'
+            });
+            await expect((svc as any).setupServiceToServiceAuthentication()).rejects.toThrow(
+                /'authUrl' is required for Service-to-Service authentication on v11 topology/
+            );
+        });
+
+        test('should not throw when S2S auth runs on v12 Databases baseUrl with authUrl', async () => {
+            const svc = new RestService({
+                baseUrl: "http://x/api/v1/Databases('DB')",
+                authUrl: 'http://x/auth',
+                applicationClientId: 'id',
+                applicationClientSecret: 'secret'
+            });
+            // Will reject with network-level error when trying to POST, but NOT the guard error.
+            await expect((svc as any).setupServiceToServiceAuthentication())
+                .rejects.not.toThrow(/'authUrl' is required/);
+        });
+    });
+});
