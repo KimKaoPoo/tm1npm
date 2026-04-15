@@ -533,5 +533,187 @@ describe('RestService Tests', () => {
                 expect(svc.isLoggedIn()).toBe(true);
             });
         });
+
+        describe('Admin role checks (issue #81)', () => {
+            test('ADMIN username fast-path seeds all four caches at construction', () => {
+                const { svc, instance } = makeSvc({ user: 'ADMIN' });
+                expect(svc.isAdmin).toBe(true);
+                expect(svc.isDataAdmin).toBe(true);
+                expect(svc.isSecurityAdmin).toBe(true);
+                expect(svc.isOpsAdmin).toBe(true);
+                expect(instance.get).not.toHaveBeenCalled();
+            });
+
+            test('ADMIN fast-path is case-and-space insensitive', () => {
+                expect(makeSvc({ user: 'admin' }).svc.isAdmin).toBe(true);
+                expect(makeSvc({ user: ' A D M I N ' }).svc.isAdmin).toBe(true);
+                expect(makeSvc({ user: 'Admin' }).svc.isAdmin).toBe(true);
+            });
+
+            test('sync isAdmin getter returns false before roles loaded', () => {
+                const { svc } = makeSvc({ user: 'alice' });
+                expect(svc.isAdmin).toBe(false);
+                expect(svc.isDataAdmin).toBe(false);
+                expect(svc.isSecurityAdmin).toBe(false);
+                expect(svc.isOpsAdmin).toBe(false);
+            });
+
+            test('is_admin loads roles once then caches across all methods', async () => {
+                const { svc, instance } = makeSvc({ user: 'alice' });
+                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'ADMIN' }] }));
+                expect(await svc.is_admin()).toBe(true);
+                expect(await svc.is_data_admin()).toBe(true);
+                expect(await svc.is_security_admin()).toBe(true);
+                expect(await svc.is_ops_admin()).toBe(true);
+                expect(instance.get).toHaveBeenCalledTimes(1);
+            });
+
+            test('is_admin matches group name case/space insensitively', async () => {
+                const { svc, instance } = makeSvc({ user: 'alice' });
+                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'A D M I N' }] }));
+                expect(await svc.is_admin()).toBe(true);
+                expect(svc.isAdmin).toBe(true);
+            });
+
+            test('is_data_admin matches "Data Admin" with spaces', async () => {
+                const { svc, instance } = makeSvc({ user: 'alice' });
+                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'Data Admin' }] }));
+                expect(await svc.is_data_admin()).toBe(true);
+                expect(await svc.is_admin()).toBe(false);
+            });
+
+            test('is_security_admin maps to SecurityAdmin group only', async () => {
+                const { svc, instance } = makeSvc({ user: 'alice' });
+                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'SecurityAdmin' }] }));
+                expect(await svc.is_security_admin()).toBe(true);
+                expect(await svc.is_ops_admin()).toBe(false);
+            });
+
+            test('is_ops_admin maps to OperationsAdmin group only', async () => {
+                const { svc, instance } = makeSvc({ user: 'alice' });
+                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'OperationsAdmin' }] }));
+                expect(await svc.is_ops_admin()).toBe(true);
+                expect(await svc.is_security_admin()).toBe(false);
+            });
+
+            test('concurrent is_*_admin() calls share a single HTTP request', async () => {
+                const { svc, instance } = makeSvc({ user: 'alice' });
+                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'ADMIN' }] }));
+                const [a, b, c, d] = await Promise.all([
+                    svc.is_admin(),
+                    svc.is_data_admin(),
+                    svc.is_security_admin(),
+                    svc.is_ops_admin()
+                ]);
+                expect([a, b, c, d]).toEqual([true, true, true, true]);
+                expect(instance.get).toHaveBeenCalledTimes(1);
+            });
+
+            test('failed /ActiveUser/Groups sets all 4 to false and caches', async () => {
+                const { svc, instance } = makeSvc({ user: 'alice' });
+                instance.get.mockRejectedValue(new Error('network down'));
+                expect(await svc.is_admin()).toBe(false);
+                expect(await svc.is_data_admin()).toBe(false);
+                expect(await svc.is_security_admin()).toBe(false);
+                expect(await svc.is_ops_admin()).toBe(false);
+                expect(instance.get).toHaveBeenCalledTimes(1);
+            });
+        });
+
+        describe('Static utility methods (issue #81)', () => {
+            test('translate_to_boolean handles bool/number/string', () => {
+                expect(RestService.translate_to_boolean(true)).toBe(true);
+                expect(RestService.translate_to_boolean(false)).toBe(false);
+                expect(RestService.translate_to_boolean(1)).toBe(true);
+                expect(RestService.translate_to_boolean(0)).toBe(false);
+                expect(RestService.translate_to_boolean('true')).toBe(true);
+                expect(RestService.translate_to_boolean('True')).toBe(true);
+                expect(RestService.translate_to_boolean('FALSE')).toBe(false);
+                expect(RestService.translate_to_boolean(' T R U E ')).toBe(true);
+                expect(RestService.translate_to_boolean('yes')).toBe(false);
+                expect(RestService.translate_to_boolean('')).toBe(false);
+            });
+
+            test('translate_to_boolean throws on unsupported types', () => {
+                expect(() => RestService.translate_to_boolean({} as any)).toThrow();
+                expect(() => RestService.translate_to_boolean(null as any)).toThrow();
+                expect(() => RestService.translate_to_boolean(undefined as any)).toThrow();
+            });
+
+            test('b64_decode_password round-trips a UTF-8 string', () => {
+                const encoded = Buffer.from('s3cr3t', 'utf-8').toString('base64');
+                expect(RestService.b64_decode_password(encoded)).toBe('s3cr3t');
+                expect(RestService.b64_decode_password('')).toBe('');
+            });
+        });
+
+        describe('add_compact_json_header (issue #81)', () => {
+            test('inserts tm1.compact=v0 at position 1 and returns prior Accept value', () => {
+                const { svc, instance } = makeSvc();
+                instance.defaults.headers.common['Accept'] = 'application/json;odata.metadata=none,text/plain';
+                const prev = svc.add_compact_json_header();
+                expect(prev).toBe('application/json;odata.metadata=none,text/plain');
+                const after = instance.defaults.headers.common['Accept'] as string;
+                expect(after.split(';')[1]).toBe('tm1.compact=v0');
+                expect(after).toBe('application/json;tm1.compact=v0;odata.metadata=none,text/plain');
+            });
+
+            test('falls back to class HEADERS Accept when axios default is unset', () => {
+                const { svc, instance } = makeSvc();
+                delete instance.defaults.headers.common['Accept'];
+                const prev = svc.add_compact_json_header();
+                expect(prev).toContain('application/json');
+                expect(instance.defaults.headers.common['Accept']).toContain('tm1.compact=v0');
+            });
+        });
+
+        describe('Reconnect configuration (issue #81)', () => {
+            test('applies tm1py-compatible defaults', () => {
+                const { svc } = makeSvc();
+                expect((svc as any).reConnectOnSessionTimeout).toBe(true);
+                expect((svc as any).reConnectOnRemoteDisconnect).toBe(true);
+                expect((svc as any).remoteDisconnectMaxRetries).toBe(3);
+                expect((svc as any).remoteDisconnectDelay).toBe(1);
+                expect((svc as any).remoteDisconnectMaxDelay).toBe(30);
+            });
+
+            test('honors custom overrides', () => {
+                const { svc } = makeSvc({
+                    reConnectOnSessionTimeout: false,
+                    reConnectOnRemoteDisconnect: false,
+                    remoteDisconnectMaxRetries: 5,
+                    remoteDisconnectDelay: 2,
+                    remoteDisconnectMaxDelay: 60
+                });
+                expect((svc as any).reConnectOnSessionTimeout).toBe(false);
+                expect((svc as any).reConnectOnRemoteDisconnect).toBe(false);
+                expect((svc as any).remoteDisconnectMaxRetries).toBe(5);
+                expect((svc as any).remoteDisconnectDelay).toBe(2);
+                expect((svc as any).remoteDisconnectMaxDelay).toBe(60);
+            });
+
+            test('canRetryRequest honors remoteDisconnectMaxRetries', () => {
+                const { svc } = makeSvc({ remoteDisconnectMaxRetries: 1 });
+                const cfg: any = {};
+                expect((svc as any).canRetryRequest(cfg)).toBe(true);
+                cfg._retryCount = 1;
+                expect((svc as any).canRetryRequest(cfg)).toBe(false);
+            });
+
+            test('retryRequest caps delay at remoteDisconnectMaxDelay', async () => {
+                jest.useFakeTimers();
+                const { svc, instance } = makeSvc({ remoteDisconnectDelay: 1, remoteDisconnectMaxDelay: 2 });
+                const axiosCallable = jest.fn().mockResolvedValue({ data: 'ok' });
+                (svc as any).axiosInstance = Object.assign(axiosCallable, instance);
+                const cfg: any = { _retryCount: 5 }; // large exponential term triggers the cap
+                const promise = (svc as any).retryRequest(cfg);
+                // Delay should be capped at 2000ms (remoteDisconnectMaxDelay), not 2^5 * 1000 = 32000ms
+                await jest.advanceTimersByTimeAsync(2000);
+                await promise;
+                expect(cfg._retryCount).toBe(6);
+                expect(axiosCallable).toHaveBeenCalledWith(cfg);
+                jest.useRealTimers();
+            });
+        });
     });
 });

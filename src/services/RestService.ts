@@ -1,5 +1,6 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosRequestConfig } from 'axios';
 import { TM1RestException, TM1TimeoutException } from '../exceptions/TM1Exception';
+import { CaseAndSpaceInsensitiveSet, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
 
 export enum AuthenticationMode {
     BASIC = 1,
@@ -39,6 +40,11 @@ export interface RestServiceConfig {
     apiKey?: string;
     accessToken?: string;
     tenant?: string;
+    reConnectOnSessionTimeout?: boolean;
+    reConnectOnRemoteDisconnect?: boolean;
+    remoteDisconnectMaxRetries?: number;
+    remoteDisconnectDelay?: number;
+    remoteDisconnectMaxDelay?: number;
 }
 
 export class RestService {
@@ -62,12 +68,44 @@ export class RestService {
     private isConnected: boolean = false;
     private _serverVersion?: string;
 
+    private _isAdmin?: boolean;
+    private _isDataAdmin?: boolean;
+    private _isSecurityAdmin?: boolean;
+    private _isOpsAdmin?: boolean;
+    private _rolesLoading?: Promise<void>;
+
+    private reConnectOnSessionTimeout!: boolean;
+    private reConnectOnRemoteDisconnect!: boolean;
+    private remoteDisconnectMaxRetries!: number;
+    private remoteDisconnectDelay!: number;
+    private remoteDisconnectMaxDelay!: number;
+
     public get version(): string | undefined {
         return this._serverVersion;
     }
 
+    public get isAdmin(): boolean { return this._isAdmin ?? false; }
+    public get isDataAdmin(): boolean { return this._isDataAdmin ?? false; }
+    public get isSecurityAdmin(): boolean { return this._isSecurityAdmin ?? false; }
+    public get isOpsAdmin(): boolean { return this._isOpsAdmin ?? false; }
+
     constructor(config: RestServiceConfig) {
         this.config = { ...config };
+
+        this.reConnectOnSessionTimeout = config.reConnectOnSessionTimeout ?? true;
+        this.reConnectOnRemoteDisconnect = config.reConnectOnRemoteDisconnect ?? true;
+        this.remoteDisconnectMaxRetries = config.remoteDisconnectMaxRetries ?? 3;
+        this.remoteDisconnectDelay = config.remoteDisconnectDelay ?? 1;
+        this.remoteDisconnectMaxDelay = config.remoteDisconnectMaxDelay ?? 30;
+
+        // ADMIN username fast-path (tm1py RestService.py:173-177)
+        if (config.user && caseAndSpaceInsensitiveEquals(config.user, 'ADMIN')) {
+            this._isAdmin = true;
+            this._isDataAdmin = true;
+            this._isSecurityAdmin = true;
+            this._isOpsAdmin = true;
+        }
+
         this.setupAxiosInstance();
         if (this.config.sessionId) {
             // v12 paSession seeding via config is not yet modeled.
@@ -190,7 +228,8 @@ export class RestService {
 
                 // Handle authentication errors with retry. Guarded by this.isConnected so a 401
                 // during disconnect()'s tm1.Close POST cannot recurse back into reAuthenticate().
-                if (error.response?.status === 401 && !originalRequest._retry && this.isConnected) {
+                if (this.reConnectOnSessionTimeout && error.response?.status === 401
+                    && !originalRequest._retry && this.isConnected) {
                     originalRequest._retry = true;
 
                     try {
@@ -207,8 +246,9 @@ export class RestService {
                     }
                 }
 
-                // Handle connection errors with retry
-                if (this.shouldRetryRequest(error) && this.canRetryRequest(originalRequest)) {
+                // Handle connection errors with retry (gated by reConnectOnRemoteDisconnect)
+                if (this.reConnectOnRemoteDisconnect
+                    && this.shouldRetryRequest(error) && this.canRetryRequest(originalRequest)) {
                     return this.retryRequest(originalRequest);
                 }
 
@@ -241,18 +281,19 @@ export class RestService {
     private canRetryRequest(config: any): boolean {
         // Don't retry if already retried maximum times
         config._retryCount = config._retryCount || 0;
-        return config._retryCount < 3;
+        return config._retryCount < this.remoteDisconnectMaxRetries;
     }
 
     /**
-     * Retry a failed request with exponential backoff
+     * Retry a failed request with exponential backoff, capped by remoteDisconnectMaxDelay
      */
     private async retryRequest(config: any): Promise<any> {
-        config._retryCount = config._retryCount || 0;
-        config._retryCount++;
+        config._retryCount = (config._retryCount || 0) + 1;
 
-        const retryDelay = Math.pow(2, config._retryCount) * 1000; // Exponential backoff
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
+        const baseMs = this.remoteDisconnectDelay * 1000;
+        const capMs = this.remoteDisconnectMaxDelay * 1000;
+        const delay = Math.min(baseMs * Math.pow(2, config._retryCount - 1), capMs);
+        await new Promise(resolve => setTimeout(resolve, delay));
 
         return this.axiosInstance(config);
     }
@@ -710,55 +751,88 @@ export class RestService {
     }
 
     /**
-     * Check if current user is admin
+     * Load /ActiveUser/Groups once and populate all four admin role caches.
+     * Deduplicates concurrent callers via _rolesLoading so parallel is_*_admin()
+     * calls share a single HTTP request.
+     * Uses CaseAndSpaceInsensitiveSet to match group names (tm1py RestService.py:961-994).
      */
+    private loadActiveUserRoles(): Promise<void> {
+        if (this._rolesLoading) return this._rolesLoading;
+        this._rolesLoading = (async () => {
+            try {
+                const response = await this.get('/ActiveUser/Groups');
+                const groups = new CaseAndSpaceInsensitiveSet();
+                for (const g of (response.data.value || [])) {
+                    if (g && typeof g.Name === 'string') groups.add(g.Name);
+                }
+                if (this._isAdmin === undefined)         this._isAdmin         = groups.has('ADMIN');
+                if (this._isDataAdmin === undefined)     this._isDataAdmin     = groups.has('ADMIN') || groups.has('DataAdmin');
+                if (this._isSecurityAdmin === undefined) this._isSecurityAdmin = groups.has('ADMIN') || groups.has('SecurityAdmin');
+                if (this._isOpsAdmin === undefined)      this._isOpsAdmin      = groups.has('ADMIN') || groups.has('OperationsAdmin');
+            } catch {
+                if (this._isAdmin === undefined)         this._isAdmin = false;
+                if (this._isDataAdmin === undefined)     this._isDataAdmin = false;
+                if (this._isSecurityAdmin === undefined) this._isSecurityAdmin = false;
+                if (this._isOpsAdmin === undefined)      this._isOpsAdmin = false;
+            }
+        })();
+        return this._rolesLoading;
+    }
+
+    /** Check if current user is admin (cached, case/space-insensitive). */
     public async is_admin(): Promise<boolean> {
-        try {
-            const response = await this.get('/ActiveUser/Groups');
-            const groups = response.data.value || [];
-            return groups.some((g: any) => g.Name === 'ADMIN');
-        } catch (error) {
-            return false;
-        }
+        if (this._isAdmin === undefined) await this.loadActiveUserRoles();
+        return this._isAdmin!;
     }
 
-    /**
-     * Check if current user is data admin
-     */
+    /** Check if current user is data admin (cached, case/space-insensitive). */
     public async is_data_admin(): Promise<boolean> {
-        try {
-            const response = await this.get('/ActiveUser/Groups');
-            const groups = response.data.value || [];
-            return groups.some((g: any) => g.Name === 'ADMIN' || g.Name === 'DataAdmin');
-        } catch (error) {
-            return false;
-        }
+        if (this._isDataAdmin === undefined) await this.loadActiveUserRoles();
+        return this._isDataAdmin!;
     }
 
-    /**
-     * Check if current user is ops admin
-     */
+    /** Check if current user is ops admin (cached, case/space-insensitive). */
     public async is_ops_admin(): Promise<boolean> {
-        try {
-            const response = await this.get('/ActiveUser/Groups');
-            const groups = response.data.value || [];
-            return groups.some((g: any) => g.Name === 'ADMIN' || g.Name === 'OperationsAdmin');
-        } catch (error) {
-            return false;
-        }
+        if (this._isOpsAdmin === undefined) await this.loadActiveUserRoles();
+        return this._isOpsAdmin!;
+    }
+
+    /** Check if current user is security admin (cached, case/space-insensitive). */
+    public async is_security_admin(): Promise<boolean> {
+        if (this._isSecurityAdmin === undefined) await this.loadActiveUserRoles();
+        return this._isSecurityAdmin!;
     }
 
     /**
-     * Check if current user is security admin
+     * Base64-decode an encoded password (tm1py RestService.py:1025-1031).
      */
-    public async is_security_admin(): Promise<boolean> {
-        try {
-            const response = await this.get('/ActiveUser/Groups');
-            const groups = response.data.value || [];
-            return groups.some((g: any) => g.Name === 'ADMIN' || g.Name === 'SecurityAdmin');
-        } catch (error) {
-            return false;
-        }
+    public static b64_decode_password(encryptedPassword: string): string {
+        return Buffer.from(encryptedPassword, 'base64').toString('utf-8');
+    }
+
+    /**
+     * Convert bool/number/string to boolean (tm1py RestService.py:1012-1023).
+     * Strings: whitespace stripped, lowercased, compared to 'true'.
+     */
+    public static translate_to_boolean(value: boolean | number | string): boolean {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return Boolean(value);
+        if (typeof value === 'string') return value.replace(/\s+/g, '').toLowerCase() === 'true';
+        throw new Error(`Invalid argument: '${value}'. Must be of type 'bool', 'number', or 'str'`);
+    }
+
+    /**
+     * Insert 'tm1.compact=v0' into the Accept header at position 1 and return the prior value.
+     * Mirrors tm1py RestService.py:1105-1114 exactly (no idempotency guard).
+     */
+    public add_compact_json_header(): string {
+        const original = (this.axiosInstance.defaults.headers.common['Accept'] as string | undefined)
+            ?? RestService.HEADERS['Accept'];
+        const parts = original.split(';');
+        parts.splice(1, 0, 'tm1.compact=v0');
+        const modified = parts.join(';');
+        this.add_http_header('Accept', modified);
+        return original;
     }
 
     /**
