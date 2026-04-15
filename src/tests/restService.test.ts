@@ -163,6 +163,34 @@ describe('RestService', () => {
         );
     });
 
+    test('honors explicit idempotent: false on a GET request', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({ ok: true }));
+
+        await restService.get('/Configuration/ServerName', { idempotent: false });
+
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                _idempotent: false
+            })
+        );
+    });
+
+    test('preserves caller-supplied validateStatus when verifyResponse is false', async () => {
+        const callerValidate = jest.fn().mockReturnValue(true);
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({}, 500));
+
+        await restService.get('/bad', {
+            verifyResponse: false,
+            validateStatus: callerValidate
+        });
+
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                validateStatus: callerValidate
+            })
+        );
+    });
+
     test('skips response verification when verifyResponse is false', async () => {
         mockAxiosInstance.request.mockResolvedValue(createMockResponse({ error: 'bad request' }, 400));
 
@@ -282,6 +310,14 @@ describe('RestService', () => {
         expect(waits).toEqual([0.1, 0.2, 0.4, 0.8, 1, 1, 1]);
     });
 
+    test('waitTimeGenerator runs unbounded when timeout is falsy', () => {
+        const generator = (restService as any).waitTimeGenerator(0);
+        const waits = Array.from({ length: 5 }, () => generator.next().value);
+
+        expect(waits).toEqual([0.1, 0.2, 0.4, 0.8, 1]);
+        expect(generator.next().done).toBe(false);
+    });
+
     test('waitTimeGenerator stops once timeout is exceeded', () => {
         const generator = (restService as any).waitTimeGenerator(0.5);
         const waits: number[] = [];
@@ -320,22 +356,6 @@ describe('RestService', () => {
             expect.objectContaining({
                 method: 'GET',
                 url: "/_async('poll-001')"
-            })
-        );
-    });
-
-    test('get_async_operation_status reads Status from the async response payload', async () => {
-        mockAxiosInstance.request.mockResolvedValue(
-            createMockResponse({ Status: 'CompletedSuccessfully' })
-        );
-
-        const status = await restService.get_async_operation_status('poll-003');
-
-        expect(status).toBe('CompletedSuccessfully');
-        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
-            expect.objectContaining({
-                method: 'GET',
-                url: "/_async('poll-003')"
             })
         );
     });

@@ -311,7 +311,8 @@ export class RestService {
         }
 
         const location = response.headers['location'] || response.headers['Location'] || '';
-        const asyncId = typeof location === 'string' ? location.split("'")[1] : undefined;
+        const match = typeof location === 'string' ? location.match(/\('([^']+)'\)/) : null;
+        const asyncId = match ? match[1] : undefined;
 
         if (!asyncId) {
             throw new TM1RestException(
@@ -365,7 +366,7 @@ export class RestService {
         data?: any,
         options?: RequestOptions
     ): Promise<AxiosResponse | string> {
-        const timeout = options?.timeout ?? this._timeout;
+        const timeout = options?.timeout || this._timeout;
         const cancelAtTimeout = options?.cancelAtTimeout ?? this._cancelAtTimeout;
         const asyncMode = options?.returnAsyncId || (options?.asyncRequestsMode ?? this._asyncRequestsMode);
         const verifyResponse = options?.verifyResponse ?? true;
@@ -438,6 +439,12 @@ export class RestService {
         }
     }
 
+    /**
+     * When `returnAsyncId: true`, the caller receives the async id string
+     * iff the server returns `202 Accepted`. If TM1 short-circuits with
+     * `200/201`, the full `AxiosResponse` is returned instead — the
+     * declared `Promise<string>` return type is a best-effort narrowing.
+     */
     public async get(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
     public async get(url: string, options?: RequestOptions): Promise<AxiosResponse>;
     public async get(url: string, options?: RequestOptions): Promise<AxiosResponse | string> {
@@ -952,20 +959,12 @@ export class RestService {
     }
 
     /**
-     * Get async operation status
-     */
-    public async get_async_operation_status(async_id: string): Promise<string> {
-        const response = await this.retrieve_async_response(async_id);
-        return response.data?.Status || 'Unknown';
-    }
-
-    /**
-     * Wait for async operation to complete
+     * Wait for async operation to complete using a fixed polling cadence.
      *
-     * @param poll_interval_seconds Retained for backward compatibility.
-     *   The internal polling cadence is owned by {@link waitTimeGenerator}
-     *   (exponential backoff capped at async_polling_max_delay), so this
-     *   value is ignored.
+     * Unlike the internal dispatcher's {@link waitTimeGenerator} (capped
+     * exponential backoff), this public helper polls every
+     * {@link poll_interval_seconds} seconds so existing callers who tuned
+     * the cadence keep their original behavior.
      */
     public async wait_for_async_operation(
         async_id: string,
@@ -973,9 +972,28 @@ export class RestService {
         poll_interval_seconds: number = 1,
         cancel_at_timeout: boolean = false
     ): Promise<any> {
-        void poll_interval_seconds;
-        const response = await this._pollAsyncResponse(async_id, timeout_seconds, cancel_at_timeout);
-        return response.data;
+        const deadline = Date.now() + timeout_seconds * 1000;
+
+        while (Date.now() < deadline) {
+            const response = await this.retrieve_async_response(async_id);
+            if (response.status === 200 || response.status === 201) {
+                return response.data;
+            }
+            await new Promise(resolve => setTimeout(resolve, poll_interval_seconds * 1000));
+        }
+
+        if (cancel_at_timeout) {
+            try {
+                await this.cancel_async_operation(async_id);
+            } catch (cancelError) {
+                console.warn(`Failed to cancel async operation ${async_id} at timeout:`, cancelError);
+            }
+        }
+
+        throw new TM1TimeoutException(
+            `Async operation ${async_id} timed out after ${timeout_seconds} seconds`,
+            timeout_seconds
+        );
     }
 
     /**
