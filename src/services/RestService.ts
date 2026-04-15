@@ -175,7 +175,13 @@ export class RestService {
                     port: parsed.port
                         ? parseInt(parsed.port, 10)
                         : (parsed.protocol === 'https:' ? 443 : 80),
-                    protocol: parsed.protocol.replace(':', '')
+                    protocol: parsed.protocol.replace(':', ''),
+                    ...(parsed.username && {
+                        auth: {
+                            username: decodeURIComponent(parsed.username),
+                            password: decodeURIComponent(parsed.password)
+                        }
+                    })
                 };
             }
         }
@@ -619,10 +625,16 @@ export class RestService {
         }
 
         try {
-            // v11's authRoot is /Configuration/ProductVersion/$value — a metadata probe,
-            // not a token endpoint. Require callers to supply authUrl explicitly.
-            if (!this.config.authUrl && this.determineTopology() === 'v11') {
-                throw new Error("'authUrl' is required for Service-to-Service authentication on v11 topology");
+            // Both v11 and v11-style baseUrl topologies resolve authRoot to
+            // /Configuration/ProductVersion/$value — a metadata probe, not a token
+            // endpoint. Require callers to supply authUrl explicitly in those cases.
+            if (!this.config.authUrl) {
+                const topo = this.determineTopology();
+                const baseUrlIsV12 = topo === 'base_url'
+                    && /api\/v1\/Databases/.test(this.config.baseUrl ?? '');
+                if (topo === 'v11' || (topo === 'base_url' && !baseUrlIsV12)) {
+                    throw new Error("'authUrl' is required for Service-to-Service authentication on v11 topology");
+                }
             }
             const tokenEndpoint = this.config.authUrl || this.resolveRoots().authRoot;
 

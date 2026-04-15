@@ -764,6 +764,29 @@ describe('RestService URL topology dispatch', () => {
             expect(cfg.proxy).toBeUndefined();
         });
 
+        test('should forward credentials from proxy URL to proxy.auth', () => {
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                proxies: { https: 'https://u%40dom:p%40ss@proxy.example.com:8443' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toEqual({
+                host: 'proxy.example.com',
+                port: 8443,
+                protocol: 'https',
+                auth: { username: 'u@dom', password: 'p@ss' }
+            });
+        });
+
+        test('should not set proxy.auth when proxy URL has no credentials', () => {
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                proxies: { https: 'https://proxy.example.com:8443' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy.auth).toBeUndefined();
+        });
+
         test('should pass sslContext through as httpsAgent', () => {
             const httpsMod = require('https');
             const agent = new httpsMod.Agent();
@@ -807,6 +830,29 @@ describe('RestService URL topology dispatch', () => {
             await expect((svc as any).setupServiceToServiceAuthentication()).rejects.toThrow(
                 /'authUrl' is required for Service-to-Service authentication on v11 topology/
             );
+        });
+
+        test('should throw when S2S auth runs on v11-style baseUrl topology without authUrl', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1',
+                applicationClientId: 'id',
+                applicationClientSecret: 'secret'
+            });
+            await expect((svc as any).setupServiceToServiceAuthentication()).rejects.toThrow(
+                /'authUrl' is required for Service-to-Service authentication on v11 topology/
+            );
+        });
+
+        test('should not throw when S2S auth runs on v12 Databases baseUrl with authUrl', async () => {
+            const svc = new RestService({
+                baseUrl: "http://x/api/v1/Databases('DB')",
+                authUrl: 'http://x/auth',
+                applicationClientId: 'id',
+                applicationClientSecret: 'secret'
+            });
+            // Will reject with network-level error when trying to POST, but NOT the guard error.
+            await expect((svc as any).setupServiceToServiceAuthentication())
+                .rejects.not.toThrow(/'authUrl' is required/);
         });
     });
 });
