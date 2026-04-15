@@ -193,6 +193,18 @@ describe('RestService', () => {
         expect(mockAxiosInstance.get).not.toHaveBeenCalled();
     });
 
+    test('propagates errors thrown by poll requests', async () => {
+        const pollError = new TM1RestException('Internal Server Error', 500);
+        mockAxiosInstance.request
+            .mockResolvedValueOnce(createMockResponse({}, 202, {
+                location: "/api/v1/_async('async-err')"
+            }))
+            .mockRejectedValueOnce(pollError);
+
+        await expect(restService.get('/Threads', { asyncRequestsMode: true }))
+            .rejects.toBe(pollError);
+    });
+
     test('cancels async operation on timeout when cancelAtTimeout is true', async () => {
         jest.useFakeTimers();
 

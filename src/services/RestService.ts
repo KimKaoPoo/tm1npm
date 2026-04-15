@@ -348,8 +348,8 @@ export class RestService {
         if (cancelAtTimeout) {
             try {
                 await this.cancel_async_operation(asyncId);
-            } catch {
-                // Best-effort cancellation on timeout.
+            } catch (cancelError) {
+                console.warn(`Failed to cancel async operation ${asyncId} at timeout:`, cancelError);
             }
         }
 
@@ -380,7 +380,7 @@ export class RestService {
             ...axiosExtras
         } = options ?? {};
 
-        if (!verifyResponse) {
+        if (!verifyResponse && axiosExtras.validateStatus === undefined) {
             axiosExtras.validateStatus = () => true;
         }
 
@@ -961,12 +961,19 @@ export class RestService {
 
     /**
      * Wait for async operation to complete
+     *
+     * @param poll_interval_seconds Retained for backward compatibility.
+     *   The internal polling cadence is owned by {@link waitTimeGenerator}
+     *   (exponential backoff capped at async_polling_max_delay), so this
+     *   value is ignored.
      */
     public async wait_for_async_operation(
         async_id: string,
         timeout_seconds: number = 300,
+        poll_interval_seconds: number = 1,
         cancel_at_timeout: boolean = false
     ): Promise<any> {
+        void poll_interval_seconds;
         const response = await this._pollAsyncResponse(async_id, timeout_seconds, cancel_at_timeout);
         return response.data;
     }
