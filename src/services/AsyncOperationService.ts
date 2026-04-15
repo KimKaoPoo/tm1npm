@@ -52,6 +52,12 @@ export interface AsyncOperation {
     result?: any;
     parameters?: Record<string, any>;
     metadata?: Record<string, any>;
+    /**
+     * When true, the operation is tracked with a client-side UUID and the
+     * TM1 server has no record of it. `getAsyncOperationStatus` returns the
+     * cached status instead of polling `/_async('{id}')`.
+     */
+    trackedLocally?: boolean;
 }
 
 /**
@@ -110,6 +116,14 @@ export class AsyncOperationService {
 
         // If operation is already in terminal state, return cached status
         if (this.isTerminalStatus(operation.status)) {
+            return operation.status;
+        }
+
+        // Locally tracked operations hold a client-side UUID; the TM1 server
+        // would return 404 for them. Rely on the in-memory cache, which is
+        // populated by background .then()/.catch() callbacks in helpers like
+        // ProcessService.executeWithReturnAsync.
+        if (operation.trackedLocally) {
             return operation.status;
         }
 
@@ -283,6 +297,9 @@ export class AsyncOperationService {
     public async createAsyncOperation(definition: AsyncOperationDefinition): Promise<string> {
         const operationId = this.generateOperationId();
 
+        // generateOperationId produces a client-side UUID; the server has no
+        // record of it, so polling /_async('{id}') would 404. Mark as locally
+        // tracked so getAsyncOperationStatus returns the cached status instead.
         const operation: AsyncOperation = {
             id: operationId,
             type: definition.type,
@@ -290,7 +307,8 @@ export class AsyncOperationService {
             status: OperationStatus.PENDING,
             startTime: new Date(),
             parameters: definition.parameters,
-            metadata: definition.metadata
+            metadata: definition.metadata,
+            trackedLocally: true
         };
 
         this.operations.set(operationId, operation);
@@ -480,19 +498,6 @@ export class AsyncOperationService {
                status === OperationStatus.FAILED ||
                status === OperationStatus.CANCELLED ||
                status === OperationStatus.TIMEOUT;
-    }
-
-    private mapServerStatus(serverStatus: string): OperationStatus {
-        const statusMap: Record<string, OperationStatus> = {
-            'Pending': OperationStatus.PENDING,
-            'Running': OperationStatus.RUNNING,
-            'CompletedSuccessfully': OperationStatus.COMPLETED,
-            'CompletedWithErrors': OperationStatus.FAILED,
-            'Cancelled': OperationStatus.CANCELLED,
-            'Timeout': OperationStatus.TIMEOUT
-        };
-
-        return statusMap[serverStatus] || OperationStatus.PENDING;
     }
 
     private stopPolling(operationId: string): void {

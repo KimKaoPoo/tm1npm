@@ -646,14 +646,22 @@ describe('AsyncOperationService', () => {
 
     // Status is inferred from the /_async('{id}') HTTP status code and the
     // v12 `asyncresult` header; there is no `.Status` envelope on the new endpoint.
+    // These tests bypass createAsyncOperation (which tags operations as
+    // trackedLocally: true) to exercise the server-polling branch directly.
     describe('Server Status Mapping', () => {
-        test('should map HTTP 200 without asyncresult header to COMPLETED', async () => {
-            const operationId = await asyncService.createAsyncOperation({
+        const injectServerOperation = (id: string) => {
+            (asyncService as any).operations.set(id, {
+                id,
                 type: OperationType.PROCESS_EXECUTION,
-                name: 'TestProcess'
+                name: 'TestProcess',
+                status: OperationStatus.RUNNING,
+                startTime: new Date(),
+                trackedLocally: false
             });
+        };
 
-            asyncService.updateOperationStatus(operationId, OperationStatus.RUNNING);
+        test('should map HTTP 200 without asyncresult header to COMPLETED', async () => {
+            injectServerOperation('srv-1');
 
             mockRestService.get = jest.fn().mockResolvedValue({
                 status: 200,
@@ -661,20 +669,15 @@ describe('AsyncOperationService', () => {
                 data: { value: 42 }
             });
 
-            const status = await asyncService.getAsyncOperationStatus(operationId);
+            const status = await asyncService.getAsyncOperationStatus('srv-1');
             expect(status).toBe(OperationStatus.COMPLETED);
 
-            const operation = asyncService.getOperation(operationId);
+            const operation = asyncService.getOperation('srv-1');
             expect(operation?.result).toEqual({ value: 42 });
         });
 
         test('should map HTTP 200 with non-2xx asyncresult header to FAILED', async () => {
-            const operationId = await asyncService.createAsyncOperation({
-                type: OperationType.PROCESS_EXECUTION,
-                name: 'TestProcess'
-            });
-
-            asyncService.updateOperationStatus(operationId, OperationStatus.RUNNING);
+            injectServerOperation('srv-2');
 
             mockRestService.get = jest.fn().mockResolvedValue({
                 status: 200,
@@ -682,37 +685,27 @@ describe('AsyncOperationService', () => {
                 data: {}
             });
 
-            const status = await asyncService.getAsyncOperationStatus(operationId);
+            const status = await asyncService.getAsyncOperationStatus('srv-2');
             expect(status).toBe(OperationStatus.FAILED);
 
-            const operation = asyncService.getOperation(operationId);
+            const operation = asyncService.getOperation('srv-2');
             expect(operation?.error).toBe('500 Internal Server Error');
         });
 
         test('should map thrown TM1RestException to FAILED', async () => {
-            const operationId = await asyncService.createAsyncOperation({
-                type: OperationType.PROCESS_EXECUTION,
-                name: 'TestProcess'
-            });
-
-            asyncService.updateOperationStatus(operationId, OperationStatus.RUNNING);
+            injectServerOperation('srv-3');
 
             const { TM1RestException } = require('../exceptions/TM1Exception');
             mockRestService.get = jest.fn().mockRejectedValue(
-                new TM1RestException('Not found', 404)
+                new TM1RestException('Server error', 500)
             );
 
-            const status = await asyncService.getAsyncOperationStatus(operationId);
+            const status = await asyncService.getAsyncOperationStatus('srv-3');
             expect(status).toBe(OperationStatus.FAILED);
         });
 
         test('should map HTTP 202 to RUNNING', async () => {
-            const operationId = await asyncService.createAsyncOperation({
-                type: OperationType.PROCESS_EXECUTION,
-                name: 'TestProcess'
-            });
-
-            asyncService.updateOperationStatus(operationId, OperationStatus.RUNNING);
+            injectServerOperation('srv-4');
 
             mockRestService.get = jest.fn().mockResolvedValue({
                 status: 202,
@@ -720,8 +713,23 @@ describe('AsyncOperationService', () => {
                 data: {}
             });
 
+            const status = await asyncService.getAsyncOperationStatus('srv-4');
+            expect(status).toBe(OperationStatus.RUNNING);
+        });
+
+        test('locally-tracked operations skip server polling and return cached status', async () => {
+            const operationId = await asyncService.createAsyncOperation({
+                type: OperationType.PROCESS_EXECUTION,
+                name: 'LocalProcess'
+            });
+            asyncService.updateOperationStatus(operationId, OperationStatus.RUNNING);
+
+            const getSpy = jest.fn();
+            mockRestService.get = getSpy;
+
             const status = await asyncService.getAsyncOperationStatus(operationId);
             expect(status).toBe(OperationStatus.RUNNING);
+            expect(getSpy).not.toHaveBeenCalled();
         });
     });
 

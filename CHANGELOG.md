@@ -61,3 +61,12 @@ All notable changes to this project are documented here.
   for GET, `false` for POST/PATCH/PUT/DELETE).
 - `verifyResponse: false` honors a caller-supplied `validateStatus`
   instead of silently overwriting it.
+- `AsyncOperationService.createAsyncOperation` now marks returned
+  operations with `trackedLocally: true` so `getAsyncOperationStatus`
+  reads from the in-memory cache instead of polling `/_async('{id}')`
+  with a client-side UUID (which the server does not recognize).
+  `ProcessService.executeWithReturnAsync` / `pollProcessExecution`
+  depend on this behavior for their background-resolve pattern.
+- `retrieve_async_response` no longer throws on non-2xx statuses; it
+  returns the raw `AxiosResponse` so the internal poller can retry on
+  transient 404s (resource not yet materialized) without aborting.

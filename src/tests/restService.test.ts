@@ -360,6 +360,26 @@ describe('RestService', () => {
         );
     });
 
+    test('async dispatcher retries on transient 404 from /_async resource not yet materialized', async () => {
+        mockAxiosInstance.request
+            .mockResolvedValueOnce(createMockResponse({}, 202, {
+                location: "/api/v1/_async('async-404')"
+            }))
+            .mockResolvedValueOnce(createMockResponse({}, 404))
+            .mockResolvedValueOnce(createMockResponse({ done: true }, 200));
+
+        const response = await restService.get('/Threads', { asyncRequestsMode: true });
+
+        expect(response.data.done).toBe(true);
+        expect(mockAxiosInstance.request).toHaveBeenNthCalledWith(2,
+            expect.objectContaining({
+                method: 'GET',
+                url: "/_async('async-404')",
+                validateStatus: expect.any(Function)
+            })
+        );
+    });
+
     test('async dispatcher throws when poll response carries non-2xx asyncresult header', async () => {
         mockAxiosInstance.request
             .mockResolvedValueOnce(createMockResponse({}, 202, {

@@ -1014,7 +1014,16 @@ export class RestService {
      * Retrieve async operation response
      */
     public async retrieve_async_response(async_id: string): Promise<AxiosResponse> {
-        return this.get(`/_async('${async_id}')`, { asyncRequestsMode: false }) as Promise<AxiosResponse>;
+        // tm1py's retrieve_async_response returns the raw response without
+        // raising on non-2xx because its caller (_poll_async_response) gates
+        // on status_code in [200, 201]. Mirror that: accept all statuses so
+        // transient 404s (resource not yet materialized) or 202s (still
+        // running) flow through to the polling loop rather than aborting it.
+        return this.get(`/_async('${async_id}')`, {
+            asyncRequestsMode: false,
+            verifyResponse: false,
+            validateStatus: () => true
+        }) as Promise<AxiosResponse>;
     }
 
     /**
