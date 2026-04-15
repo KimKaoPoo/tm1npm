@@ -360,6 +360,17 @@ describe('RestService', () => {
         );
     });
 
+    test('wait_for_async_operation throws when asyncresult header encodes non-2xx status', async () => {
+        mockAxiosInstance.request.mockResolvedValue(
+            createMockResponse({ ok: false }, 200, {
+                asyncresult: '500 Internal Server Error'
+            })
+        );
+
+        await expect(restService.wait_for_async_operation('poll-500', 1))
+            .rejects.toMatchObject({ status: 500 });
+    });
+
     test('wait_for_async_operation returns response data', async () => {
         mockAxiosInstance.request.mockResolvedValue(createMockResponse({ Status: 'Completed', Result: 1 }, 200));
 

@@ -1017,6 +1017,26 @@ export class RestService {
     }
 
     /**
+     * TM1 v12 returns completed async results with HTTP 200 and encodes
+     * the true operation status in the `asyncresult` header (e.g.
+     * "500 Internal Server Error"). Mirror tm1py's
+     * `_transform_async_response` by throwing on any embedded non-2xx
+     * status so callers are not handed a 500 as "success".
+     */
+    private verifyAsyncResultHeader(response: AxiosResponse): void {
+        const headerValue = response.headers?.['asyncresult'] ?? response.headers?.['AsyncResult'];
+        if (typeof headerValue !== 'string') return;
+        const embeddedStatus = parseInt(headerValue.trim().split(/\s+/)[0], 10);
+        if (Number.isNaN(embeddedStatus)) return;
+        if (embeddedStatus >= 200 && embeddedStatus < 300) return;
+        throw new TM1RestException(
+            `Async operation failed with status ${headerValue}`,
+            embeddedStatus,
+            response
+        );
+    }
+
+    /**
      * Wait for async operation to complete using a fixed polling cadence.
      *
      * Unlike the internal dispatcher's {@link waitTimeGenerator} (capped
@@ -1035,6 +1055,7 @@ export class RestService {
         while (Date.now() < deadline) {
             const response = await this.retrieve_async_response(async_id);
             if (response.status === 200 || response.status === 201) {
+                this.verifyAsyncResultHeader(response);
                 return response.data;
             }
             await new Promise(resolve => setTimeout(resolve, poll_interval_seconds * 1000));
