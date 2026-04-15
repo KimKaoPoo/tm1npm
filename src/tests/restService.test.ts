@@ -589,6 +589,27 @@ describe('RestService URL topology dispatch', () => {
             expect(lastBaseURL()).toBe('http://x/api/v1');
         });
 
+        test('should preserve TM1 11 IBM Cloud baseUrl shape verbatim', () => {
+            new RestService({
+                baseUrl: 'https://mycompany.planning-analytics.ibmcloud.com/tm1/api/tm1/'
+            });
+            expect(lastBaseURL()).toBe('https://mycompany.planning-analytics.ibmcloud.com/tm1/api/tm1');
+        });
+
+        test('should preserve TM1 12 PaaS baseUrl shape (trailing slash normalized)', () => {
+            new RestService({
+                baseUrl: 'https://us-east-1.planninganalytics.saas.ibm.com/api/T1/v0/tm1/DB1/'
+            });
+            expect(lastBaseURL()).toBe('https://us-east-1.planninganalytics.saas.ibm.com/api/T1/v0/tm1/DB1');
+        });
+
+        test('should preserve TM1 12 access-token baseUrl shape verbatim', () => {
+            new RestService({
+                baseUrl: 'https://pa12.dev.net/api/INST/v0/tm1/DB1'
+            });
+            expect(lastBaseURL()).toBe('https://pa12.dev.net/api/INST/v0/tm1/DB1');
+        });
+
         test('should resolve Databases() baseUrl when authUrl provided', () => {
             const svc = new RestService({
                 baseUrl: "http://x/api/v1/Databases('DB')",
@@ -829,6 +850,55 @@ describe('RestService URL topology dispatch', () => {
                 gateway: 'https://gw'
             });
             expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+    });
+
+    describe('Session cookie seeding by topology', () => {
+        test('should seed TM1SessionId cookie for v11 topology', () => {
+            const svc = new RestService({ address: 'host', ssl: true, sessionId: 'abc' });
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('abc');
+            expect((svc as any).sessionCookies.get('paSession')).toBeUndefined();
+        });
+
+        test('should seed paSession cookie for IBM Cloud topology', () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam',
+                ssl: true,
+                sessionId: 'abc'
+            });
+            expect((svc as any).sessionCookies.get('paSession')).toBe('abc');
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBeUndefined();
+        });
+
+        test('should seed paSession cookie for S2S topology', () => {
+            const svc = new RestService({
+                address: 'h',
+                instance: 'INST',
+                database: 'DB',
+                ssl: true,
+                sessionId: 'xyz'
+            });
+            expect((svc as any).sessionCookies.get('paSession')).toBe('xyz');
+        });
+
+        test('should seed paSession cookie for PA Proxy topology', () => {
+            const svc = new RestService({
+                address: 'h',
+                database: 'DB',
+                user: 'u',
+                paUrl: 'https://pa',
+                ssl: true,
+                sessionId: 'pp'
+            });
+            expect((svc as any).sessionCookies.get('paSession')).toBe('pp');
+        });
+
+        test('should seed TM1SessionId cookie for baseUrl override', () => {
+            const svc = new RestService({ baseUrl: 'http://x/api/v1', sessionId: 'ff' });
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('ff');
         });
     });
 

@@ -96,8 +96,13 @@ export class RestService {
         this.config = { ...config };
         this.setupAxiosInstance();
         if (this.config.sessionId) {
-            // v12 paSession seeding via config is not yet modeled.
-            this.sessionCookies.set(RestService.SESSION_COOKIE_NAMES[0], this.config.sessionId);
+            // Mirror tm1py's _set_session_id_cookie: v12 topologies use paSession,
+            // v11 and baseUrl overrides use TM1SessionId.
+            const topo = this.determineTopology();
+            const cookieName = (topo === 'ibm_cloud' || topo === 'pa_proxy' || topo === 's2s')
+                ? 'paSession'
+                : 'TM1SessionId';
+            this.sessionCookies.set(cookieName, this.config.sessionId);
         }
     }
 
@@ -305,7 +310,13 @@ export class RestService {
             }
             return { serviceRoot: base, authRoot: this.config.authUrl };
         }
-        const serviceRoot = base.endsWith('/api/v1') ? base : `${base}/api/v1`;
+        // Recognize baseUrl shapes documented in docs/connection-guide.md
+        // (TM1 11 IBM Cloud `/tm1/api/tm1`, TM1 12 PaaS/access-token `/v0/tm1/...`)
+        // and use them verbatim. Only fall through to /api/v1 suffixing when the
+        // URL clearly lacks any TM1 API path — matching tm1py's fallback.
+        const trimmed = base.replace(/\/+$/, '');
+        const hasApiSuffix = /\/api\/v1$|\/v0\/tm1\/|\/tm1\/api\/tm1$/.test(trimmed);
+        const serviceRoot = hasApiSuffix ? trimmed : `${trimmed}/api/v1`;
         return { serviceRoot, authRoot: serviceRoot + PRODUCT_VERSION_AUTH_SUFFIX };
     }
 
@@ -626,18 +637,20 @@ export class RestService {
             throw new Error('Service-to-Service authentication requires applicationClientId and applicationClientSecret');
         }
 
-        try {
-            // Both v11 and v11-style baseUrl topologies resolve authRoot to
-            // /Configuration/ProductVersion/$value — a metadata probe, not a token
-            // endpoint. Require callers to supply authUrl explicitly in those cases.
-            if (!this.config.authUrl) {
-                const topo = this.determineTopology();
-                const baseUrlIsV12 = topo === 'base_url'
-                    && /api\/v1\/Databases/.test(this.config.baseUrl ?? '');
-                if (topo === 'v11' || (topo === 'base_url' && !baseUrlIsV12)) {
-                    throw new Error("'authUrl' is required for Service-to-Service authentication on v11 topology");
-                }
+        // Both v11 and v11-style baseUrl topologies resolve authRoot to
+        // /Configuration/ProductVersion/$value — a metadata probe, not a token
+        // endpoint. Require callers to supply authUrl explicitly in those cases.
+        // Validation lives outside the try/catch so its message is not double-wrapped.
+        if (!this.config.authUrl) {
+            const topo = this.determineTopology();
+            const baseUrlIsV12 = topo === 'base_url'
+                && /api\/v1\/Databases/.test(this.config.baseUrl ?? '');
+            if (topo === 'v11' || (topo === 'base_url' && !baseUrlIsV12)) {
+                throw new Error("'authUrl' is required for Service-to-Service authentication on v11 topology");
             }
+        }
+
+        try {
             const tokenEndpoint = this.config.authUrl || this.resolveRoots().authRoot;
 
             const tokenPayload = {
