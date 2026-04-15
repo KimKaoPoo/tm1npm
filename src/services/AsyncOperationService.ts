@@ -113,28 +113,68 @@ export class AsyncOperationService {
             return operation.status;
         }
 
-        // Poll TM1 server for updated status
+        // Poll TM1 server for updated status. /_async('{id}') returns 202 while
+        // the op is pending, and 200/201 with the final operation payload once done.
+        // TM1 v12 may encode embedded failures in the `asyncresult` response header.
         try {
             const url = formatUrl("/_async('{}')", operationId);
             const response = await this.rest.get(url);
-            const serverStatus = this.mapServerStatus(response.data.Status);
+            const serverStatus = this.deriveStatusFromResponse(response);
 
-            // Update operation status
             operation.status = serverStatus;
             if (this.isTerminalStatus(serverStatus)) {
                 operation.endTime = new Date();
-                if (serverStatus === OperationStatus.COMPLETED && response.data.Result) {
-                    operation.result = response.data.Result;
-                } else if (serverStatus === OperationStatus.FAILED && response.data.Error) {
-                    operation.error = response.data.Error;
+                if (serverStatus === OperationStatus.COMPLETED) {
+                    operation.result = response.data;
+                } else if (serverStatus === OperationStatus.FAILED) {
+                    operation.error = this.extractErrorFromResponse(response);
                 }
             }
 
             return serverStatus;
-        } catch (error) {
-            // If server doesn't support AsyncOperations endpoint, return cached status
+        } catch (error: any) {
+            // HTTP 4xx/5xx surfaces as a thrown TM1RestException — treat as a terminal FAILED
+            // so callers stop polling. Network errors (no status) leave cached status intact.
+            const status = error?.status ?? error?.response?.status;
+            if (typeof status === 'number' && status >= 400) {
+                operation.status = OperationStatus.FAILED;
+                operation.endTime = new Date();
+                operation.error = error?.message ?? String(error);
+                return OperationStatus.FAILED;
+            }
             return operation.status;
         }
+    }
+
+    private deriveStatusFromResponse(response: any): OperationStatus {
+        if (response.status === 202) {
+            return OperationStatus.RUNNING;
+        }
+        const asyncResult = response.headers?.['asyncresult'] ?? response.headers?.['AsyncResult'];
+        if (typeof asyncResult === 'string') {
+            const embedded = parseInt(asyncResult.trim().split(/\s+/)[0], 10);
+            if (!Number.isNaN(embedded) && (embedded < 200 || embedded >= 300)) {
+                return OperationStatus.FAILED;
+            }
+        }
+        if (response.status === 200 || response.status === 201) {
+            return OperationStatus.COMPLETED;
+        }
+        return OperationStatus.PENDING;
+    }
+
+    private extractErrorFromResponse(response: any): string {
+        const asyncResult = response.headers?.['asyncresult'] ?? response.headers?.['AsyncResult'];
+        if (typeof asyncResult === 'string') {
+            return asyncResult;
+        }
+        if (typeof response.data === 'string') {
+            return response.data;
+        }
+        if (response.data?.error?.message) {
+            return response.data.error.message;
+        }
+        return JSON.stringify(response.data);
     }
 
     /**

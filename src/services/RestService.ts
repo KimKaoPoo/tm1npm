@@ -404,6 +404,7 @@ export class RestService {
             const response = await this.retrieve_async_response(asyncId);
 
             if (response.status === 200 || response.status === 201) {
+                this.verifyAsyncResultHeader(response);
                 return response;
             }
 

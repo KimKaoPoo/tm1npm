@@ -17,6 +17,10 @@ All notable changes to this project are documented here.
   - Migration: `rest.get(url, { timeout: 30000 })` → `rest.get(url, { timeout: 30 })`.
   - TypeScript will **not** flag the change because both old and new
     values are `number`; audit call sites before upgrading.
+  - Heuristic to find likely millisecond-valued call sites:
+    ```
+    rg -n 'rest\.(get|post|patch|put|delete).*timeout:\s*\d{4,}' src/
+    ```
 
 - **`retrieve_async_response` now returns the full `AxiosResponse`**
   instead of `response.data`. This matches tm1py's `retrieve_async_response`

@@ -360,6 +360,19 @@ describe('RestService', () => {
         );
     });
 
+    test('async dispatcher throws when poll response carries non-2xx asyncresult header', async () => {
+        mockAxiosInstance.request
+            .mockResolvedValueOnce(createMockResponse({}, 202, {
+                location: "/api/v1/_async('async-fail')"
+            }))
+            .mockResolvedValueOnce(createMockResponse({}, 200, {
+                asyncresult: '500 Internal Server Error'
+            }));
+
+        await expect(restService.get('/Threads', { asyncRequestsMode: true }))
+            .rejects.toMatchObject({ status: 500 });
+    });
+
     test('wait_for_async_operation throws when asyncresult header encodes non-2xx status', async () => {
         mockAxiosInstance.request.mockResolvedValue(
             createMockResponse({ ok: false }, 200, {

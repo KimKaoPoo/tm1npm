@@ -499,6 +499,8 @@ describe('ProcessService Tests', () => {
         });
 
         test('pollExecuteWithReturn should return null for 202 (accepted/pending)', async () => {
+            // After the #80 refactor retrieve_async_response returns the raw AxiosResponse
+            // instead of throwing on 202; the pending path is now signalled by status === 202.
             (mockRestService as any).retrieve_async_response = jest.fn().mockResolvedValue({
                 status: 202,
                 data: {}
