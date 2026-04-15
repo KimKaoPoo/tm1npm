@@ -604,6 +604,19 @@ describe('RestService URL topology dispatch', () => {
             })).toThrow(/Auth_url missing/);
         });
 
+        test('should let v12 signals win over baseUrl (tm1py parity)', () => {
+            const svc = new RestService({
+                baseUrl: 'http://ignored/api/v1',
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1/Configuration/ProductVersion/$value');
+        });
+
         test('should throw when baseUrl and address both provided', () => {
             expect(() => new RestService({
                 baseUrl: 'http://x/api/v1',
@@ -723,11 +736,11 @@ describe('RestService URL topology dispatch', () => {
     });
 
     describe('Config pass-through and axios wiring', () => {
-        test('should accept all new config fields without error', () => {
+        test('should accept new non-topology config fields without error', () => {
+            // iamUrl/paUrl/tenant/instance/database are topology signals (tested per-topology above);
+            // this asserts the remaining auth/network fields are accepted as config surface.
             expect(() => new RestService({
                 baseUrl: 'http://x/api/v1',
-                iamUrl: 'https://iam',
-                paUrl: 'https://pa',
                 cpdUrl: 'https://cpd',
                 gateway: 'https://gw',
                 integratedLogin: true,

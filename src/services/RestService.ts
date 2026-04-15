@@ -218,9 +218,11 @@ export class RestService {
      */
     private determineTopology(): UrlTopology {
         const c = this.config;
-        if (c.baseUrl) return 'base_url';
         const hasV12Signal = !!(c.instance || c.database || c.iamUrl || c.paUrl || c.tenant);
-        if (!hasV12Signal) return 'v11';
+        // tm1py's _construct_service_and_auth_root routes v12 modes (IBM Cloud / PA
+        // Proxy / S2S) through their dedicated constructors even if base_url is
+        // supplied. Only non-v12 configs fall through to the base_url override.
+        if (!hasV12Signal) return c.baseUrl ? 'base_url' : 'v11';
         if (c.iamUrl) return 'ibm_cloud';
         if (c.address && c.user && !c.instance) return 'pa_proxy';
         return 's2s';
