@@ -1,6 +1,12 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosRequestConfig } from 'axios';
+import * as https from 'https';
+import * as fs from 'fs';
 import { TM1RestException, TM1TimeoutException } from '../exceptions/TM1Exception';
 import { CaseAndSpaceInsensitiveSet, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
+
+type UrlTopology = 'base_url' | 'v11' | 'ibm_cloud' | 'pa_proxy' | 's2s';
+
+const PRODUCT_VERSION_AUTH_SUFFIX = '/Configuration/ProductVersion/$value';
 
 export enum AuthenticationMode {
     BASIC = 1,
@@ -46,6 +52,26 @@ export interface RestServiceConfig {
     remoteDisconnectRetryDelay?: number;
     remoteDisconnectMaxDelay?: number;
     remoteDisconnectBackoffFactor?: number;
+
+    // v12 / Cloud URL components
+    iamUrl?: string;
+    paUrl?: string;
+    cpdUrl?: string;
+
+    // SSO / CAM
+    gateway?: string;
+
+    // Integrated Windows Auth / Kerberos (config surface; auth flow unchanged)
+    integratedLogin?: boolean;
+    integratedLoginDomain?: string;
+    integratedLoginService?: string;
+    integratedLoginHost?: string;
+    integratedLoginDelegate?: boolean;
+
+    // Network / TLS
+    proxies?: { http?: string; https?: string };
+    sslContext?: https.Agent;
+    cert?: string | [string, string];
 }
 
 export class RestService {
@@ -112,8 +138,13 @@ export class RestService {
 
         this.setupAxiosInstance();
         if (this.config.sessionId) {
-            // v12 paSession seeding via config is not yet modeled.
-            this.sessionCookies.set(RestService.SESSION_COOKIE_NAMES[0], this.config.sessionId);
+            // Mirror tm1py's _set_session_id_cookie: v12 topologies use paSession,
+            // v11 and baseUrl overrides use TM1SessionId.
+            const topo = this.determineTopology();
+            const cookieName = (topo === 'ibm_cloud' || topo === 'pa_proxy' || topo === 's2s')
+                ? 'paSession'
+                : 'TM1SessionId';
+            this.sessionCookies.set(cookieName, this.config.sessionId);
         }
     }
 
@@ -172,29 +203,165 @@ export class RestService {
 
     private setupAxiosInstance(): void {
         const baseURL = this.buildBaseUrl();
-        
-        this.axiosInstance = axios.create({
+
+        const axiosConfig: AxiosRequestConfig = {
             baseURL,
             timeout: (this.config.timeout || 60) * 1000,
             headers: {
                 ...RestService.HEADERS,
                 ...(this.config.sessionContext && { 'TM1-SessionContext': this.config.sessionContext })
             }
-        });
+        };
+
+        if (this.config.proxies) {
+            const proxyUrl = this.config.proxies.https || this.config.proxies.http;
+            if (proxyUrl) {
+                const parsed = new URL(proxyUrl);
+                axiosConfig.proxy = {
+                    host: parsed.hostname,
+                    port: parsed.port
+                        ? parseInt(parsed.port, 10)
+                        : (parsed.protocol === 'https:' ? 443 : 80),
+                    protocol: parsed.protocol.replace(':', ''),
+                    ...(parsed.username && {
+                        auth: {
+                            username: decodeURIComponent(parsed.username),
+                            password: decodeURIComponent(parsed.password)
+                        }
+                    })
+                };
+            }
+        }
+
+        if (this.config.sslContext) {
+            axiosConfig.httpsAgent = this.config.sslContext;
+        } else if (this.config.cert) {
+            const [certPath, keyPath] = Array.isArray(this.config.cert)
+                ? this.config.cert
+                : [this.config.cert, undefined];
+            axiosConfig.httpsAgent = new https.Agent({
+                cert: fs.readFileSync(certPath),
+                key: keyPath ? fs.readFileSync(keyPath) : undefined
+            });
+        }
+
+        this.axiosInstance = axios.create(axiosConfig);
 
         this.setupInterceptors();
     }
 
     private buildBaseUrl(): string {
-        if (this.config.baseUrl) {
-            return this.config.baseUrl;
-        }
+        return this.resolveRoots().serviceRoot;
+    }
 
+    /**
+     * Pick the deployment topology based on the provided config, mirroring
+     * tm1py's _determine_auth_mode + _construct_service_and_auth_root dispatch.
+     *
+     * Note: authUrl is intentionally excluded from the v12 signal set because
+     * tm1npm historically uses authUrl for CAM SSO (unlike tm1py, where auth_url
+     * is a v12-only field). apiKey is also excluded to avoid collision with the
+     * existing BASIC_API_KEY auth flow.
+     */
+    private determineTopology(): UrlTopology {
+        const c = this.config;
+        const hasV12Signal = !!(c.instance || c.database || c.iamUrl || c.paUrl || c.tenant);
+        // tm1py's _construct_service_and_auth_root routes v12 modes (IBM Cloud / PA
+        // Proxy / S2S) through their dedicated constructors even if base_url is
+        // supplied. Only non-v12 configs fall through to the base_url override.
+        if (!hasV12Signal) return c.baseUrl ? 'base_url' : 'v11';
+        if (c.iamUrl) return 'ibm_cloud';
+        if (c.address && c.user && !c.instance) return 'pa_proxy';
+        return 's2s';
+    }
+
+    /**
+     * Resolve the TM1 service root and auth root URLs for the configured topology.
+     * Mirrors tm1py's _construct_service_and_auth_root return tuple.
+     */
+    private resolveRoots(): { serviceRoot: string; authRoot: string } {
+        switch (this.determineTopology()) {
+            case 'base_url':  return this.rootsFromBaseUrl();
+            case 'ibm_cloud': return this.rootsIbmCloud();
+            case 'pa_proxy':  return this.rootsPaProxy();
+            case 's2s':       return this.rootsS2s();
+            case 'v11':
+            default:          return this.rootsV11();
+        }
+    }
+
+    private rootsV11(): { serviceRoot: string; authRoot: string } {
         const protocol = this.config.ssl ? 'https' : 'http';
         const address = this.config.address || 'localhost';
-        const port = this.config.port || 8001;
-        
-        return `${protocol}://${address}:${port}/api/v1`;
+        const port = this.config.port ?? 8001;
+        const serviceRoot = `${protocol}://${address}:${port}/api/v1`;
+        return { serviceRoot, authRoot: serviceRoot + PRODUCT_VERSION_AUTH_SUFFIX };
+    }
+
+    private rootsIbmCloud(): { serviceRoot: string; authRoot: string } {
+        const { address, tenant, database, ssl } = this.config;
+        if (!address || !tenant || !database) {
+            throw new Error("'address', 'tenant' and 'database' must be provided to connect to TM1 > v12 in IBM Cloud");
+        }
+        if (!ssl) {
+            throw new Error("'ssl' must be true to connect to TM1 > v12 in IBM Cloud");
+        }
+        const t = encodeURIComponent(tenant);
+        const d = encodeURIComponent(database);
+        const serviceRoot = `https://${address}/api/${t}/v0/tm1/${d}`;
+        return { serviceRoot, authRoot: serviceRoot + PRODUCT_VERSION_AUTH_SUFFIX };
+    }
+
+    private rootsPaProxy(): { serviceRoot: string; authRoot: string } {
+        const { address, database, ssl } = this.config;
+        if (!address || !database) {
+            throw new Error("'address' and 'database' must be provided to connect to TM1 > v12 using PA Proxy");
+        }
+        const protocol = ssl ? 'https' : 'http';
+        const d = encodeURIComponent(database);
+        const serviceRoot = `${protocol}://${address}/tm1/${d}/api/v1`;
+        const authRoot = `${protocol}://${address}/login`;
+        return { serviceRoot, authRoot };
+    }
+
+    private rootsS2s(): { serviceRoot: string; authRoot: string } {
+        const { instance, database, ssl, port } = this.config;
+        if (!instance || !database) {
+            throw new Error("'instance' and 'database' arguments are required for v12 authentication with 'address'");
+        }
+        const protocol = ssl ? 'https' : 'http';
+        const address = this.config.address && this.config.address.length > 0
+            ? this.config.address
+            : 'localhost';
+        const portPart = port != null ? `:${port}` : '';
+        const i = encodeURIComponent(instance);
+        const d = encodeURIComponent(database);
+        const serviceRoot = `${protocol}://${address}${portPart}/${i}/api/v1/Databases('${d}')`;
+        const authRoot = `${protocol}://${address}${portPart}/${i}/auth/v1/session`;
+        return { serviceRoot, authRoot };
+    }
+
+    private rootsFromBaseUrl(): { serviceRoot: string; authRoot: string } {
+        const base = this.config.baseUrl!;
+        if (this.config.address) {
+            throw new Error("Base URL and Address cannot be specified at the same time");
+        }
+        if (/api\/v1\/Databases/.test(base)) {
+            if (!this.config.authUrl) {
+                throw new Error("Auth_url missing — when connecting to planning analytics engine using base_url, you must specify a corresponding auth_url");
+            }
+            return { serviceRoot: base, authRoot: this.config.authUrl };
+        }
+        // Recognize baseUrl shapes documented in docs/connection-guide.md
+        // (TM1 11 IBM Cloud `/tm1/api/tm1`, TM1 12 PaaS/access-token `/v0/tm1/...`)
+        // and use them verbatim. Only fall through to /api/v1 suffixing when the
+        // URL clearly lacks any TM1 API path — matching tm1py's fallback.
+        const trimmed = base.replace(/\/+$/, '');
+        // Each alternative is $-anchored (after trailing-slash trim above) so the
+        // match intent is explicit: the URL already ends in a TM1 API suffix.
+        const hasApiSuffix = /\/api\/v1$|\/v0\/tm1\/[^/]+$|\/tm1\/api\/tm1$/.test(trimmed);
+        const serviceRoot = hasApiSuffix ? trimmed : `${trimmed}/api/v1`;
+        return { serviceRoot, authRoot: serviceRoot + PRODUCT_VERSION_AUTH_SUFFIX };
     }
 
     private setupInterceptors(): void {
@@ -522,8 +689,21 @@ export class RestService {
             throw new Error('Service-to-Service authentication requires applicationClientId and applicationClientSecret');
         }
 
+        // Both v11 and v11-style baseUrl topologies resolve authRoot to
+        // /Configuration/ProductVersion/$value — a metadata probe, not a token
+        // endpoint. Require callers to supply authUrl explicitly in those cases.
+        // Validation lives outside the try/catch so its message is not double-wrapped.
+        if (!this.config.authUrl) {
+            const topo = this.determineTopology();
+            const baseUrlIsV12 = topo === 'base_url'
+                && /api\/v1\/Databases/.test(this.config.baseUrl ?? '');
+            if (topo === 'v11' || (topo === 'base_url' && !baseUrlIsV12)) {
+                throw new Error("'authUrl' is required for Service-to-Service authentication on v11 topology");
+            }
+        }
+
         try {
-            const tokenEndpoint = this.config.authUrl || `${this.buildBaseUrl()}/oauth/token`;
+            const tokenEndpoint = this.config.authUrl || this.resolveRoots().authRoot;
 
             const tokenPayload = {
                 grant_type: 'client_credentials',
