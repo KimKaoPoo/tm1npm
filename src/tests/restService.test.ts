@@ -242,36 +242,36 @@ describe('RestService URL topology dispatch', () => {
 
     describe('v11 pattern', () => {
         test('should build v11 URL with ssl=true and default port', () => {
-            const svc = new (require('../services/RestService').RestService)({ address: 'host', ssl: true });
+            const svc = new RestService({ address: 'host', ssl: true });
             expect(lastBaseURL()).toBe('https://host:8001/api/v1');
             expect((svc as any).resolveRoots().authRoot).toBe('https://host:8001/api/v1/Configuration/ProductVersion/$value');
         });
 
         test('should build v11 URL with ssl=false and explicit port', () => {
-            new (require('../services/RestService').RestService)({ address: 'host', port: 9000, ssl: false });
+            new RestService({ address: 'host', port: 9000, ssl: false });
             expect(lastBaseURL()).toBe('http://host:9000/api/v1');
         });
 
         test('should default address to localhost when omitted', () => {
-            new (require('../services/RestService').RestService)({ ssl: false, port: 8001 });
+            new RestService({ ssl: false, port: 8001 });
             expect(lastBaseURL()).toBe('http://localhost:8001/api/v1');
         });
     });
 
     describe('baseUrl override', () => {
         test('should use baseUrl verbatim when it ends with /api/v1', () => {
-            const svc = new (require('../services/RestService').RestService)({ baseUrl: 'http://x/api/v1' });
+            const svc = new RestService({ baseUrl: 'http://x/api/v1' });
             expect(lastBaseURL()).toBe('http://x/api/v1');
             expect((svc as any).resolveRoots().authRoot).toBe('http://x/api/v1/Configuration/ProductVersion/$value');
         });
 
         test('should append /api/v1 when baseUrl lacks it', () => {
-            new (require('../services/RestService').RestService)({ baseUrl: 'http://x' });
+            new RestService({ baseUrl: 'http://x' });
             expect(lastBaseURL()).toBe('http://x/api/v1');
         });
 
         test('should resolve Databases() baseUrl when authUrl provided', () => {
-            const svc = new (require('../services/RestService').RestService)({
+            const svc = new RestService({
                 baseUrl: "http://x/api/v1/Databases('DB')",
                 authUrl: 'http://x/auth'
             });
@@ -280,13 +280,13 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should throw for Databases() baseUrl without authUrl', () => {
-            expect(() => new (require('../services/RestService').RestService)({
+            expect(() => new RestService({
                 baseUrl: "http://x/api/v1/Databases('DB')"
             })).toThrow(/Auth_url missing/);
         });
 
         test('should throw when baseUrl and address both provided', () => {
-            expect(() => new (require('../services/RestService').RestService)({
+            expect(() => new RestService({
                 baseUrl: 'http://x/api/v1',
                 address: 'y'
             })).toThrow(/Base URL and Address/);
@@ -295,7 +295,7 @@ describe('RestService URL topology dispatch', () => {
 
     describe('IBM Cloud pattern', () => {
         test('should build IBM Cloud URL when iamUrl provided', () => {
-            const svc = new (require('../services/RestService').RestService)({
+            const svc = new RestService({
                 address: 'pa.ibm.com',
                 tenant: 'T1',
                 database: 'DB1',
@@ -308,7 +308,7 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should throw when IBM Cloud missing tenant', () => {
-            expect(() => new (require('../services/RestService').RestService)({
+            expect(() => new RestService({
                 address: 'pa.ibm.com',
                 database: 'DB1',
                 iamUrl: 'https://iam',
@@ -317,7 +317,7 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should throw when IBM Cloud ssl=false', () => {
-            expect(() => new (require('../services/RestService').RestService)({
+            expect(() => new RestService({
                 address: 'pa.ibm.com',
                 tenant: 'T1',
                 database: 'DB1',
@@ -329,7 +329,7 @@ describe('RestService URL topology dispatch', () => {
 
     describe('PA Proxy pattern', () => {
         test('should build PA Proxy URL with https', () => {
-            const svc = new (require('../services/RestService').RestService)({
+            const svc = new RestService({
                 address: 'h',
                 database: 'DB',
                 user: 'u',
@@ -341,7 +341,7 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should build PA Proxy URL with http', () => {
-            new (require('../services/RestService').RestService)({
+            new RestService({
                 address: 'h',
                 database: 'DB',
                 user: 'u',
@@ -354,7 +354,7 @@ describe('RestService URL topology dispatch', () => {
 
     describe('S2S pattern', () => {
         test('should build S2S URL with port and ssl', () => {
-            const svc = new (require('../services/RestService').RestService)({
+            const svc = new RestService({
                 address: 'h',
                 port: 443,
                 instance: 'INST',
@@ -366,7 +366,7 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should build S2S URL without port', () => {
-            new (require('../services/RestService').RestService)({
+            new RestService({
                 address: 'h',
                 instance: 'INST',
                 database: 'DB',
@@ -376,7 +376,7 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should default to localhost when address is empty', () => {
-            new (require('../services/RestService').RestService)({
+            new RestService({
                 address: '',
                 instance: 'I',
                 database: 'D',
@@ -386,7 +386,7 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should throw S2S without instance', () => {
-            expect(() => new (require('../services/RestService').RestService)({
+            expect(() => new RestService({
                 address: 'h',
                 instance: 'INST',
                 ssl: true
@@ -396,7 +396,7 @@ describe('RestService URL topology dispatch', () => {
 
     describe('Config pass-through and axios wiring', () => {
         test('should accept all new config fields without error', () => {
-            expect(() => new (require('../services/RestService').RestService)({
+            expect(() => new RestService({
                 baseUrl: 'http://x/api/v1',
                 iamUrl: 'https://iam',
                 paUrl: 'https://pa',
@@ -413,7 +413,7 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should pass proxy.https to axios when provided', () => {
-            new (require('../services/RestService').RestService)({
+            new RestService({
                 baseUrl: 'http://x/api/v1',
                 proxies: { https: 'https://proxy.example.com:8443' }
             });
@@ -422,7 +422,7 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should fall back to proxy.http when https not provided', () => {
-            new (require('../services/RestService').RestService)({
+            new RestService({
                 baseUrl: 'http://x/api/v1',
                 proxies: { http: 'http://proxy.example.com:8080' }
             });
@@ -431,14 +431,15 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should not set proxy when proxies unset', () => {
-            new (require('../services/RestService').RestService)({ baseUrl: 'http://x/api/v1' });
+            new RestService({ baseUrl: 'http://x/api/v1' });
             const cfg = firstCreateArg();
             expect(cfg.proxy).toBeUndefined();
         });
 
         test('should pass sslContext through as httpsAgent', () => {
-            const agent = { _custom: 'agent' };
-            new (require('../services/RestService').RestService)({
+            const https = require('https');
+            const agent = new https.Agent();
+            new RestService({
                 baseUrl: 'http://x/api/v1',
                 sslContext: agent
             });
@@ -447,7 +448,7 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should not treat cpdUrl alone as v12 topology signal', () => {
-            new (require('../services/RestService').RestService)({
+            new RestService({
                 address: 'host',
                 port: 9000,
                 ssl: false,
@@ -457,7 +458,7 @@ describe('RestService URL topology dispatch', () => {
         });
 
         test('should not treat gateway alone as v12 topology signal', () => {
-            new (require('../services/RestService').RestService)({
+            new RestService({
                 address: 'host',
                 port: 9000,
                 ssl: false,

@@ -5,6 +5,8 @@ import { TM1RestException, TM1TimeoutException } from '../exceptions/TM1Exceptio
 
 type UrlTopology = 'base_url' | 'v11' | 'ibm_cloud' | 'pa_proxy' | 's2s';
 
+const PRODUCT_VERSION_AUTH_SUFFIX = '/Configuration/ProductVersion/$value';
+
 export enum AuthenticationMode {
     BASIC = 1,
     WIA = 2,
@@ -61,7 +63,7 @@ export interface RestServiceConfig {
 
     // Network / TLS
     proxies?: { http?: string; https?: string };
-    sslContext?: any;
+    sslContext?: https.Agent;
     cert?: string | [string, string];
 }
 
@@ -179,7 +181,7 @@ export class RestService {
         const address = this.config.address || 'localhost';
         const port = this.config.port ?? 8001;
         const serviceRoot = `${protocol}://${address}:${port}/api/v1`;
-        return { serviceRoot, authRoot: `${serviceRoot}/Configuration/ProductVersion/$value` };
+        return { serviceRoot, authRoot: serviceRoot + PRODUCT_VERSION_AUTH_SUFFIX };
     }
 
     private rootsIbmCloud(): { serviceRoot: string; authRoot: string } {
@@ -193,7 +195,7 @@ export class RestService {
         const t = encodeURIComponent(tenant);
         const d = encodeURIComponent(database);
         const serviceRoot = `https://${address}/api/${t}/v0/tm1/${d}`;
-        return { serviceRoot, authRoot: `${serviceRoot}/Configuration/ProductVersion/$value` };
+        return { serviceRoot, authRoot: serviceRoot + PRODUCT_VERSION_AUTH_SUFFIX };
     }
 
     private rootsPaProxy(): { serviceRoot: string; authRoot: string } {
@@ -237,7 +239,7 @@ export class RestService {
             return { serviceRoot: base, authRoot: this.config.authUrl };
         }
         const serviceRoot = base.endsWith('/api/v1') ? base : `${base}/api/v1`;
-        return { serviceRoot, authRoot: `${serviceRoot}/Configuration/ProductVersion/$value` };
+        return { serviceRoot, authRoot: serviceRoot + PRODUCT_VERSION_AUTH_SUFFIX };
     }
 
     private setupInterceptors(): void {
