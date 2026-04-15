@@ -561,6 +561,11 @@ export class RestService {
         }
 
         try {
+            // v11's authRoot is /Configuration/ProductVersion/$value — a metadata probe,
+            // not a token endpoint. Require callers to supply authUrl explicitly.
+            if (!this.config.authUrl && this.determineTopology() === 'v11') {
+                throw new Error("'authUrl' is required for Service-to-Service authentication on v11 topology");
+            }
             const tokenEndpoint = this.config.authUrl || this.resolveRoots().authRoot;
 
             const tokenPayload = {

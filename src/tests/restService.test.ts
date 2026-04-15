@@ -350,6 +350,15 @@ describe('RestService URL topology dispatch', () => {
             });
             expect(lastBaseURL()).toBe('http://h/tm1/DB/api/v1');
         });
+
+        test('should throw when PA Proxy missing database', () => {
+            expect(() => new RestService({
+                address: 'h',
+                user: 'u',
+                paUrl: 'https://pa',
+                ssl: true
+            })).toThrow(/'address'.*'database'.*must be provided/);
+        });
     });
 
     describe('S2S pattern', () => {
@@ -465,6 +474,20 @@ describe('RestService URL topology dispatch', () => {
                 gateway: 'https://gw'
             });
             expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+    });
+
+    describe('S2S token endpoint guard', () => {
+        test('should throw when S2S auth runs on v11 topology without authUrl', async () => {
+            const svc = new RestService({
+                address: 'host',
+                ssl: true,
+                applicationClientId: 'id',
+                applicationClientSecret: 'secret'
+            });
+            await expect((svc as any).setupServiceToServiceAuthentication()).rejects.toThrow(
+                /'authUrl' is required for Service-to-Service authentication on v11 topology/
+            );
         });
     });
 });
