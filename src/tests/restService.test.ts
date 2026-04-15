@@ -215,4 +215,323 @@ describe('RestService Tests', () => {
             expect(response1.data).toEqual(response2.data);
         });
     });
+
+    describe('Cookie-based Session Management', () => {
+        const makeSvc = (overrides: any = {}) => {
+            const instance = {
+                get: jest.fn(),
+                post: jest.fn(),
+                patch: jest.fn(),
+                delete: jest.fn(),
+                put: jest.fn(),
+                defaults: { headers: { common: {} as Record<string, string> } },
+                interceptors: {
+                    request: { use: jest.fn() },
+                    response: { use: jest.fn() }
+                }
+            };
+            mockedAxios.create.mockReturnValue(instance as any);
+            const svc = new RestService({
+                baseUrl: 'http://localhost:8879/api/v1',
+                user: 'admin',
+                password: 'password',
+                ...overrides
+            });
+            return { svc, instance };
+        };
+
+        describe('parseSetCookieHeaders', () => {
+            test('captures TM1SessionId from Set-Cookie array with Domain/Path attributes', () => {
+                const { svc } = makeSvc();
+                (svc as any).parseSetCookieHeaders(['TM1SessionId=abc123; Path=/; HttpOnly']);
+                expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('abc123');
+            });
+
+            test('captures paSession (v12) from Set-Cookie', () => {
+                const { svc } = makeSvc();
+                (svc as any).parseSetCookieHeaders(['paSession=v12xyz; Domain=backend.local; Path=/']);
+                expect((svc as any).sessionCookies.get('paSession')).toBe('v12xyz');
+            });
+
+            test('accepts single string input', () => {
+                const { svc } = makeSvc();
+                (svc as any).parseSetCookieHeaders('TM1SessionId=single; Path=/');
+                expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('single');
+            });
+
+            test('ignores undefined / empty array / malformed input', () => {
+                const { svc } = makeSvc();
+                (svc as any).parseSetCookieHeaders(undefined);
+                (svc as any).parseSetCookieHeaders([]);
+                (svc as any).parseSetCookieHeaders(['malformed_no_equals']);
+                expect((svc as any).sessionCookies.size).toBe(0);
+            });
+
+            test('empty value deletes the stored cookie', () => {
+                const { svc } = makeSvc();
+                (svc as any).sessionCookies.set('TM1SessionId', 'x');
+                (svc as any).parseSetCookieHeaders(['TM1SessionId=; Max-Age=0']);
+                expect((svc as any).sessionCookies.has('TM1SessionId')).toBe(false);
+            });
+
+            test('ignores non-session cookies', () => {
+                const { svc } = makeSvc();
+                (svc as any).parseSetCookieHeaders([
+                    'BIGipServer=xxx; Path=/',
+                    'JSESSIONID=yyy'
+                ]);
+                expect((svc as any).sessionCookies.size).toBe(0);
+            });
+
+            test('cookie with bogus Domain still produces outbound Cookie on next call (reverse-proxy)', () => {
+                const { svc } = makeSvc();
+                (svc as any).parseSetCookieHeaders([
+                    'TM1SessionId=proxied; Domain=internal.backend; Path=/'
+                ]);
+                const header = (svc as any).buildCookieHeader();
+                expect(header).toBe('TM1SessionId=proxied');
+                expect(header).not.toContain('Domain');
+                expect(header).not.toContain('Path');
+            });
+        });
+
+        describe('buildCookieHeader', () => {
+            test('empty store returns undefined', () => {
+                const { svc } = makeSvc();
+                expect((svc as any).buildCookieHeader()).toBeUndefined();
+            });
+
+            test('serializes multiple cookies as name=value; name=value', () => {
+                const { svc } = makeSvc();
+                (svc as any).sessionCookies.set('TM1SessionId', 'a');
+                (svc as any).sessionCookies.set('paSession', 'b');
+                const header = (svc as any).buildCookieHeader() as string;
+                const parts = header.split('; ').sort();
+                expect(parts).toEqual(['TM1SessionId=a', 'paSession=b'].sort());
+            });
+        });
+
+        describe('getSessionCookieValue', () => {
+            test('TM1SessionId wins over paSession when both are stored', () => {
+                const { svc } = makeSvc();
+                (svc as any).sessionCookies.set('TM1SessionId', 'v11');
+                (svc as any).sessionCookies.set('paSession', 'v12');
+                expect((svc as any).getSessionCookieValue()).toBe('v11');
+            });
+
+            test('returns paSession when only v12 cookie is stored', () => {
+                const { svc } = makeSvc();
+                (svc as any).sessionCookies.set('paSession', 'v12-only');
+                expect((svc as any).getSessionCookieValue()).toBe('v12-only');
+            });
+        });
+
+        describe('Constructor seeding', () => {
+            test('seeds TM1SessionId when config.sessionId is provided', () => {
+                const { svc } = makeSvc({ sessionId: 'seeded-abc' });
+                expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('seeded-abc');
+                expect(svc.getSessionId()).toBe('seeded-abc');
+            });
+
+            test('does not seed when config.sessionId is absent', () => {
+                const { svc } = makeSvc();
+                expect((svc as any).sessionCookies.size).toBe(0);
+            });
+        });
+
+        describe('connect / disconnect', () => {
+            test('connect removes Authorization from axios defaults after success', async () => {
+                const { svc, instance } = makeSvc();
+                instance.defaults.headers.common['Authorization'] = 'Basic xxx';
+                instance.get.mockResolvedValue(createMockResponse({ value: 'Server1' }));
+                // Simulate server issuing a session cookie so stripping Authorization is safe
+                (svc as any).sessionCookies.set('TM1SessionId', 'from-server');
+
+                await svc.connect();
+
+                expect(instance.defaults.headers.common['Authorization']).toBeUndefined();
+                expect(svc.isLoggedIn()).toBe(true);
+            });
+
+            test('connect preserves Authorization when no session cookie was issued (Bearer-only mode)', async () => {
+                const { svc, instance } = makeSvc({ accessToken: 'bearer-xyz' });
+                instance.defaults.headers.common['Authorization'] = 'Bearer bearer-xyz';
+                instance.get.mockResolvedValue(createMockResponse({ value: 'Server1' }));
+
+                await svc.connect();
+
+                expect(instance.defaults.headers.common['Authorization']).toBe('Bearer bearer-xyz');
+            });
+
+            test('connect skips setupAuthentication when config.sessionId was provided', async () => {
+                const { svc, instance } = makeSvc({ sessionId: 'seed' });
+                const authSpy = jest.fn();
+                (svc as any).setupAuthentication = authSpy;
+                instance.get.mockResolvedValue(createMockResponse({ value: 'Server1' }));
+
+                await svc.connect();
+
+                expect(authSpy).not.toHaveBeenCalled();
+                expect(instance.get).toHaveBeenCalledWith('/Configuration/ServerName');
+                expect(svc.isLoggedIn()).toBe(true);
+            });
+
+            test('connect calls setupAuthentication when no session cookie is seeded', async () => {
+                const { svc, instance } = makeSvc();
+                const authSpy = jest.fn().mockResolvedValue(undefined);
+                (svc as any).setupAuthentication = authSpy;
+                instance.get.mockResolvedValue(createMockResponse({ value: 'Server1' }));
+
+                await svc.connect();
+
+                expect(authSpy).toHaveBeenCalledTimes(1);
+            });
+
+            test('disconnect clears sessionCookies and flips isLoggedIn to false', async () => {
+                const { svc, instance } = makeSvc();
+                (svc as any).sessionCookies.set('TM1SessionId', 'abc');
+                (svc as any).isConnected = true;
+                instance.post.mockResolvedValue(createMockResponse({}, 204));
+
+                await svc.disconnect();
+
+                expect((svc as any).sessionCookies.size).toBe(0);
+                expect(svc.isLoggedIn()).toBe(false);
+            });
+        });
+
+        describe('removeAuthorizationHeader', () => {
+            test('deletes Authorization from axios defaults', () => {
+                const { svc, instance } = makeSvc();
+                instance.defaults.headers.common['Authorization'] = 'Basic xxx';
+                (svc as any).removeAuthorizationHeader();
+                expect(instance.defaults.headers.common['Authorization']).toBeUndefined();
+            });
+        });
+
+        describe('Interceptor flow', () => {
+            // Exercises the response interceptor that RestService installs during construction
+            // via axios.defaults. Captured at test time from the real interceptor-install call.
+            let capturedResponseSuccess: (r: any) => any;
+            let capturedResponseError: (e: any) => Promise<any>;
+            let capturedRequest: (c: any) => any;
+            let realSvc: RestService;
+            let realInstance: any;
+
+            beforeEach(() => {
+                capturedRequest = (c: any) => c;
+                capturedResponseSuccess = (r: any) => r;
+                capturedResponseError = async (e: any) => Promise.reject(e);
+                realInstance = {
+                    get: jest.fn(),
+                    post: jest.fn(),
+                    defaults: { headers: { common: {} as Record<string, string> } },
+                    interceptors: {
+                        request: { use: jest.fn((fn: any) => { capturedRequest = fn; }) },
+                        response: { use: jest.fn((success: any, err: any) => {
+                            capturedResponseSuccess = success;
+                            capturedResponseError = err;
+                        })}
+                    }
+                };
+                mockedAxios.create.mockReturnValue(realInstance);
+                // Make axiosInstance callable as a function for retry replay
+                const callable: any = jest.fn();
+                Object.assign(callable, realInstance);
+                mockedAxios.create.mockReturnValue(callable);
+                realInstance = callable;
+                realSvc = new RestService({ baseUrl: 'http://x/api/v1', user: 'a', password: 'b' });
+            });
+
+            test('response interceptor captures Set-Cookie on success', () => {
+                capturedResponseSuccess({
+                    headers: { 'set-cookie': ['TM1SessionId=captured; Path=/'] },
+                    data: {}, status: 200
+                });
+                expect((realSvc as any).sessionCookies.get('TM1SessionId')).toBe('captured');
+            });
+
+            test('response interceptor captures Set-Cookie on error responses too', async () => {
+                // Use a 403 (not a retryable 5xx, not a 401 re-auth trigger) so it falls through
+                // to the throw path without being replayed by the retry logic
+                await expect(capturedResponseError({
+                    response: { status: 403, statusText: 'Forbidden', data: {}, headers: { 'set-cookie': ['paSession=fromErr; Path=/'] } },
+                    config: { headers: {} },
+                    message: 'Forbidden'
+                })).rejects.toBeDefined();
+                expect((realSvc as any).sessionCookies.get('paSession')).toBe('fromErr');
+            });
+
+            test('request interceptor writes Cookie header from the store', () => {
+                (realSvc as any).sessionCookies.set('TM1SessionId', 'outbound');
+                const out = capturedRequest({ headers: {} });
+                expect(out.headers['Cookie']).toBe('TM1SessionId=outbound');
+            });
+
+            test('401 triggers reAuth and replays the request with fresh Cookie, no stale Authorization', async () => {
+                (realSvc as any).isConnected = true;
+                (realSvc as any).sessionCookies.set('TM1SessionId', 'expired');
+                // reAuthenticate() calls disconnect() + connect(); mock both network calls to succeed
+                realInstance.post.mockResolvedValue(createMockResponse({}, 204));
+                realInstance.get.mockResolvedValue(createMockResponse({ value: 'Server1' }));
+                // Simulate new server-issued cookie during connect's probe by seeding directly —
+                // the real interceptor would capture it from set-cookie, but we short-circuit here
+                const reAuthSpy = jest.spyOn(realSvc as any, 'reAuthenticate').mockImplementation(async () => {
+                    (realSvc as any).sessionCookies.clear();
+                    (realSvc as any).sessionCookies.set('TM1SessionId', 'fresh');
+                });
+                // axios instance is callable — replay returns a sentinel
+                const replayed = createMockResponse({ ok: true }, 200);
+                (realInstance as unknown as jest.Mock).mockResolvedValue(replayed);
+
+                const originalRequest: any = {
+                    headers: { 'Cookie': 'TM1SessionId=expired', 'authorization': 'Basic lowercase' },
+                    url: '/SomeEndpoint',
+                };
+                const result = await capturedResponseError({
+                    response: { status: 401, headers: {} },
+                    config: originalRequest,
+                    message: 'Unauthorized',
+                });
+
+                expect(reAuthSpy).toHaveBeenCalledTimes(1);
+                expect(originalRequest._retry).toBe(true);
+                expect(originalRequest.headers['Cookie']).toBeUndefined();
+                // Case-insensitive delete caught the lowercase variant
+                expect(originalRequest.headers['authorization']).toBeUndefined();
+                expect(result).toBe(replayed);
+            });
+
+            test('401 on tm1.Close does not recurse into reAuthenticate (isConnected guard)', async () => {
+                (realSvc as any).isConnected = false;
+                const reAuthSpy = jest.spyOn(realSvc as any, 'reAuthenticate');
+                await expect(capturedResponseError({
+                    response: { status: 401, statusText: 'Unauthorized', data: {}, headers: {} },
+                    config: { headers: {} },
+                    message: 'Unauthorized',
+                })).rejects.toBeDefined();
+                expect(reAuthSpy).not.toHaveBeenCalled();
+            });
+        });
+
+        describe('isLoggedIn branches', () => {
+            test('returns false when not connected', () => {
+                const { svc } = makeSvc();
+                expect(svc.isLoggedIn()).toBe(false);
+            });
+
+            test('returns false when connected but no session cookie', () => {
+                const { svc } = makeSvc();
+                (svc as any).isConnected = true;
+                expect(svc.isLoggedIn()).toBe(false);
+            });
+
+            test('returns true when connected AND session cookie present', () => {
+                const { svc } = makeSvc();
+                (svc as any).isConnected = true;
+                (svc as any).sessionCookies.set('TM1SessionId', 'abc');
+                expect(svc.isLoggedIn()).toBe(true);
+            });
+        });
+    });
 });
