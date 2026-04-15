@@ -53,9 +53,11 @@ export class RestService {
     private static readonly DEFAULT_CONNECTION_POOL_SIZE = 10;
     private static readonly DEFAULT_POOL_CONNECTIONS = 1;
 
+    private static readonly SESSION_COOKIE_NAMES = ['TM1SessionId', 'paSession'] as const;
+
     private axiosInstance!: AxiosInstance;
     private config: RestServiceConfig;
-    private sessionId?: string;
+    private sessionCookies: Map<string, string> = new Map();
     private sandboxName?: string;
     private isConnected: boolean = false;
     private _serverVersion?: string;
@@ -67,6 +69,50 @@ export class RestService {
     constructor(config: RestServiceConfig) {
         this.config = { ...config };
         this.setupAxiosInstance();
+        if (this.config.sessionId) {
+            // Default to v11 cookie name; v12 seeding via config is not yet modeled.
+            this.sessionCookies.set('TM1SessionId', this.config.sessionId);
+        }
+    }
+
+    private getSessionCookieValue(): string | undefined {
+        for (const name of RestService.SESSION_COOKIE_NAMES) {
+            const value = this.sessionCookies.get(name);
+            if (value) return value;
+        }
+        return undefined;
+    }
+
+    private buildCookieHeader(): string | undefined {
+        if (this.sessionCookies.size === 0) return undefined;
+        const parts: string[] = [];
+        for (const [name, value] of this.sessionCookies) {
+            parts.push(`${name}=${value}`);
+        }
+        return parts.join('; ');
+    }
+
+    private parseSetCookieHeaders(setCookie: string[] | string | undefined): void {
+        if (!setCookie) return;
+        const list = Array.isArray(setCookie) ? setCookie : [setCookie];
+        const whitelist = new Set<string>(RestService.SESSION_COOKIE_NAMES);
+        for (const raw of list) {
+            const firstSegment = raw.split(';')[0];
+            const eqIdx = firstSegment.indexOf('=');
+            if (eqIdx <= 0) continue;
+            const name = firstSegment.slice(0, eqIdx).trim();
+            const value = firstSegment.slice(eqIdx + 1).trim();
+            if (!whitelist.has(name)) continue;
+            if (value === '') {
+                this.sessionCookies.delete(name);
+            } else {
+                this.sessionCookies.set(name, value);
+            }
+        }
+    }
+
+    private removeAuthorizationHeader(): void {
+        delete this.axiosInstance.defaults.headers.common['Authorization'];
     }
 
     private setupAxiosInstance(): void {
@@ -100,8 +146,9 @@ export class RestService {
         // Request interceptor
         this.axiosInstance.interceptors.request.use(
             (config) => {
-                if (this.sessionId) {
-                    config.headers['TM1SessionId'] = this.sessionId;
+                const cookieHeader = this.buildCookieHeader();
+                if (cookieHeader) {
+                    config.headers['Cookie'] = cookieHeader;
                 }
                 if (this.sandboxName) {
                     config.headers['TM1-Sandbox'] = this.sandboxName;
@@ -113,8 +160,14 @@ export class RestService {
 
         // Response interceptor with retry logic
         this.axiosInstance.interceptors.response.use(
-            (response) => response,
+            (response) => {
+                this.parseSetCookieHeaders(response.headers?.['set-cookie']);
+                return response;
+            },
             async (error) => {
+                if (error.response) {
+                    this.parseSetCookieHeaders(error.response.headers?.['set-cookie']);
+                }
                 const originalRequest = error.config;
 
                 // Handle timeout errors
@@ -130,10 +183,9 @@ export class RestService {
                         // Attempt re-authentication
                         await this.reAuthenticate();
 
-                        // Update the request with new session/token
-                        if (this.sessionId) {
-                            originalRequest.headers['TM1SessionId'] = this.sessionId;
-                        }
+                        // Drop stale Cookie/Authorization so the request interceptor rebuilds on replay
+                        delete originalRequest.headers['Cookie'];
+                        delete originalRequest.headers['Authorization'];
 
                         // Retry the original request
                         return this.axiosInstance(originalRequest);
@@ -209,23 +261,16 @@ export class RestService {
 
     public async connect(): Promise<void> {
         try {
-            // Set up authentication based on configuration
-            await this.setupAuthentication();
-
-            // Test connection
-            const response = await this.axiosInstance.get('/Configuration/ServerName');
-            
-            // Extract session ID from response headers
-            const setCookie = response.headers['set-cookie'];
-            if (setCookie) {
-                for (const cookie of setCookie) {
-                    const match = cookie.match(/TM1SessionId=([^;]+)/);
-                    if (match) {
-                        this.sessionId = match[1];
-                        break;
-                    }
-                }
+            // Skip auth if a session cookie was seeded (via config.sessionId) or is already present
+            if (this.getSessionCookieValue() === undefined) {
+                await this.setupAuthentication();
             }
+
+            // Test connection — response interceptor captures any Set-Cookie
+            await this.axiosInstance.get('/Configuration/ServerName');
+
+            // Drop Authorization now that session is established (parity with tm1py)
+            this.removeAuthorizationHeader();
 
             this.isConnected = true;
         } catch (error) {
@@ -234,15 +279,15 @@ export class RestService {
     }
 
     public async disconnect(): Promise<void> {
-        if (this.isConnected && this.sessionId) {
+        if (this.isConnected && this.getSessionCookieValue()) {
             try {
                 await this.axiosInstance.post('/ActiveSession/tm1.Close', {});
             } catch (error) {
                 // Ignore errors during disconnect
             }
-            this.isConnected = false;
-            this.sessionId = undefined;
         }
+        this.isConnected = false;
+        this.sessionCookies.clear();
     }
 
     public async get(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse> {
@@ -266,7 +311,7 @@ export class RestService {
     }
 
     public getSessionId(): string | undefined {
-        return this.sessionId;
+        return this.getSessionCookieValue();
     }
 
     public setSandbox(sandboxName?: string): void {
@@ -278,7 +323,7 @@ export class RestService {
     }
 
     public isLoggedIn(): boolean {
-        return this.isConnected && !!this.sessionId;
+        return this.isConnected && !!this.getSessionCookieValue();
     }
 
     public async getApiMetadata(): Promise<any> {
@@ -362,8 +407,7 @@ export class RestService {
             });
 
             if (authResponse.data && authResponse.data.sessionId) {
-                this.sessionId = authResponse.data.sessionId;
-                this.axiosInstance.defaults.headers.common['TM1SessionId'] = this.sessionId;
+                this.sessionCookies.set('TM1SessionId', authResponse.data.sessionId);
             } else {
                 throw new Error('CAM authentication failed: No session ID returned');
             }
@@ -396,8 +440,7 @@ export class RestService {
             if (authResponse.data && authResponse.data.token) {
                 this.axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${authResponse.data.token}`;
             } else if (authResponse.data && authResponse.data.sessionId) {
-                this.sessionId = authResponse.data.sessionId;
-                this.axiosInstance.defaults.headers.common['TM1SessionId'] = this.sessionId;
+                this.sessionCookies.set('TM1SessionId', authResponse.data.sessionId);
             } else {
                 throw new Error('CAM SSO authentication failed: No token or session ID returned');
             }
@@ -513,7 +556,7 @@ export class RestService {
     } {
         return {
             isConnected: this.isConnected,
-            sessionId: this.sessionId,
+            sessionId: this.getSessionCookieValue(),
             authMode: this.getAuthenticationMode(),
             baseUrl: this.buildBaseUrl(),
             timeout: (this.config.timeout || 60) * 1000,
@@ -618,14 +661,14 @@ export class RestService {
      * Check if currently connected to TM1
      */
     public is_connected(): boolean {
-        return this.isConnected && !!this.sessionId;
+        return this.isConnected && !!this.getSessionCookieValue();
     }
 
     /**
      * Get the current session ID
      */
     public session_id(): string | undefined {
-        return this.sessionId;
+        return this.getSessionCookieValue();
     }
 
     /**
