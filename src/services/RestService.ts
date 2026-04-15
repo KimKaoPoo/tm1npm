@@ -315,7 +315,9 @@ export class RestService {
         // and use them verbatim. Only fall through to /api/v1 suffixing when the
         // URL clearly lacks any TM1 API path — matching tm1py's fallback.
         const trimmed = base.replace(/\/+$/, '');
-        const hasApiSuffix = /\/api\/v1$|\/v0\/tm1\/|\/tm1\/api\/tm1$/.test(trimmed);
+        // Each alternative is $-anchored (after trailing-slash trim above) so the
+        // match intent is explicit: the URL already ends in a TM1 API suffix.
+        const hasApiSuffix = /\/api\/v1$|\/v0\/tm1\/[^/]+$|\/tm1\/api\/tm1$/.test(trimmed);
         const serviceRoot = hasApiSuffix ? trimmed : `${trimmed}/api/v1`;
         return { serviceRoot, authRoot: serviceRoot + PRODUCT_VERSION_AUTH_SUFFIX };
     }

@@ -666,7 +666,7 @@ describe('RestService URL topology dispatch', () => {
                 database: 'DB1',
                 iamUrl: 'https://iam',
                 ssl: true
-            })).toThrow(/tenant.*database|address.*tenant/);
+            })).toThrow("'address', 'tenant' and 'database' must be provided to connect to TM1 > v12 in IBM Cloud");
         });
 
         test('should throw when IBM Cloud ssl=false', () => {
