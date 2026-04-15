@@ -336,7 +336,7 @@ export class RestService {
         cancelAtTimeout: boolean
     ): Promise<AxiosResponse> {
         for (const wait of this.waitTimeGenerator(timeout)) {
-            const response = await this.axiosInstance.get(`/_async('${asyncId}')`);
+            const response = await this.retrieve_async_response(asyncId);
 
             if (response.status === 200 || response.status === 201) {
                 return response;
@@ -347,7 +347,7 @@ export class RestService {
 
         if (cancelAtTimeout) {
             try {
-                await this.axiosInstance.delete(`/_async('${asyncId}')`);
+                await this.cancel_async_operation(asyncId);
             } catch {
                 // Best-effort cancellation on timeout.
             }

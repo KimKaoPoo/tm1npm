@@ -460,6 +460,7 @@ describe('ProcessService Tests', () => {
     describe('Process Async Polling', () => {
         test('pollExecuteWithReturn should return parsed result on success', async () => {
             (mockRestService as any).retrieve_async_response = jest.fn().mockResolvedValue({
+                status: 200,
                 data: {
                     ProcessExecuteStatusCode: 'CompletedSuccessfully',
                     ErrorLogFile: null
@@ -474,6 +475,7 @@ describe('ProcessService Tests', () => {
 
         test('pollExecuteWithReturn should return error log file when present', async () => {
             (mockRestService as any).retrieve_async_response = jest.fn().mockResolvedValue({
+                status: 200,
                 data: {
                     ProcessExecuteStatusCode: 'CompletedWithMessages',
                     ErrorLogFile: { Filename: 'TM1ProcessError_20240101.log' }
@@ -497,10 +499,10 @@ describe('ProcessService Tests', () => {
         });
 
         test('pollExecuteWithReturn should return null for 202 (accepted/pending)', async () => {
-            const { TM1RestException } = require('../exceptions/TM1Exception');
-            (mockRestService as any).retrieve_async_response = jest.fn().mockRejectedValue(
-                new TM1RestException('Accepted', 202)
-            );
+            (mockRestService as any).retrieve_async_response = jest.fn().mockResolvedValue({
+                status: 202,
+                data: {}
+            });
 
             const result = await processService.pollExecuteWithReturn('async-004');
 

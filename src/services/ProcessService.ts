@@ -247,13 +247,16 @@ export class ProcessService extends ObjectService {
     public async pollExecuteWithReturn(asyncId: string): Promise<[boolean, string, string | null] | null> {
         try {
             const response = await this.rest.retrieve_async_response(asyncId);
+            // tm1py returns None while the async op is still in-flight (status 202).
+            if (response.status !== 200 && response.status !== 201) {
+                return null;
+            }
             // TODO: tm1py handles TM1 < v11 binary-wrapped responses via
             // build_response_from_binary_response. Add support if needed.
             return this._executeWithReturnParseResponse(response.data);
         } catch (error: any) {
-            // Return null for HTTP 202 (accepted/pending) or 404 (not found yet)
             const status = error?.status ?? error?.response?.status;
-            if (status === 202 || status === 404) {
+            if (status === 404) {
                 return null;
             }
             throw error;

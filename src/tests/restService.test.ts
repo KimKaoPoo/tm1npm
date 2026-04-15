@@ -72,17 +72,16 @@ describe('RestService', () => {
     });
 
     test('routes async requests with Prefer header and polls /_async endpoint', async () => {
-        mockAxiosInstance.request.mockResolvedValue(
-            createMockResponse({}, 202, {
+        mockAxiosInstance.request
+            .mockResolvedValueOnce(createMockResponse({}, 202, {
                 location: "/api/v1/_async('async-001')"
-            })
-        );
-        mockAxiosInstance.get.mockResolvedValue(createMockResponse({ done: true }, 200));
+            }))
+            .mockResolvedValueOnce(createMockResponse({ done: true }, 200));
 
         const response = await restService.get('/Threads', { asyncRequestsMode: true });
 
         expect(response.data.done).toBe(true);
-        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+        expect(mockAxiosInstance.request).toHaveBeenNthCalledWith(1,
             expect.objectContaining({
                 method: 'GET',
                 url: '/Threads',
@@ -91,7 +90,12 @@ describe('RestService', () => {
                 })
             })
         );
-        expect(mockAxiosInstance.get).toHaveBeenCalledWith("/_async('async-001')");
+        expect(mockAxiosInstance.request).toHaveBeenNthCalledWith(2,
+            expect.objectContaining({
+                method: 'GET',
+                url: "/_async('async-001')"
+            })
+        );
     });
 
     test('returns async ID when returnAsyncId is true', async () => {
@@ -192,13 +196,17 @@ describe('RestService', () => {
     test('cancels async operation on timeout when cancelAtTimeout is true', async () => {
         jest.useFakeTimers();
 
-        mockAxiosInstance.request.mockResolvedValue(
-            createMockResponse({}, 202, {
-                location: "/api/v1/_async('async-timeout')"
-            })
-        );
-        mockAxiosInstance.get.mockResolvedValue(createMockResponse({}, 202));
-        mockAxiosInstance.delete.mockResolvedValue(createMockResponse({}, 204));
+        mockAxiosInstance.request.mockImplementation((config: any) => {
+            if (config.method === 'GET' && config.url === '/Threads') {
+                return Promise.resolve(createMockResponse({}, 202, {
+                    location: "/api/v1/_async('async-timeout')"
+                }));
+            }
+            if (config.method === 'DELETE') {
+                return Promise.resolve(createMockResponse({}, 204));
+            }
+            return Promise.resolve(createMockResponse({}, 202));
+        });
 
         const pending = restService.get('/Threads', {
             asyncRequestsMode: true,
@@ -211,7 +219,12 @@ describe('RestService', () => {
         await jest.advanceTimersByTimeAsync(1000);
 
         await expectation;
-        expect(mockAxiosInstance.delete).toHaveBeenCalledWith("/_async('async-timeout')");
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                method: 'DELETE',
+                url: "/_async('async-timeout')"
+            })
+        );
     });
 
     test('retry interceptor does not retry non-idempotent requests', async () => {
@@ -316,11 +329,16 @@ describe('RestService', () => {
     });
 
     test('wait_for_async_operation returns response data', async () => {
-        mockAxiosInstance.get.mockResolvedValue(createMockResponse({ Status: 'Completed', Result: 1 }, 200));
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({ Status: 'Completed', Result: 1 }, 200));
 
         const data = await restService.wait_for_async_operation('poll-002', 1);
 
         expect(data).toEqual({ Status: 'Completed', Result: 1 });
-        expect(mockAxiosInstance.get).toHaveBeenCalledWith("/_async('poll-002')");
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                method: 'GET',
+                url: "/_async('poll-002')"
+            })
+        );
     });
 });
