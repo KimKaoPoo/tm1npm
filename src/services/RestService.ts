@@ -70,8 +70,8 @@ export class RestService {
         this.config = { ...config };
         this.setupAxiosInstance();
         if (this.config.sessionId) {
-            // Default to v11 cookie name; v12 seeding via config is not yet modeled.
-            this.sessionCookies.set('TM1SessionId', this.config.sessionId);
+            // v12 paSession seeding via config is not yet modeled.
+            this.sessionCookies.set(RestService.SESSION_COOKIE_NAMES[0], this.config.sessionId);
         }
     }
 
@@ -95,14 +95,13 @@ export class RestService {
     private parseSetCookieHeaders(setCookie: string[] | string | undefined): void {
         if (!setCookie) return;
         const list = Array.isArray(setCookie) ? setCookie : [setCookie];
-        const whitelist = new Set<string>(RestService.SESSION_COOKIE_NAMES);
         for (const raw of list) {
             const firstSegment = raw.split(';')[0];
             const eqIdx = firstSegment.indexOf('=');
             if (eqIdx <= 0) continue;
             const name = firstSegment.slice(0, eqIdx).trim();
             const value = firstSegment.slice(eqIdx + 1).trim();
-            if (!whitelist.has(name)) continue;
+            if (!(RestService.SESSION_COOKIE_NAMES as readonly string[]).includes(name)) continue;
             if (value === '') {
                 this.sessionCookies.delete(name);
             } else {
@@ -180,14 +179,12 @@ export class RestService {
                     originalRequest._retry = true;
 
                     try {
-                        // Attempt re-authentication
                         await this.reAuthenticate();
 
-                        // Drop stale Cookie/Authorization so the request interceptor rebuilds on replay
+                        // Stale values would defeat the rebuild by the request interceptor on replay
                         delete originalRequest.headers['Cookie'];
                         delete originalRequest.headers['Authorization'];
 
-                        // Retry the original request
                         return this.axiosInstance(originalRequest);
                     } catch (reAuthError) {
                         // Re-authentication failed, throw original error
@@ -261,15 +258,13 @@ export class RestService {
 
     public async connect(): Promise<void> {
         try {
-            // Skip auth if a session cookie was seeded (via config.sessionId) or is already present
             if (this.getSessionCookieValue() === undefined) {
                 await this.setupAuthentication();
             }
 
-            // Test connection — response interceptor captures any Set-Cookie
             await this.axiosInstance.get('/Configuration/ServerName');
 
-            // Drop Authorization now that session is established (parity with tm1py)
+            // tm1py parity: session cookie now established, so the password must not linger
             this.removeAuthorizationHeader();
 
             this.isConnected = true;
@@ -407,7 +402,7 @@ export class RestService {
             });
 
             if (authResponse.data && authResponse.data.sessionId) {
-                this.sessionCookies.set('TM1SessionId', authResponse.data.sessionId);
+                this.sessionCookies.set(RestService.SESSION_COOKIE_NAMES[0], authResponse.data.sessionId);
             } else {
                 throw new Error('CAM authentication failed: No session ID returned');
             }
@@ -440,7 +435,7 @@ export class RestService {
             if (authResponse.data && authResponse.data.token) {
                 this.axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${authResponse.data.token}`;
             } else if (authResponse.data && authResponse.data.sessionId) {
-                this.sessionCookies.set('TM1SessionId', authResponse.data.sessionId);
+                this.sessionCookies.set(RestService.SESSION_COOKIE_NAMES[0], authResponse.data.sessionId);
             } else {
                 throw new Error('CAM SSO authentication failed: No token or session ID returned');
             }
