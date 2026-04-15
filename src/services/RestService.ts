@@ -43,8 +43,9 @@ export interface RestServiceConfig {
     reConnectOnSessionTimeout?: boolean;
     reConnectOnRemoteDisconnect?: boolean;
     remoteDisconnectMaxRetries?: number;
-    remoteDisconnectDelay?: number;
+    remoteDisconnectRetryDelay?: number;
     remoteDisconnectMaxDelay?: number;
+    remoteDisconnectBackoffFactor?: number;
 }
 
 export class RestService {
@@ -77,8 +78,9 @@ export class RestService {
     private reConnectOnSessionTimeout!: boolean;
     private reConnectOnRemoteDisconnect!: boolean;
     private remoteDisconnectMaxRetries!: number;
-    private remoteDisconnectDelay!: number;
+    private remoteDisconnectRetryDelay!: number;
     private remoteDisconnectMaxDelay!: number;
+    private remoteDisconnectBackoffFactor!: number;
 
     public get version(): string | undefined {
         return this._serverVersion;
@@ -92,13 +94,15 @@ export class RestService {
     constructor(config: RestServiceConfig) {
         this.config = { ...config };
 
+        // Reconnect knob defaults mirror tm1py RestService.__init__
         this.reConnectOnSessionTimeout = config.reConnectOnSessionTimeout ?? true;
         this.reConnectOnRemoteDisconnect = config.reConnectOnRemoteDisconnect ?? true;
-        this.remoteDisconnectMaxRetries = config.remoteDisconnectMaxRetries ?? 3;
-        this.remoteDisconnectDelay = config.remoteDisconnectDelay ?? 1;
+        this.remoteDisconnectMaxRetries = config.remoteDisconnectMaxRetries ?? 5;
+        this.remoteDisconnectRetryDelay = config.remoteDisconnectRetryDelay ?? 1;
         this.remoteDisconnectMaxDelay = config.remoteDisconnectMaxDelay ?? 30;
+        this.remoteDisconnectBackoffFactor = config.remoteDisconnectBackoffFactor ?? 2;
 
-        // ADMIN username fast-path (tm1py RestService.py:173-177)
+        // ADMIN username fast-path (tm1py RestService.__init__ — ADMIN short-circuit)
         if (config.user && caseAndSpaceInsensitiveEquals(config.user, 'ADMIN')) {
             this._isAdmin = true;
             this._isDataAdmin = true;
@@ -290,9 +294,14 @@ export class RestService {
     private async retryRequest(config: any): Promise<any> {
         config._retryCount = (config._retryCount || 0) + 1;
 
-        const baseMs = this.remoteDisconnectDelay * 1000;
+        // Mirrors tm1py _handle_remote_disconnect:
+        //   min(retry_delay * (backoff_factor ** (attempt - 1)), max_delay)
+        const baseMs = this.remoteDisconnectRetryDelay * 1000;
         const capMs = this.remoteDisconnectMaxDelay * 1000;
-        const delay = Math.min(baseMs * Math.pow(2, config._retryCount - 1), capMs);
+        const delay = Math.min(
+            baseMs * Math.pow(this.remoteDisconnectBackoffFactor, config._retryCount - 1),
+            capMs
+        );
         await new Promise(resolve => setTimeout(resolve, delay));
 
         return this.axiosInstance(config);
@@ -754,7 +763,7 @@ export class RestService {
      * Load /ActiveUser/Groups once and populate all four admin role caches.
      * Deduplicates concurrent callers via _rolesLoading so parallel is_*_admin()
      * calls share a single HTTP request.
-     * Uses CaseAndSpaceInsensitiveSet to match group names (tm1py RestService.py:961-994).
+     * Uses CaseAndSpaceInsensitiveSet to match group names (tm1py is_admin / is_*_admin).
      */
     private loadActiveUserRoles(): Promise<void> {
         if (this._rolesLoading) return this._rolesLoading;
@@ -810,14 +819,14 @@ export class RestService {
     }
 
     /**
-     * Base64-decode an encoded password (tm1py RestService.py:1025-1031).
+     * Base64-decode an encoded password (tm1py RestService.b64_decode_password).
      */
     public static b64_decode_password(encryptedPassword: string): string {
         return Buffer.from(encryptedPassword, 'base64').toString('utf-8');
     }
 
     /**
-     * Convert bool/number/string to boolean (tm1py RestService.py:1012-1023).
+     * Convert bool/number/string to boolean (tm1py RestService.translate_to_boolean).
      * Strings: whitespace stripped, lowercased, compared to 'true'.
      */
     public static translate_to_boolean(value: boolean | number | string): boolean {
@@ -830,11 +839,13 @@ export class RestService {
 
     /**
      * Insert 'tm1.compact=v0' into the Accept header at position 1 and return the prior value.
-     * Mirrors tm1py RestService.py:1105-1114 exactly (no idempotency guard).
+     * Mirrors tm1py RestService.add_compact_json_header exactly (no idempotency guard).
      */
     public add_compact_json_header(): string {
-        const original = (this.axiosInstance.defaults.headers.common['Accept'] as string | undefined)
-            ?? RestService.HEADERS['Accept'];
+        const current = this.axiosInstance.defaults.headers.common['Accept'];
+        // axios headers may be string, string[], number, boolean, or null; only string is a
+        // meaningful Accept value. Anything else falls back to the class default.
+        const original = typeof current === 'string' ? current : RestService.HEADERS['Accept'];
         const parts = original.split(';');
         parts.splice(1, 0, 'tm1.compact=v0');
         const modified = parts.join(';');

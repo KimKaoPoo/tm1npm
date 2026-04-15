@@ -677,24 +677,27 @@ describe('RestService Tests', () => {
                 const { svc } = makeSvc();
                 expect((svc as any).reConnectOnSessionTimeout).toBe(true);
                 expect((svc as any).reConnectOnRemoteDisconnect).toBe(true);
-                expect((svc as any).remoteDisconnectMaxRetries).toBe(3);
-                expect((svc as any).remoteDisconnectDelay).toBe(1);
+                expect((svc as any).remoteDisconnectMaxRetries).toBe(5);
+                expect((svc as any).remoteDisconnectRetryDelay).toBe(1);
                 expect((svc as any).remoteDisconnectMaxDelay).toBe(30);
+                expect((svc as any).remoteDisconnectBackoffFactor).toBe(2);
             });
 
             test('honors custom overrides', () => {
                 const { svc } = makeSvc({
                     reConnectOnSessionTimeout: false,
                     reConnectOnRemoteDisconnect: false,
-                    remoteDisconnectMaxRetries: 5,
-                    remoteDisconnectDelay: 2,
-                    remoteDisconnectMaxDelay: 60
+                    remoteDisconnectMaxRetries: 7,
+                    remoteDisconnectRetryDelay: 2,
+                    remoteDisconnectMaxDelay: 60,
+                    remoteDisconnectBackoffFactor: 3
                 });
                 expect((svc as any).reConnectOnSessionTimeout).toBe(false);
                 expect((svc as any).reConnectOnRemoteDisconnect).toBe(false);
-                expect((svc as any).remoteDisconnectMaxRetries).toBe(5);
-                expect((svc as any).remoteDisconnectDelay).toBe(2);
+                expect((svc as any).remoteDisconnectMaxRetries).toBe(7);
+                expect((svc as any).remoteDisconnectRetryDelay).toBe(2);
                 expect((svc as any).remoteDisconnectMaxDelay).toBe(60);
+                expect((svc as any).remoteDisconnectBackoffFactor).toBe(3);
             });
 
             test('canRetryRequest honors remoteDisconnectMaxRetries', () => {
@@ -707,7 +710,7 @@ describe('RestService Tests', () => {
 
             test('retryRequest caps delay at remoteDisconnectMaxDelay', async () => {
                 jest.useFakeTimers();
-                const { svc, instance } = makeSvc({ remoteDisconnectDelay: 1, remoteDisconnectMaxDelay: 2 });
+                const { svc, instance } = makeSvc({ remoteDisconnectRetryDelay: 1, remoteDisconnectMaxDelay: 2 });
                 const axiosCallable = jest.fn().mockResolvedValue({ data: 'ok' });
                 (svc as any).axiosInstance = Object.assign(axiosCallable, instance);
                 const cfg: any = { _retryCount: 5 }; // large exponential term triggers the cap
@@ -717,6 +720,29 @@ describe('RestService Tests', () => {
                 await promise;
                 expect(cfg._retryCount).toBe(6);
                 expect(axiosCallable).toHaveBeenCalledWith(cfg);
+                jest.useRealTimers();
+            });
+
+            test('retryRequest uses remoteDisconnectBackoffFactor for exponential term', async () => {
+                jest.useFakeTimers();
+                const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+                // retryDelay=1s, backoffFactor=3, maxDelay=1000s (so cap never engages).
+                // On 2nd retry (_retryCount becomes 2), delay = 1000 * 3^(2-1) = 3000ms.
+                const { svc, instance } = makeSvc({
+                    remoteDisconnectRetryDelay: 1,
+                    remoteDisconnectMaxDelay: 1000,
+                    remoteDisconnectBackoffFactor: 3
+                });
+                const axiosCallable = jest.fn().mockResolvedValue({ data: 'ok' });
+                (svc as any).axiosInstance = Object.assign(axiosCallable, instance);
+                const cfg: any = { _retryCount: 1 };
+                const promise = (svc as any).retryRequest(cfg);
+                await jest.advanceTimersByTimeAsync(3000);
+                await promise;
+                // Confirm the delay passed to setTimeout is exactly 3000ms (1000 * 3^1)
+                const delays = setTimeoutSpy.mock.calls.map(call => call[1]);
+                expect(delays).toContain(3000);
+                setTimeoutSpy.mockRestore();
                 jest.useRealTimers();
             });
         });
