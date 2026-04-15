@@ -409,6 +409,111 @@ describe('RestService Tests', () => {
             });
         });
 
+        describe('Interceptor flow', () => {
+            // Exercises the response interceptor that RestService installs during construction
+            // via axios.defaults. Captured at test time from the real interceptor-install call.
+            let capturedResponseSuccess: (r: any) => any;
+            let capturedResponseError: (e: any) => Promise<any>;
+            let capturedRequest: (c: any) => any;
+            let realSvc: RestService;
+            let realInstance: any;
+
+            beforeEach(() => {
+                capturedRequest = (c: any) => c;
+                capturedResponseSuccess = (r: any) => r;
+                capturedResponseError = async (e: any) => Promise.reject(e);
+                realInstance = {
+                    get: jest.fn(),
+                    post: jest.fn(),
+                    defaults: { headers: { common: {} as Record<string, string> } },
+                    interceptors: {
+                        request: { use: jest.fn((fn: any) => { capturedRequest = fn; }) },
+                        response: { use: jest.fn((success: any, err: any) => {
+                            capturedResponseSuccess = success;
+                            capturedResponseError = err;
+                        })}
+                    }
+                };
+                mockedAxios.create.mockReturnValue(realInstance);
+                // Make axiosInstance callable as a function for retry replay
+                const callable: any = jest.fn();
+                Object.assign(callable, realInstance);
+                mockedAxios.create.mockReturnValue(callable);
+                realInstance = callable;
+                realSvc = new RestService({ baseUrl: 'http://x/api/v1', user: 'a', password: 'b' });
+            });
+
+            test('response interceptor captures Set-Cookie on success', () => {
+                capturedResponseSuccess({
+                    headers: { 'set-cookie': ['TM1SessionId=captured; Path=/'] },
+                    data: {}, status: 200
+                });
+                expect((realSvc as any).sessionCookies.get('TM1SessionId')).toBe('captured');
+            });
+
+            test('response interceptor captures Set-Cookie on error responses too', async () => {
+                // Use a 403 (not a retryable 5xx, not a 401 re-auth trigger) so it falls through
+                // to the throw path without being replayed by the retry logic
+                await expect(capturedResponseError({
+                    response: { status: 403, statusText: 'Forbidden', data: {}, headers: { 'set-cookie': ['paSession=fromErr; Path=/'] } },
+                    config: { headers: {} },
+                    message: 'Forbidden'
+                })).rejects.toBeDefined();
+                expect((realSvc as any).sessionCookies.get('paSession')).toBe('fromErr');
+            });
+
+            test('request interceptor writes Cookie header from the store', () => {
+                (realSvc as any).sessionCookies.set('TM1SessionId', 'outbound');
+                const out = capturedRequest({ headers: {} });
+                expect(out.headers['Cookie']).toBe('TM1SessionId=outbound');
+            });
+
+            test('401 triggers reAuth and replays the request with fresh Cookie, no stale Authorization', async () => {
+                (realSvc as any).isConnected = true;
+                (realSvc as any).sessionCookies.set('TM1SessionId', 'expired');
+                // reAuthenticate() calls disconnect() + connect(); mock both network calls to succeed
+                realInstance.post.mockResolvedValue(createMockResponse({}, 204));
+                realInstance.get.mockResolvedValue(createMockResponse({ value: 'Server1' }));
+                // Simulate new server-issued cookie during connect's probe by seeding directly —
+                // the real interceptor would capture it from set-cookie, but we short-circuit here
+                const reAuthSpy = jest.spyOn(realSvc as any, 'reAuthenticate').mockImplementation(async () => {
+                    (realSvc as any).sessionCookies.clear();
+                    (realSvc as any).sessionCookies.set('TM1SessionId', 'fresh');
+                });
+                // axios instance is callable — replay returns a sentinel
+                const replayed = createMockResponse({ ok: true }, 200);
+                (realInstance as unknown as jest.Mock).mockResolvedValue(replayed);
+
+                const originalRequest: any = {
+                    headers: { 'Cookie': 'TM1SessionId=expired', 'authorization': 'Basic lowercase' },
+                    url: '/SomeEndpoint',
+                };
+                const result = await capturedResponseError({
+                    response: { status: 401, headers: {} },
+                    config: originalRequest,
+                    message: 'Unauthorized',
+                });
+
+                expect(reAuthSpy).toHaveBeenCalledTimes(1);
+                expect(originalRequest._retry).toBe(true);
+                expect(originalRequest.headers['Cookie']).toBeUndefined();
+                // Case-insensitive delete caught the lowercase variant
+                expect(originalRequest.headers['authorization']).toBeUndefined();
+                expect(result).toBe(replayed);
+            });
+
+            test('401 on tm1.Close does not recurse into reAuthenticate (isConnected guard)', async () => {
+                (realSvc as any).isConnected = false;
+                const reAuthSpy = jest.spyOn(realSvc as any, 'reAuthenticate');
+                await expect(capturedResponseError({
+                    response: { status: 401, statusText: 'Unauthorized', data: {}, headers: {} },
+                    config: { headers: {} },
+                    message: 'Unauthorized',
+                })).rejects.toBeDefined();
+                expect(reAuthSpy).not.toHaveBeenCalled();
+            });
+        });
+
         describe('isLoggedIn branches', () => {
             test('returns false when not connected', () => {
                 const { svc } = makeSvc();

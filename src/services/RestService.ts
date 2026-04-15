@@ -99,8 +99,10 @@ export class RestService {
             const firstSegment = raw.split(';')[0];
             const eqIdx = firstSegment.indexOf('=');
             if (eqIdx <= 0) continue;
-            const name = firstSegment.slice(0, eqIdx).trim();
-            const value = firstSegment.slice(eqIdx + 1).trim();
+            // Strip CR/LF/NUL defensively to block header-injection via compromised response
+            const sanitize = (s: string) => s.replace(/[\r\n\0]/g, '').trim();
+            const name = sanitize(firstSegment.slice(0, eqIdx));
+            const value = sanitize(firstSegment.slice(eqIdx + 1));
             if (!(RestService.SESSION_COOKIE_NAMES as readonly string[]).includes(name)) continue;
             if (value === '') {
                 this.sessionCookies.delete(name);
@@ -112,6 +114,18 @@ export class RestService {
 
     private removeAuthorizationHeader(): void {
         delete this.axiosInstance.defaults.headers.common['Authorization'];
+    }
+
+    private deleteHeaderCaseInsensitive(headers: Record<string, unknown> | undefined, name: string): void {
+        if (!headers) return;
+        // axios 1.x may supply an AxiosHeaders instance with case-insensitive lookup; plain objects
+        // (common in retry paths and test mocks) are case-sensitive and require explicit iteration
+        const target = name.toLowerCase();
+        for (const key of Object.keys(headers)) {
+            if (key.toLowerCase() === target) {
+                delete (headers as Record<string, unknown>)[key];
+            }
+        }
     }
 
     private setupAxiosInstance(): void {
@@ -174,16 +188,17 @@ export class RestService {
                     throw new TM1TimeoutException(`Request timeout: ${error.message}`);
                 }
 
-                // Handle authentication errors with retry
-                if (error.response?.status === 401 && !originalRequest._retry) {
+                // Handle authentication errors with retry. Guarded by this.isConnected so a 401
+                // during disconnect()'s tm1.Close POST cannot recurse back into reAuthenticate().
+                if (error.response?.status === 401 && !originalRequest._retry && this.isConnected) {
                     originalRequest._retry = true;
 
                     try {
                         await this.reAuthenticate();
 
                         // Stale values would defeat the rebuild by the request interceptor on replay
-                        delete originalRequest.headers['Cookie'];
-                        delete originalRequest.headers['Authorization'];
+                        this.deleteHeaderCaseInsensitive(originalRequest.headers, 'Cookie');
+                        this.deleteHeaderCaseInsensitive(originalRequest.headers, 'Authorization');
 
                         return this.axiosInstance(originalRequest);
                     } catch (reAuthError) {
@@ -277,14 +292,16 @@ export class RestService {
     }
 
     public async disconnect(): Promise<void> {
-        if (this.isConnected && this.getSessionCookieValue()) {
+        const shouldClose = this.isConnected && !!this.getSessionCookieValue();
+        // Flip isConnected first so a 401 on tm1.Close cannot trigger reAuthenticate recursion
+        this.isConnected = false;
+        if (shouldClose) {
             try {
                 await this.axiosInstance.post('/ActiveSession/tm1.Close', {});
             } catch (error) {
                 // Ignore errors during disconnect
             }
         }
-        this.isConnected = false;
         this.sessionCookies.clear();
     }
 
