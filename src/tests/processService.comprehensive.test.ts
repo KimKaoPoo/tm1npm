@@ -307,7 +307,7 @@ describe('ProcessService - Comprehensive Tests', () => {
             expect(mockRestService.post).toHaveBeenCalledWith(
                 "/Processes('TestProcess')/tm1.ExecuteWithReturn?$expand=*",
                 "{}",
-                { timeout: 30000 }
+                { timeout: 30 }
             );
         });
 
@@ -940,7 +940,7 @@ describe('ProcessService - Comprehensive Tests', () => {
             expect(mockRestService.post).toHaveBeenCalledWith(
                 expect.any(String),
                 expect.any(String),
-                { timeout: 60000 }
+                { timeout: 60 }
             );
         });
 
