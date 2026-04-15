@@ -216,3 +216,254 @@ describe('RestService Tests', () => {
         });
     });
 });
+
+describe('RestService URL topology dispatch', () => {
+    let mockAxiosInstance: any;
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockAxiosInstance = {
+            get: jest.fn(),
+            post: jest.fn(),
+            patch: jest.fn(),
+            delete: jest.fn(),
+            put: jest.fn(),
+            interceptors: {
+                request: { use: jest.fn() },
+                response: { use: jest.fn() }
+            },
+            defaults: { headers: { common: {} } }
+        };
+        mockedAxios.create.mockReturnValue(mockAxiosInstance as any);
+    });
+
+    const firstCreateArg = (): any => mockedAxios.create.mock.calls[0][0];
+    const lastBaseURL = (): string => firstCreateArg().baseURL;
+
+    describe('v11 pattern', () => {
+        test('should build v11 URL with ssl=true and default port', () => {
+            const svc = new (require('../services/RestService').RestService)({ address: 'host', ssl: true });
+            expect(lastBaseURL()).toBe('https://host:8001/api/v1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://host:8001/api/v1/Configuration/ProductVersion/$value');
+        });
+
+        test('should build v11 URL with ssl=false and explicit port', () => {
+            new (require('../services/RestService').RestService)({ address: 'host', port: 9000, ssl: false });
+            expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+
+        test('should default address to localhost when omitted', () => {
+            new (require('../services/RestService').RestService)({ ssl: false, port: 8001 });
+            expect(lastBaseURL()).toBe('http://localhost:8001/api/v1');
+        });
+    });
+
+    describe('baseUrl override', () => {
+        test('should use baseUrl verbatim when it ends with /api/v1', () => {
+            const svc = new (require('../services/RestService').RestService)({ baseUrl: 'http://x/api/v1' });
+            expect(lastBaseURL()).toBe('http://x/api/v1');
+            expect((svc as any).resolveRoots().authRoot).toBe('http://x/api/v1/Configuration/ProductVersion/$value');
+        });
+
+        test('should append /api/v1 when baseUrl lacks it', () => {
+            new (require('../services/RestService').RestService)({ baseUrl: 'http://x' });
+            expect(lastBaseURL()).toBe('http://x/api/v1');
+        });
+
+        test('should resolve Databases() baseUrl when authUrl provided', () => {
+            const svc = new (require('../services/RestService').RestService)({
+                baseUrl: "http://x/api/v1/Databases('DB')",
+                authUrl: 'http://x/auth'
+            });
+            expect(lastBaseURL()).toBe("http://x/api/v1/Databases('DB')");
+            expect((svc as any).resolveRoots().authRoot).toBe('http://x/auth');
+        });
+
+        test('should throw for Databases() baseUrl without authUrl', () => {
+            expect(() => new (require('../services/RestService').RestService)({
+                baseUrl: "http://x/api/v1/Databases('DB')"
+            })).toThrow(/Auth_url missing/);
+        });
+
+        test('should throw when baseUrl and address both provided', () => {
+            expect(() => new (require('../services/RestService').RestService)({
+                baseUrl: 'http://x/api/v1',
+                address: 'y'
+            })).toThrow(/Base URL and Address/);
+        });
+    });
+
+    describe('IBM Cloud pattern', () => {
+        test('should build IBM Cloud URL when iamUrl provided', () => {
+            const svc = new (require('../services/RestService').RestService)({
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com',
+                ssl: true,
+                apiKey: 'k'
+            });
+            expect(lastBaseURL()).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1/Configuration/ProductVersion/$value');
+        });
+
+        test('should throw when IBM Cloud missing tenant', () => {
+            expect(() => new (require('../services/RestService').RestService)({
+                address: 'pa.ibm.com',
+                database: 'DB1',
+                iamUrl: 'https://iam',
+                ssl: true
+            })).toThrow(/tenant.*database|address.*tenant/);
+        });
+
+        test('should throw when IBM Cloud ssl=false', () => {
+            expect(() => new (require('../services/RestService').RestService)({
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam',
+                ssl: false
+            })).toThrow(/ssl.*must be true/);
+        });
+    });
+
+    describe('PA Proxy pattern', () => {
+        test('should build PA Proxy URL with https', () => {
+            const svc = new (require('../services/RestService').RestService)({
+                address: 'h',
+                database: 'DB',
+                user: 'u',
+                paUrl: 'https://pa',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe('https://h/tm1/DB/api/v1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://h/login');
+        });
+
+        test('should build PA Proxy URL with http', () => {
+            new (require('../services/RestService').RestService)({
+                address: 'h',
+                database: 'DB',
+                user: 'u',
+                paUrl: 'http://pa',
+                ssl: false
+            });
+            expect(lastBaseURL()).toBe('http://h/tm1/DB/api/v1');
+        });
+    });
+
+    describe('S2S pattern', () => {
+        test('should build S2S URL with port and ssl', () => {
+            const svc = new (require('../services/RestService').RestService)({
+                address: 'h',
+                port: 443,
+                instance: 'INST',
+                database: 'DB',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe("https://h:443/INST/api/v1/Databases('DB')");
+            expect((svc as any).resolveRoots().authRoot).toBe('https://h:443/INST/auth/v1/session');
+        });
+
+        test('should build S2S URL without port', () => {
+            new (require('../services/RestService').RestService)({
+                address: 'h',
+                instance: 'INST',
+                database: 'DB',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe("https://h/INST/api/v1/Databases('DB')");
+        });
+
+        test('should default to localhost when address is empty', () => {
+            new (require('../services/RestService').RestService)({
+                address: '',
+                instance: 'I',
+                database: 'D',
+                ssl: false
+            });
+            expect(lastBaseURL()).toBe("http://localhost/I/api/v1/Databases('D')");
+        });
+
+        test('should throw S2S without instance', () => {
+            expect(() => new (require('../services/RestService').RestService)({
+                address: 'h',
+                instance: 'INST',
+                ssl: true
+            })).toThrow(/instance.*database|instance.*required|database.*required/i);
+        });
+    });
+
+    describe('Config pass-through and axios wiring', () => {
+        test('should accept all new config fields without error', () => {
+            expect(() => new (require('../services/RestService').RestService)({
+                baseUrl: 'http://x/api/v1',
+                iamUrl: 'https://iam',
+                paUrl: 'https://pa',
+                cpdUrl: 'https://cpd',
+                gateway: 'https://gw',
+                integratedLogin: true,
+                integratedLoginDomain: '.',
+                integratedLoginService: 'HTTP',
+                integratedLoginHost: 'host',
+                integratedLoginDelegate: false,
+                user: 'admin',
+                password: 'pw'
+            })).not.toThrow();
+        });
+
+        test('should pass proxy.https to axios when provided', () => {
+            new (require('../services/RestService').RestService)({
+                baseUrl: 'http://x/api/v1',
+                proxies: { https: 'https://proxy.example.com:8443' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toEqual({ host: 'proxy.example.com', port: 8443, protocol: 'https' });
+        });
+
+        test('should fall back to proxy.http when https not provided', () => {
+            new (require('../services/RestService').RestService)({
+                baseUrl: 'http://x/api/v1',
+                proxies: { http: 'http://proxy.example.com:8080' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toEqual({ host: 'proxy.example.com', port: 8080, protocol: 'http' });
+        });
+
+        test('should not set proxy when proxies unset', () => {
+            new (require('../services/RestService').RestService)({ baseUrl: 'http://x/api/v1' });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toBeUndefined();
+        });
+
+        test('should pass sslContext through as httpsAgent', () => {
+            const agent = { _custom: 'agent' };
+            new (require('../services/RestService').RestService)({
+                baseUrl: 'http://x/api/v1',
+                sslContext: agent
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.httpsAgent).toBe(agent);
+        });
+
+        test('should not treat cpdUrl alone as v12 topology signal', () => {
+            new (require('../services/RestService').RestService)({
+                address: 'host',
+                port: 9000,
+                ssl: false,
+                cpdUrl: 'https://cpd'
+            });
+            expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+
+        test('should not treat gateway alone as v12 topology signal', () => {
+            new (require('../services/RestService').RestService)({
+                address: 'host',
+                port: 9000,
+                ssl: false,
+                gateway: 'https://gw'
+            });
+            expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+    });
+});
