@@ -264,8 +264,11 @@ export class RestService {
 
             await this.axiosInstance.get('/Configuration/ServerName');
 
-            // tm1py parity: session cookie now established, so the password must not linger
-            this.removeAuthorizationHeader();
+            // Strip Authorization only if the session cookie is established; Bearer/API-key
+            // modes that never issue a cookie must keep Authorization to stay authenticated
+            if (this.getSessionCookieValue()) {
+                this.removeAuthorizationHeader();
+            }
 
             this.isConnected = true;
         } catch (error) {

@@ -344,11 +344,23 @@ describe('RestService Tests', () => {
                 const { svc, instance } = makeSvc();
                 instance.defaults.headers.common['Authorization'] = 'Basic xxx';
                 instance.get.mockResolvedValue(createMockResponse({ value: 'Server1' }));
+                // Simulate server issuing a session cookie so stripping Authorization is safe
+                (svc as any).sessionCookies.set('TM1SessionId', 'from-server');
 
                 await svc.connect();
 
                 expect(instance.defaults.headers.common['Authorization']).toBeUndefined();
-                expect(svc.isLoggedIn()).toBe(false);
+                expect(svc.isLoggedIn()).toBe(true);
+            });
+
+            test('connect preserves Authorization when no session cookie was issued (Bearer-only mode)', async () => {
+                const { svc, instance } = makeSvc({ accessToken: 'bearer-xyz' });
+                instance.defaults.headers.common['Authorization'] = 'Bearer bearer-xyz';
+                instance.get.mockResolvedValue(createMockResponse({ value: 'Server1' }));
+
+                await svc.connect();
+
+                expect(instance.defaults.headers.common['Authorization']).toBe('Bearer bearer-xyz');
             });
 
             test('connect skips setupAuthentication when config.sessionId was provided', async () => {
