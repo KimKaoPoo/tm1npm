@@ -371,12 +371,12 @@ export class RestService {
         const verifyResponse = options?.verifyResponse ?? true;
         const idempotent = options?.idempotent ?? false;
         const {
-            asyncRequestsMode,
+            asyncRequestsMode: _asyncModeOpt,
             returnAsyncId,
-            cancelAtTimeout: _cancelAtTimeout,
-            idempotent: _idempotent,
-            verifyResponse: _verifyResponse,
-            timeout: _timeout,
+            cancelAtTimeout: _cancelAtTimeoutOpt,
+            idempotent: _idempotentOpt,
+            verifyResponse: _verifyResponseOpt,
+            timeout: _timeoutOpt,
             ...axiosExtras
         } = options ?? {};
 
