@@ -655,7 +655,7 @@ export class RestService {
     }
 
     public async disconnect(): Promise<void> {
-        const shouldClose = this.isConnected && !!this.getSessionCookieValue();
+        const shouldClose = this.isConnected;
         // Flip isConnected first so a 401 on tm1.Close cannot trigger reAuthenticate recursion
         this.isConnected = false;
         if (shouldClose) {
