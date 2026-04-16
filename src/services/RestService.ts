@@ -125,7 +125,7 @@ export class RestService {
 
     private parseSetCookieHeaders(setCookie: string[] | string | undefined): void {
         if (!setCookie) return;
-        const list = Array.isArray(setCookie) ? setCookie : [setCookie];
+        const list = RestService.normaliseSetCookie(setCookie);
         for (const raw of list) {
             const firstSegment = raw.split(';')[0];
             const eqIdx = firstSegment.indexOf('=');
@@ -513,192 +513,354 @@ export class RestService {
         return response.data;
     }
 
+    // =========================================================================
+    // Authentication helpers — mirror tm1py's _build_authorization_token*,
+    // _generate_*_access_token, and _start_session flows
+    // =========================================================================
+
     /**
-     * Set up authentication based on configuration
+     * Decode Base64-encoded password (tm1py parity: b64_decode_password).
      */
-    private async setupAuthentication(): Promise<void> {
-        // Access Token authentication (TM1 12+ with JWT tokens)
-        if (this.config.accessToken) {
-            this.axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${this.config.accessToken}`;
-            return;
-        }
-
-        // API Key authentication (TM1 12+ PAaaS)
-        if (this.config.apiKey) {
-            if (this.config.user === 'apikey') {
-                // IBM Cloud API Key style
-                this.axiosInstance.defaults.headers.common['Authorization'] = `Basic ${Buffer.from(`apikey:${this.config.apiKey}`).toString('base64')}`;
-            } else {
-                // Basic API Key style
-                this.axiosInstance.defaults.headers.common['API-Key'] = this.config.apiKey;
-            }
-            return;
-        }
-
-        // CAM (Cognos Access Manager) authentication
-        if (this.config.authUrl && this.config.camPassport) {
-            await this.setupCamAuthentication();
-            return;
-        }
-
-        // CAM SSO authentication
-        if (this.config.authUrl && this.config.user && this.config.password && this.config.namespace) {
-            await this.setupCamSsoAuthentication();
-            return;
-        }
-
-        // Service-to-Service authentication
-        if (this.config.applicationClientId && this.config.applicationClientSecret) {
-            await this.setupServiceToServiceAuthentication();
-            return;
-        }
-
-        // Basic authentication (default)
-        if (this.config.user && this.config.password) {
-            const credentials = Buffer.from(`${this.config.user}:${this.config.password}`).toString('base64');
-            this.axiosInstance.defaults.headers.common['Authorization'] = `Basic ${credentials}`;
-
-            // Add namespace for TM1 Cloud
-            if (this.config.namespace) {
-                this.axiosInstance.defaults.headers.common['TM1-Namespace'] = this.config.namespace;
-            }
-            return;
-        }
-
-        throw new Error('No valid authentication configuration provided');
+    private static b64DecodePassword(encoded: string): string {
+        return Buffer.from(encoded, 'base64').toString('utf-8');
     }
 
     /**
-     * Set up CAM (Cognos Access Manager) authentication
+     * Build an httpsAgent option that skips TLS verification when verify is false.
      */
-    private async setupCamAuthentication(): Promise<void> {
-        if (!this.config.authUrl || !this.config.camPassport) {
-            throw new Error('CAM authentication requires authUrl and camPassport');
-        }
-
-        try {
-            const authResponse = await axios.post(this.config.authUrl, {
-                parameters: [{
-                    name: 'CAMPassport',
-                    value: this.config.camPassport
-                }]
-            }, {
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            if (authResponse.data && authResponse.data.sessionId) {
-                this.sessionCookies.set(RestService.SESSION_COOKIE_NAMES[0], authResponse.data.sessionId);
-            } else {
-                throw new Error('CAM authentication failed: No session ID returned');
-            }
-        } catch (error) {
-            throw new Error(`CAM authentication failed: ${error}`);
-        }
+    private static insecureAgentOption(
+        verify?: boolean | string
+    ): { httpsAgent: https.Agent } | Record<string, never> {
+        return verify === false
+            ? { httpsAgent: new https.Agent({ rejectUnauthorized: false }) }
+            : {};
     }
 
     /**
-     * Set up CAM SSO authentication
+     * Normalise a Set-Cookie header value (string | string[] | undefined) into a string[].
      */
-    private async setupCamSsoAuthentication(): Promise<void> {
-        if (!this.config.authUrl || !this.config.user || !this.config.password || !this.config.namespace) {
-            throw new Error('CAM SSO authentication requires authUrl, user, password, and namespace');
-        }
-
-        try {
-            const authPayload = {
-                username: this.config.user,
-                password: this.config.password,
-                namespace: this.config.namespace
-            };
-
-            const authResponse = await axios.post(this.config.authUrl, authPayload, {
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            if (authResponse.data && authResponse.data.token) {
-                this.axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${authResponse.data.token}`;
-            } else if (authResponse.data && authResponse.data.sessionId) {
-                this.sessionCookies.set(RestService.SESSION_COOKIE_NAMES[0], authResponse.data.sessionId);
-            } else {
-                throw new Error('CAM SSO authentication failed: No token or session ID returned');
-            }
-        } catch (error) {
-            throw new Error(`CAM SSO authentication failed: ${error}`);
-        }
+    private static normaliseSetCookie(raw: string | string[] | undefined): string[] {
+        if (!raw) return [];
+        return Array.isArray(raw) ? raw : [raw];
     }
 
     /**
-     * Set up Service-to-Service authentication
+     * Extract a named cookie value from raw Set-Cookie headers.
      */
-    private async setupServiceToServiceAuthentication(): Promise<void> {
-        if (!this.config.applicationClientId || !this.config.applicationClientSecret) {
-            throw new Error('Service-to-Service authentication requires applicationClientId and applicationClientSecret');
+    private static extractCookieValue(
+        raw: string | string[] | undefined,
+        name: string
+    ): string | undefined {
+        const prefix = name + '=';
+        for (const header of RestService.normaliseSetCookie(raw)) {
+            const segment = header.split(';')[0];
+            if (segment.startsWith(prefix)) {
+                return segment.slice(prefix.length);
+            }
+        }
+        return undefined;
+    }
+
+    /**
+     * Build Basic Authorization header.
+     * Mirrors tm1py's _build_authorization_token_basic.
+     */
+    private static _buildAuthorizationTokenBasic(user: string, password: string): string {
+        return 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+    }
+
+    /**
+     * Build CAMNamespace Authorization header.
+     * Mirrors tm1py's _build_authorization_token_cam (non-gateway path).
+     */
+    private static _buildAuthorizationTokenCam(
+        user: string,
+        password: string,
+        namespace: string
+    ): string {
+        return 'CAMNamespace ' + Buffer.from(`${user}:${password}:${namespace}`).toString('base64');
+    }
+
+    /**
+     * Build CAMPassport Authorization token via gateway SSO.
+     * Mirrors tm1py's _build_authorization_token_cam (gateway path).
+     * Makes a GET request to the gateway URL with CAMNamespace as a query
+     * parameter and extracts the cam_passport cookie from the response.
+     *
+     * Note: tm1py uses HttpNegotiateAuth (NTLM/Kerberos) for gateway requests,
+     * which is Windows-only. This implementation sends a plain GET and relies on
+     * the gateway being accessible without NTLM. For environments requiring NTLM,
+     * pass a pre-obtained cam_passport via config.camPassport instead.
+     */
+    private static async _buildAuthorizationTokenCamSso(
+        gateway: string,
+        namespace: string,
+        verify?: boolean | string
+    ): Promise<string> {
+        const response = await axios.get(gateway, {
+            params: { CAMNamespace: namespace },
+            ...RestService.insecureAgentOption(verify)
+        });
+        if (response.status !== 200) {
+            throw new Error(
+                'Failed to authenticate through CAM. Expected status_code 200, received status_code: ' +
+                response.status
+            );
+        }
+        const passport = RestService.extractCookieValue(
+            response.headers['set-cookie'], 'cam_passport'
+        );
+        if (!passport) {
+            throw new Error(
+                "Failed to authenticate through CAM. HTTP response does not contain 'cam_passport' cookie"
+            );
+        }
+        return 'CAMPassport ' + passport;
+    }
+
+    /**
+     * Generate IBM IAM Cloud access token.
+     * Mirrors tm1py's _generate_ibm_iam_cloud_access_token.
+     */
+    private async _generateIbmIamCloudAccessToken(): Promise<string> {
+        const { iamUrl, apiKey } = this.config;
+        if (!iamUrl || !apiKey) {
+            throw new Error("'iamUrl' and 'apiKey' must be provided to generate access token from IBM Cloud");
+        }
+        const payload = `grant_type=urn%3Aibm%3Aparams%3Aoauth%3Agrant-type%3Aapikey&apikey=${encodeURIComponent(apiKey)}`;
+        const headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        };
+        const response = await axios.post(iamUrl, payload, {
+            headers,
+            ...RestService.insecureAgentOption(this.config.verify)
+        });
+        if (!response.data?.access_token) {
+            throw new Error(`Failed to generate access_token from URL: '${iamUrl}'`);
+        }
+        return response.data.access_token;
+    }
+
+    /**
+     * Generate CPD (Cloud Pak for Data) access token.
+     * Mirrors tm1py's _generate_cpd_access_token.
+     */
+    private async _generateCpdAccessToken(
+        credentials: { username: string; password: string }
+    ): Promise<string> {
+        const { cpdUrl } = this.config;
+        if (!cpdUrl) {
+            throw new Error("'cpdUrl' must be provided to authenticate via CPD/Cloud Pak for Data");
+        }
+        const url = `${cpdUrl}/v1/preauth/signin`;
+        const headers = { 'Content-Type': 'application/json;charset=UTF-8' };
+        const response = await axios.post(url, credentials, {
+            headers,
+            ...RestService.insecureAgentOption(this.config.verify)
+        });
+        if (!response.data?.token) {
+            throw new Error(`Failed to generate CPD access token from URL: '${url}'`);
+        }
+        return response.data.token;
+    }
+
+    /**
+     * Authenticate with PA Proxy using a CPD JWT token.
+     * Mirrors tm1py's PA_PROXY flow in _start_session.
+     */
+    private async _authenticateWithPaProxy(jwt: string): Promise<void> {
+        const authRoot = this.resolveRoots().authRoot;
+        const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+        const payload = `jwt=${jwt}`;
+        const response = await axios.post(authRoot, payload, {
+            headers,
+            ...RestService.insecureAgentOption(this.config.verify)
+        });
+        const setCookie = response.headers['set-cookie'];
+        const csrfValue = RestService.extractCookieValue(setCookie, 'ba-sso-csrf');
+        if (csrfValue) {
+            this.axiosInstance.defaults.headers.common['ba-sso-authenticity'] = csrfValue;
+        }
+        this.parseSetCookieHeaders(setCookie);
+    }
+
+    /**
+     * Authenticate Service-to-Service (v12).
+     * Mirrors tm1py's SERVICE_TO_SERVICE flow in _start_session:
+     * Uses Basic auth with applicationClientId:applicationClientSecret,
+     * then POSTs {"User": user} to the auth endpoint.
+     */
+    private async _authenticateServiceToService(): Promise<void> {
+        const { applicationClientId, applicationClientSecret, user } = this.config;
+        if (!applicationClientId || !applicationClientSecret) {
+            throw new Error(
+                'Service-to-Service authentication requires applicationClientId and applicationClientSecret'
+            );
         }
 
-        // Both v11 and v11-style baseUrl topologies resolve authRoot to
-        // /Configuration/ProductVersion/$value — a metadata probe, not a token
-        // endpoint. Require callers to supply authUrl explicitly in those cases.
-        // Validation lives outside the try/catch so its message is not double-wrapped.
+        // Guard: v11 and plain baseUrl topologies resolve authRoot to a metadata
+        // probe URL, not a token endpoint. Require explicit authUrl in those cases.
         if (!this.config.authUrl) {
             const topo = this.determineTopology();
             const baseUrlIsV12 = topo === 'base_url'
                 && /api\/v1\/Databases/.test(this.config.baseUrl ?? '');
             if (topo === 'v11' || (topo === 'base_url' && !baseUrlIsV12)) {
-                throw new Error("'authUrl' is required for Service-to-Service authentication on v11 topology");
+                throw new Error(
+                    "'authUrl' is required for Service-to-Service authentication on v11 topology"
+                );
             }
         }
 
-        try {
-            const tokenEndpoint = this.config.authUrl || this.resolveRoots().authRoot;
+        const authRoot = this.config.authUrl || this.resolveRoots().authRoot;
+        const basicAuth = Buffer.from(
+            `${applicationClientId}:${applicationClientSecret}`
+        ).toString('base64');
 
-            const tokenPayload = {
-                grant_type: 'client_credentials',
-                client_id: this.config.applicationClientId,
-                client_secret: this.config.applicationClientSecret
-            };
+        this.axiosInstance.defaults.headers.common['Authorization'] = `Basic ${basicAuth}`;
 
-            const tokenResponse = await axios.post(tokenEndpoint, tokenPayload, {
+        const response = await axios.post(
+            authRoot,
+            JSON.stringify({ User: user }),
+            {
                 headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                }
-            });
-
-            if (tokenResponse.data && tokenResponse.data.access_token) {
-                this.axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${tokenResponse.data.access_token}`;
-            } else {
-                throw new Error('Service-to-Service authentication failed: No access token returned');
+                    ...RestService.HEADERS,
+                    'Authorization': `Basic ${basicAuth}`
+                },
+                ...RestService.insecureAgentOption(this.config.verify)
             }
-        } catch (error) {
-            throw new Error(`Service-to-Service authentication failed: ${error}`);
+        );
+
+        this.parseSetCookieHeaders(response.headers['set-cookie']);
+    }
+
+    /**
+     * Determine the authentication mode from config.
+     * Mirrors tm1py's _determine_auth_mode, using the URL topology as the
+     * primary discriminator for v12 modes.
+     */
+    public getAuthenticationMode(): AuthenticationMode {
+        const topo = this.determineTopology();
+        const c = this.config;
+
+        switch (topo) {
+            case 'ibm_cloud':
+                return AuthenticationMode.IBM_CLOUD_API_KEY;
+            case 'pa_proxy':
+                return AuthenticationMode.PA_PROXY;
+            case 's2s':
+                return AuthenticationMode.SERVICE_TO_SERVICE;
+
+            case 'v11':
+            case 'base_url':
+            default: {
+                // v11 / base_url: check auth-specific config flags
+                if (c.accessToken) return AuthenticationMode.ACCESS_TOKEN;
+                if (c.apiKey) return AuthenticationMode.BASIC_API_KEY;
+                if (c.applicationClientId && c.applicationClientSecret) {
+                    return AuthenticationMode.SERVICE_TO_SERVICE;
+                }
+                if (c.camPassport) return AuthenticationMode.CAM;
+                if (c.gateway && c.namespace) return AuthenticationMode.CAM_SSO;
+                if (c.integratedLogin) return AuthenticationMode.WIA;
+                if (c.namespace) return AuthenticationMode.CAM;
+                return AuthenticationMode.BASIC;
+            }
         }
     }
 
     /**
-     * Get the authentication mode being used
+     * Set up authentication based on configuration.
+     * Mirrors tm1py's _start_session routing.
      */
-    public getAuthenticationMode(): AuthenticationMode {
-        if (this.config.accessToken) {
-            return AuthenticationMode.ACCESS_TOKEN;
+    private async setupAuthentication(): Promise<void> {
+        const authMode = this.getAuthenticationMode();
+        const password = this.config.decodeB64 && this.config.password
+            ? RestService.b64DecodePassword(this.config.password)
+            : this.config.password;
+
+        switch (authMode) {
+            case AuthenticationMode.ACCESS_TOKEN:
+                this.axiosInstance.defaults.headers.common['Authorization'] =
+                    `Bearer ${this.config.accessToken}`;
+                break;
+
+            case AuthenticationMode.BASIC_API_KEY:
+                if (this.config.user === 'apikey') {
+                    this.axiosInstance.defaults.headers.common['Authorization'] =
+                        RestService._buildAuthorizationTokenBasic('apikey', this.config.apiKey!);
+                } else {
+                    this.axiosInstance.defaults.headers.common['API-Key'] = this.config.apiKey!;
+                }
+                break;
+
+            case AuthenticationMode.IBM_CLOUD_API_KEY: {
+                const accessToken = await this._generateIbmIamCloudAccessToken();
+                this.axiosInstance.defaults.headers.common['Authorization'] =
+                    `Bearer ${accessToken}`;
+                break;
+            }
+
+            case AuthenticationMode.PA_PROXY: {
+                if (!this.config.user || !password) {
+                    throw new Error('PA Proxy authentication requires user and password');
+                }
+                const jwt = await this._generateCpdAccessToken({
+                    username: this.config.user,
+                    password
+                });
+                await this._authenticateWithPaProxy(jwt);
+                break;
+            }
+
+            case AuthenticationMode.SERVICE_TO_SERVICE:
+                await this._authenticateServiceToService();
+                break;
+
+            case AuthenticationMode.CAM_SSO: {
+                // CAM_SSO is only reached when gateway is set (see getAuthenticationMode)
+                const token = await RestService._buildAuthorizationTokenCamSso(
+                    this.config.gateway!,
+                    this.config.namespace!,
+                    this.config.verify
+                );
+                this.axiosInstance.defaults.headers.common['Authorization'] = token;
+                break;
+            }
+
+            case AuthenticationMode.CAM: {
+                if (this.config.camPassport) {
+                    this.axiosInstance.defaults.headers.common['Authorization'] =
+                        'CAMPassport ' + this.config.camPassport;
+                } else if (this.config.namespace && this.config.user && password) {
+                    this.axiosInstance.defaults.headers.common['Authorization'] =
+                        RestService._buildAuthorizationTokenCam(
+                            this.config.user, password, this.config.namespace
+                        );
+                } else {
+                    throw new Error(
+                        'CAM authentication requires either camPassport or user/password/namespace'
+                    );
+                }
+                break;
+            }
+
+            case AuthenticationMode.WIA:
+                throw new Error(
+                    'Windows Integrated Authentication (WIA) is not supported in Node.js. ' +
+                    'Use CAM or Basic authentication instead.'
+                );
+
+            case AuthenticationMode.BASIC:
+            default: {
+                if (!this.config.user || !password) {
+                    throw new Error('No valid authentication configuration provided');
+                }
+                this.axiosInstance.defaults.headers.common['Authorization'] =
+                    RestService._buildAuthorizationTokenBasic(this.config.user, password);
+                break;
+            }
         }
-        if (this.config.apiKey) {
-            return this.config.user === 'apikey' ?
-                AuthenticationMode.IBM_CLOUD_API_KEY :
-                AuthenticationMode.BASIC_API_KEY;
-        }
-        if (this.config.authUrl && this.config.camPassport) {
-            return AuthenticationMode.CAM;
-        }
-        if (this.config.authUrl && this.config.user && this.config.password && this.config.namespace) {
-            return AuthenticationMode.CAM_SSO;
-        }
-        if (this.config.applicationClientId && this.config.applicationClientSecret) {
-            return AuthenticationMode.SERVICE_TO_SERVICE;
-        }
-        return AuthenticationMode.BASIC;
     }
 
     /**

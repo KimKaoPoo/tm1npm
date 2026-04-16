@@ -3,7 +3,7 @@
  * Comprehensive tests for TM1 REST API operations with proper mocking
  */
 
-import { RestService } from '../services/RestService';
+import { RestService, AuthenticationMode } from '../services/RestService';
 import axios, { AxiosResponse } from 'axios';
 
 // Mock axios
@@ -910,7 +910,7 @@ describe('RestService URL topology dispatch', () => {
                 applicationClientId: 'id',
                 applicationClientSecret: 'secret'
             });
-            await expect((svc as any).setupServiceToServiceAuthentication()).rejects.toThrow(
+            await expect((svc as any)._authenticateServiceToService()).rejects.toThrow(
                 /'authUrl' is required for Service-to-Service authentication on v11 topology/
             );
         });
@@ -921,7 +921,7 @@ describe('RestService URL topology dispatch', () => {
                 applicationClientId: 'id',
                 applicationClientSecret: 'secret'
             });
-            await expect((svc as any).setupServiceToServiceAuthentication()).rejects.toThrow(
+            await expect((svc as any)._authenticateServiceToService()).rejects.toThrow(
                 /'authUrl' is required for Service-to-Service authentication on v11 topology/
             );
         });
@@ -934,8 +934,508 @@ describe('RestService URL topology dispatch', () => {
                 applicationClientSecret: 'secret'
             });
             // Will reject with network-level error when trying to POST, but NOT the guard error.
-            await expect((svc as any).setupServiceToServiceAuthentication())
+            await expect((svc as any)._authenticateServiceToService())
                 .rejects.not.toThrow(/'authUrl' is required/);
+        });
+    });
+});
+
+// =========================================================================
+// Authentication flow tests — issue #59
+// =========================================================================
+describe('RestService authentication flows', () => {
+    let mockAxiosInstance: any;
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockAxiosInstance = {
+            get: jest.fn(),
+            post: jest.fn(),
+            patch: jest.fn(),
+            delete: jest.fn(),
+            put: jest.fn(),
+            interceptors: {
+                request: { use: jest.fn() },
+                response: { use: jest.fn() }
+            },
+            defaults: { headers: { common: {} as Record<string, string> } }
+        };
+        mockedAxios.create.mockReturnValue(mockAxiosInstance as any);
+    });
+
+    describe('getAuthenticationMode', () => {
+        test('should detect BASIC when only user and password are provided', () => {
+            const svc = new RestService({ address: 'host', ssl: true, user: 'admin', password: 'pw' });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC);
+        });
+
+        test('should detect CAM when namespace is set without gateway', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'LDAP'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM);
+        });
+
+        test('should detect CAM when camPassport is set', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true, camPassport: 'passport123'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM);
+        });
+
+        test('should detect CAM_SSO when gateway is set', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'LDAP', gateway: 'https://gw'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM_SSO);
+        });
+
+        test('should detect IBM_CLOUD_API_KEY when iamUrl is set', () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true, apiKey: 'k'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.IBM_CLOUD_API_KEY);
+        });
+
+        test('should detect PA_PROXY when address + user + paUrl (no instance)', () => {
+            const svc = new RestService({
+                address: 'host', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.PA_PROXY);
+        });
+
+        test('should detect SERVICE_TO_SERVICE with instance + database', () => {
+            const svc = new RestService({
+                address: 'h', instance: 'INST', database: 'DB', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.SERVICE_TO_SERVICE);
+        });
+
+        test('should detect SERVICE_TO_SERVICE on v11 when clientId + clientSecret provided', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.SERVICE_TO_SERVICE);
+        });
+
+        test('should detect ACCESS_TOKEN when accessToken is set', () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', accessToken: 'jwt123'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.ACCESS_TOKEN);
+        });
+
+        test('should detect BASIC_API_KEY when apiKey is set', () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', apiKey: 'mykey'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC_API_KEY);
+        });
+
+        test('should fall through to BASIC when gateway is set without namespace', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', gateway: 'https://gw'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC);
+        });
+
+        test('should detect WIA when integratedLogin is set', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                integratedLogin: true
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.WIA);
+        });
+    });
+
+    describe('setupAuthentication — Basic', () => {
+        test('should set Basic Authorization header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', user: 'admin', password: 'apple'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Basic ' + Buffer.from('admin:apple').toString('base64'));
+        });
+
+        test('should decode Base64 password when decodeB64 is true', async () => {
+            const encoded = Buffer.from('mypassword').toString('base64');
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', user: 'admin', password: encoded, decodeB64: true
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Basic ' + Buffer.from('admin:mypassword').toString('base64'));
+        });
+
+        test('should throw when no user or password for BASIC mode', async () => {
+            const svc = new RestService({ baseUrl: 'http://x/api/v1' });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow('No valid authentication configuration provided');
+        });
+    });
+
+    describe('setupAuthentication — CAM (camPassport)', () => {
+        test('should set CAMPassport Authorization header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', camPassport: 'test-passport-value'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('CAMPassport test-passport-value');
+        });
+    });
+
+    describe('setupAuthentication — CAM (namespace)', () => {
+        test('should set CAMNamespace Authorization header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1',
+                user: 'admin', password: 'pass', namespace: 'LDAP'
+            });
+            await (svc as any).setupAuthentication();
+            const expected = 'CAMNamespace ' + Buffer.from('admin:pass:LDAP').toString('base64');
+            expect(mockAxiosInstance.defaults.headers.common['Authorization']).toBe(expected);
+        });
+
+        test('should decode B64 password in CAMNamespace header', async () => {
+            const encoded = Buffer.from('pass').toString('base64');
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1',
+                user: 'admin', password: encoded, namespace: 'LDAP', decodeB64: true
+            });
+            await (svc as any).setupAuthentication();
+            const expected = 'CAMNamespace ' + Buffer.from('admin:pass:LDAP').toString('base64');
+            expect(mockAxiosInstance.defaults.headers.common['Authorization']).toBe(expected);
+        });
+
+        test('should throw CAM error when namespace set but no user/password/camPassport', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', namespace: 'LDAP'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow('CAM authentication requires either camPassport or user/password/namespace');
+        });
+    });
+
+    describe('setupAuthentication — CAM_SSO (gateway)', () => {
+        test('should GET gateway and set CAMPassport header from cam_passport cookie', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {
+                    'set-cookie': ['cam_passport=GW_PASSPORT_VALUE; Path=/; HttpOnly']
+                }
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw.example.com'
+            });
+            await (svc as any).setupAuthentication();
+            expect(axios.get).toHaveBeenCalledWith('https://gw.example.com', expect.objectContaining({
+                params: { CAMNamespace: 'NS' }
+            }));
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('CAMPassport GW_PASSPORT_VALUE');
+        });
+
+        test('should throw when gateway response has no cam_passport cookie', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: { 'set-cookie': ['other=value; Path=/'] }
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/cam_passport/);
+        });
+
+        test('should throw when gateway response has no Set-Cookie header', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {}
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/cam_passport/);
+        });
+
+        test('should throw when gateway returns non-200 status', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 403,
+                headers: {}
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Expected status_code 200/);
+        });
+    });
+
+    describe('setupAuthentication — IBM_CLOUD_API_KEY (IAM token exchange)', () => {
+        test('should exchange API key for IAM bearer token', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { access_token: 'iam-bearer-token-123' }
+            });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com/identity/token',
+                ssl: true, apiKey: 'test-api-key'
+            });
+            await (svc as any).setupAuthentication();
+            expect(axios.post).toHaveBeenCalledWith(
+                'https://iam.cloud.ibm.com/identity/token',
+                expect.stringContaining('grant_type=urn'),
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    })
+                })
+            );
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Bearer iam-bearer-token-123');
+        });
+
+        test('should include apiKey in URL-encoded payload', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { access_token: 'token' }
+            });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true, apiKey: 'my-key'
+            });
+            await (svc as any).setupAuthentication();
+            const calledPayload = (axios.post as jest.Mock).mock.calls[0][1];
+            expect(calledPayload).toContain('apikey=my-key');
+            expect(calledPayload).toContain('grant_type=');
+        });
+
+        test('should throw when IAM response lacks access_token', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({ data: {} });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true, apiKey: 'k'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Failed to generate access_token/);
+        });
+
+        test('should throw when iamUrl is set but apiKey is missing', async () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true
+            });
+            await expect((svc as any)._generateIbmIamCloudAccessToken())
+                .rejects.toThrow(/'iamUrl' and 'apiKey' must be provided/);
+        });
+    });
+
+    describe('setupAuthentication — PA_PROXY (CPD + proxy auth)', () => {
+        test('should generate CPD token then authenticate with PA Proxy', async () => {
+            (axios.post as jest.Mock)
+                // First call: CPD signin
+                .mockResolvedValueOnce({
+                    data: { token: 'cpd-jwt-token-abc' }
+                })
+                // Second call: PA Proxy auth
+                .mockResolvedValueOnce({
+                    status: 200,
+                    headers: {
+                        'set-cookie': [
+                            'ba-sso-csrf=csrf-value; Path=/',
+                            'paSession=session123; Path=/'
+                        ]
+                    }
+                });
+            const svc = new RestService({
+                address: 'host', user: 'user', password: 'pass',
+                paUrl: 'https://pa', database: 'db', ssl: true,
+                cpdUrl: 'https://cpd.example.com'
+            });
+            await (svc as any).setupAuthentication();
+
+            // Verify CPD signin was called
+            expect(axios.post).toHaveBeenNthCalledWith(1,
+                'https://cpd.example.com/v1/preauth/signin',
+                { username: 'user', password: 'pass' },
+                expect.objectContaining({
+                    headers: expect.objectContaining({ 'Content-Type': 'application/json;charset=UTF-8' })
+                })
+            );
+            // Verify PA Proxy auth was called with jwt
+            expect(axios.post).toHaveBeenNthCalledWith(2,
+                expect.stringContaining('/login'),
+                'jwt=cpd-jwt-token-abc',
+                expect.objectContaining({
+                    headers: expect.objectContaining({ 'Content-Type': 'application/x-www-form-urlencoded' })
+                })
+            );
+            // Verify ba-sso-authenticity header was set
+            expect(mockAxiosInstance.defaults.headers.common['ba-sso-authenticity']).toBe('csrf-value');
+        });
+
+        test('should throw when cpdUrl is missing for PA_PROXY', async () => {
+            const svc = new RestService({
+                address: 'host', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/'cpdUrl' must be provided to authenticate via CPD/);
+        });
+
+        test('should throw when CPD response lacks token', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({ data: {} });
+            const svc = new RestService({
+                address: 'host', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true,
+                cpdUrl: 'https://cpd'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Failed to generate CPD access token/);
+        });
+    });
+
+    describe('setupAuthentication — SERVICE_TO_SERVICE', () => {
+        test('should use Basic auth with clientId:clientSecret and POST {User: user}', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {
+                    'set-cookie': ['TM1SessionId=s2s-session-id; Path=/']
+                }
+            });
+            const svc = new RestService({
+                address: 'h', instance: 'INST', database: 'DB', ssl: true,
+                applicationClientId: 'clientA', applicationClientSecret: 'secretB',
+                user: 'admin'
+            });
+            await (svc as any).setupAuthentication();
+
+            const expectedBasicAuth = 'Basic ' + Buffer.from('clientA:secretB').toString('base64');
+            expect(axios.post).toHaveBeenCalledWith(
+                expect.stringContaining('/auth/v1/session'),
+                JSON.stringify({ User: 'admin' }),
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        'Authorization': expectedBasicAuth
+                    })
+                })
+            );
+            // Session cookie should be captured
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('s2s-session-id');
+        });
+
+        test('should capture TM1SessionId from response with wrong domain attribute', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {
+                    'set-cookie': ['TM1SessionId=domain-id; Domain=wrong.domain; Path=/']
+                }
+            });
+            const svc = new RestService({
+                address: 'h', instance: 'INST', database: 'DB', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret',
+                user: 'admin'
+            });
+            await (svc as any).setupAuthentication();
+            // parseSetCookieHeaders strips Domain and captures the cookie directly
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('domain-id');
+        });
+    });
+
+    describe('setupAuthentication — ACCESS_TOKEN', () => {
+        test('should set Bearer token header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', accessToken: 'my-jwt-token'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Bearer my-jwt-token');
+        });
+    });
+
+    describe('setupAuthentication — BASIC_API_KEY', () => {
+        test('should set API-Key header when user is not apikey', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', apiKey: 'my-api-key'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['API-Key']).toBe('my-api-key');
+        });
+
+        test('should set Basic auth with apikey:key when user is apikey', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', apiKey: 'my-api-key', user: 'apikey'
+            });
+            await (svc as any).setupAuthentication();
+            const expected = 'Basic ' + Buffer.from('apikey:my-api-key').toString('base64');
+            expect(mockAxiosInstance.defaults.headers.common['Authorization']).toBe(expected);
+        });
+    });
+
+    describe('setupAuthentication — WIA', () => {
+        test('should throw for Windows Integrated Authentication', async () => {
+            const svc = new RestService({
+                address: 'host', ssl: true, integratedLogin: true
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Windows Integrated Authentication.*not supported/);
+        });
+    });
+
+    describe('verify propagation to external auth requests', () => {
+        test('should pass rejectUnauthorized:false to IAM request when verify is false', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { access_token: 'token' }
+            });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T', database: 'D',
+                iamUrl: 'https://iam', ssl: true, apiKey: 'k',
+                verify: false
+            });
+            await (svc as any)._generateIbmIamCloudAccessToken();
+            const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
+            expect(callArgs.httpsAgent).toBeDefined();
+        });
+
+        test('should pass rejectUnauthorized:false to S2S request when verify is false', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: { 'set-cookie': ['TM1SessionId=s; Path=/'] }
+            });
+            const svc = new RestService({
+                address: 'h', instance: 'I', database: 'D', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret',
+                user: 'admin', verify: false
+            });
+            await (svc as any)._authenticateServiceToService();
+            const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
+            expect(callArgs.httpsAgent).toBeDefined();
+        });
+
+        test('should pass rejectUnauthorized:false to CPD request when verify is false', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { token: 'jwt' }
+            });
+            const svc = new RestService({
+                address: 'h', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true,
+                cpdUrl: 'https://cpd', verify: false
+            });
+            await (svc as any)._generateCpdAccessToken({ username: 'u', password: 'p' });
+            const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
+            expect(callArgs.httpsAgent).toBeDefined();
         });
     });
 });
