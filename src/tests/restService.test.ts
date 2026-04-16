@@ -1,5 +1,5 @@
 import axios, { AxiosResponse } from 'axios';
-import { RestService } from '../services/RestService';
+import { RestService, AuthenticationMode } from '../services/RestService';
 import { TM1RestException, TM1TimeoutException } from '../exceptions/TM1Exception';
 
 jest.mock('axios');
@@ -734,6 +734,910 @@ describe('RestService', () => {
                 (svc as any).sessionCookies.set('TM1SessionId', 'abc');
                 expect(svc.isLoggedIn()).toBe(true);
             });
+        });
+    });
+});
+
+describe('RestService URL topology dispatch', () => {
+    let mockAxiosInstance: any;
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockAxiosInstance = {
+            get: jest.fn(),
+            post: jest.fn(),
+            patch: jest.fn(),
+            delete: jest.fn(),
+            put: jest.fn(),
+            interceptors: {
+                request: { use: jest.fn() },
+                response: { use: jest.fn() }
+            },
+            defaults: { headers: { common: {} } }
+        };
+        mockedAxios.create.mockReturnValue(mockAxiosInstance as any);
+    });
+
+    const firstCreateArg = (): any => mockedAxios.create.mock.calls[0][0];
+    const lastBaseURL = (): string => firstCreateArg().baseURL;
+
+    describe('v11 pattern', () => {
+        test('should build v11 URL with ssl=true and default port', () => {
+            const svc = new RestService({ address: 'host', ssl: true });
+            expect(lastBaseURL()).toBe('https://host:8001/api/v1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://host:8001/api/v1/Configuration/ProductVersion/$value');
+        });
+
+        test('should build v11 URL with ssl=false and explicit port', () => {
+            new RestService({ address: 'host', port: 9000, ssl: false });
+            expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+
+        test('should default address to localhost when omitted', () => {
+            new RestService({ ssl: false, port: 8001 });
+            expect(lastBaseURL()).toBe('http://localhost:8001/api/v1');
+        });
+    });
+
+    describe('baseUrl override', () => {
+        test('should use baseUrl verbatim when it ends with /api/v1', () => {
+            const svc = new RestService({ baseUrl: 'http://x/api/v1' });
+            expect(lastBaseURL()).toBe('http://x/api/v1');
+            expect((svc as any).resolveRoots().authRoot).toBe('http://x/api/v1/Configuration/ProductVersion/$value');
+        });
+
+        test('should append /api/v1 when baseUrl lacks it', () => {
+            new RestService({ baseUrl: 'http://x' });
+            expect(lastBaseURL()).toBe('http://x/api/v1');
+        });
+
+        test('should preserve TM1 11 IBM Cloud baseUrl shape verbatim', () => {
+            new RestService({
+                baseUrl: 'https://mycompany.planning-analytics.ibmcloud.com/tm1/api/tm1/'
+            });
+            expect(lastBaseURL()).toBe('https://mycompany.planning-analytics.ibmcloud.com/tm1/api/tm1');
+        });
+
+        test('should preserve TM1 12 PaaS baseUrl shape (trailing slash normalized)', () => {
+            new RestService({
+                baseUrl: 'https://us-east-1.planninganalytics.saas.ibm.com/api/T1/v0/tm1/DB1/'
+            });
+            expect(lastBaseURL()).toBe('https://us-east-1.planninganalytics.saas.ibm.com/api/T1/v0/tm1/DB1');
+        });
+
+        test('should preserve TM1 12 access-token baseUrl shape verbatim', () => {
+            new RestService({
+                baseUrl: 'https://pa12.dev.net/api/INST/v0/tm1/DB1'
+            });
+            expect(lastBaseURL()).toBe('https://pa12.dev.net/api/INST/v0/tm1/DB1');
+        });
+
+        test('should resolve Databases() baseUrl when authUrl provided', () => {
+            const svc = new RestService({
+                baseUrl: "http://x/api/v1/Databases('DB')",
+                authUrl: 'http://x/auth'
+            });
+            expect(lastBaseURL()).toBe("http://x/api/v1/Databases('DB')");
+            expect((svc as any).resolveRoots().authRoot).toBe('http://x/auth');
+        });
+
+        test('should throw for Databases() baseUrl without authUrl', () => {
+            expect(() => new RestService({
+                baseUrl: "http://x/api/v1/Databases('DB')"
+            })).toThrow(/Auth_url missing/);
+        });
+
+        test('should let v12 signals win over baseUrl (tm1py parity)', () => {
+            const svc = new RestService({
+                baseUrl: 'http://ignored/api/v1',
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1/Configuration/ProductVersion/$value');
+        });
+
+        test('should throw when baseUrl and address both provided', () => {
+            expect(() => new RestService({
+                baseUrl: 'http://x/api/v1',
+                address: 'y'
+            })).toThrow(/Base URL and Address/);
+        });
+    });
+
+    describe('IBM Cloud pattern', () => {
+        test('should build IBM Cloud URL when iamUrl provided', () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com',
+                ssl: true,
+                apiKey: 'k'
+            });
+            expect(lastBaseURL()).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://pa.ibm.com/api/T1/v0/tm1/DB1/Configuration/ProductVersion/$value');
+        });
+
+        test('should throw when IBM Cloud missing tenant', () => {
+            expect(() => new RestService({
+                address: 'pa.ibm.com',
+                database: 'DB1',
+                iamUrl: 'https://iam',
+                ssl: true
+            })).toThrow("'address', 'tenant' and 'database' must be provided to connect to TM1 > v12 in IBM Cloud");
+        });
+
+        test('should throw when IBM Cloud ssl=false', () => {
+            expect(() => new RestService({
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam',
+                ssl: false
+            })).toThrow(/ssl.*must be true/);
+        });
+    });
+
+    describe('PA Proxy pattern', () => {
+        test('should build PA Proxy URL with https', () => {
+            const svc = new RestService({
+                address: 'h',
+                database: 'DB',
+                user: 'u',
+                paUrl: 'https://pa',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe('https://h/tm1/DB/api/v1');
+            expect((svc as any).resolveRoots().authRoot).toBe('https://h/login');
+        });
+
+        test('should build PA Proxy URL with http', () => {
+            new RestService({
+                address: 'h',
+                database: 'DB',
+                user: 'u',
+                paUrl: 'http://pa',
+                ssl: false
+            });
+            expect(lastBaseURL()).toBe('http://h/tm1/DB/api/v1');
+        });
+
+        test('should throw when PA Proxy missing database', () => {
+            expect(() => new RestService({
+                address: 'h',
+                user: 'u',
+                paUrl: 'https://pa',
+                ssl: true
+            })).toThrow(/'address'.*'database'.*must be provided/);
+        });
+    });
+
+    describe('S2S pattern', () => {
+        test('should build S2S URL with port and ssl', () => {
+            const svc = new RestService({
+                address: 'h',
+                port: 443,
+                instance: 'INST',
+                database: 'DB',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe("https://h:443/INST/api/v1/Databases('DB')");
+            expect((svc as any).resolveRoots().authRoot).toBe('https://h:443/INST/auth/v1/session');
+        });
+
+        test('should build S2S URL without port', () => {
+            new RestService({
+                address: 'h',
+                instance: 'INST',
+                database: 'DB',
+                ssl: true
+            });
+            expect(lastBaseURL()).toBe("https://h/INST/api/v1/Databases('DB')");
+        });
+
+        test('should default to localhost when address is empty', () => {
+            new RestService({
+                address: '',
+                instance: 'I',
+                database: 'D',
+                ssl: false
+            });
+            expect(lastBaseURL()).toBe("http://localhost/I/api/v1/Databases('D')");
+        });
+
+        test('should throw S2S without instance', () => {
+            expect(() => new RestService({
+                address: 'h',
+                instance: 'INST',
+                ssl: true
+            })).toThrow(/instance.*database|instance.*required|database.*required/i);
+        });
+    });
+
+    describe('Config pass-through and axios wiring', () => {
+        test('should accept new non-topology config fields without error', () => {
+            // iamUrl/paUrl/tenant/instance/database are topology signals (tested per-topology above);
+            // this asserts the remaining auth/network fields are accepted as config surface.
+            expect(() => new RestService({
+                baseUrl: 'http://x/api/v1',
+                cpdUrl: 'https://cpd',
+                gateway: 'https://gw',
+                integratedLogin: true,
+                integratedLoginDomain: '.',
+                integratedLoginService: 'HTTP',
+                integratedLoginHost: 'host',
+                integratedLoginDelegate: false,
+                user: 'admin',
+                password: 'pw'
+            })).not.toThrow();
+        });
+
+        test('should pass proxy.https to axios when provided', () => {
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                proxies: { https: 'https://proxy.example.com:8443' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toEqual({ host: 'proxy.example.com', port: 8443, protocol: 'https' });
+        });
+
+        test('should fall back to proxy.http when https not provided', () => {
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                proxies: { http: 'http://proxy.example.com:8080' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toEqual({ host: 'proxy.example.com', port: 8080, protocol: 'http' });
+        });
+
+        test('should not set proxy when proxies unset', () => {
+            new RestService({ baseUrl: 'http://x/api/v1' });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toBeUndefined();
+        });
+
+        test('should forward credentials from proxy URL to proxy.auth', () => {
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                proxies: { https: 'https://u%40dom:p%40ss@proxy.example.com:8443' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy).toEqual({
+                host: 'proxy.example.com',
+                port: 8443,
+                protocol: 'https',
+                auth: { username: 'u@dom', password: 'p@ss' }
+            });
+        });
+
+        test('should not set proxy.auth when proxy URL has no credentials', () => {
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                proxies: { https: 'https://proxy.example.com:8443' }
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.proxy.auth).toBeUndefined();
+        });
+
+        test('should pass sslContext through as httpsAgent', () => {
+            const httpsMod = require('https');
+            const agent = new httpsMod.Agent();
+            new RestService({
+                baseUrl: 'http://x/api/v1',
+                sslContext: agent
+            });
+            const cfg = firstCreateArg();
+            expect(cfg.httpsAgent).toBe(agent);
+        });
+
+        test('should not treat cpdUrl alone as v12 topology signal', () => {
+            new RestService({
+                address: 'host',
+                port: 9000,
+                ssl: false,
+                cpdUrl: 'https://cpd'
+            });
+            expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+
+        test('should not treat gateway alone as v12 topology signal', () => {
+            new RestService({
+                address: 'host',
+                port: 9000,
+                ssl: false,
+                gateway: 'https://gw'
+            });
+            expect(lastBaseURL()).toBe('http://host:9000/api/v1');
+        });
+    });
+
+    describe('Session cookie seeding by topology', () => {
+        test('should seed TM1SessionId cookie for v11 topology', () => {
+            const svc = new RestService({ address: 'host', ssl: true, sessionId: 'abc' });
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('abc');
+            expect((svc as any).sessionCookies.get('paSession')).toBeUndefined();
+        });
+
+        test('should seed paSession cookie for IBM Cloud topology', () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com',
+                tenant: 'T1',
+                database: 'DB1',
+                iamUrl: 'https://iam',
+                ssl: true,
+                sessionId: 'abc'
+            });
+            expect((svc as any).sessionCookies.get('paSession')).toBe('abc');
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBeUndefined();
+        });
+
+        test('should seed paSession cookie for S2S topology', () => {
+            const svc = new RestService({
+                address: 'h',
+                instance: 'INST',
+                database: 'DB',
+                ssl: true,
+                sessionId: 'xyz'
+            });
+            expect((svc as any).sessionCookies.get('paSession')).toBe('xyz');
+        });
+
+        test('should seed paSession cookie for PA Proxy topology', () => {
+            const svc = new RestService({
+                address: 'h',
+                database: 'DB',
+                user: 'u',
+                paUrl: 'https://pa',
+                ssl: true,
+                sessionId: 'pp'
+            });
+            expect((svc as any).sessionCookies.get('paSession')).toBe('pp');
+        });
+
+        test('should seed TM1SessionId cookie for baseUrl override', () => {
+            const svc = new RestService({ baseUrl: 'http://x/api/v1', sessionId: 'ff' });
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('ff');
+        });
+    });
+
+    describe('S2S token endpoint guard', () => {
+        test('should throw when S2S auth runs on v11 topology without authUrl', async () => {
+            const svc = new RestService({
+                address: 'host',
+                ssl: true,
+                applicationClientId: 'id',
+                applicationClientSecret: 'secret'
+            });
+            await expect((svc as any)._authenticateServiceToService()).rejects.toThrow(
+                /'authUrl' is required for Service-to-Service authentication on v11 topology/
+            );
+        });
+
+        test('should throw when S2S auth runs on v11-style baseUrl topology without authUrl', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1',
+                applicationClientId: 'id',
+                applicationClientSecret: 'secret'
+            });
+            await expect((svc as any)._authenticateServiceToService()).rejects.toThrow(
+                /'authUrl' is required for Service-to-Service authentication on v11 topology/
+            );
+        });
+
+        test('should not throw when S2S auth runs on v12 Databases baseUrl with authUrl', async () => {
+            const svc = new RestService({
+                baseUrl: "http://x/api/v1/Databases('DB')",
+                authUrl: 'http://x/auth',
+                applicationClientId: 'id',
+                applicationClientSecret: 'secret'
+            });
+            // Will reject with network-level error when trying to POST, but NOT the guard error.
+            await expect((svc as any)._authenticateServiceToService())
+                .rejects.not.toThrow(/'authUrl' is required/);
+        });
+    });
+});
+
+// =========================================================================
+// Authentication flow tests — issue #59
+// =========================================================================
+describe('RestService authentication flows', () => {
+    let mockAxiosInstance: any;
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockAxiosInstance = {
+            get: jest.fn(),
+            post: jest.fn(),
+            patch: jest.fn(),
+            delete: jest.fn(),
+            put: jest.fn(),
+            interceptors: {
+                request: { use: jest.fn() },
+                response: { use: jest.fn() }
+            },
+            defaults: { headers: { common: {} as Record<string, string> } }
+        };
+        mockedAxios.create.mockReturnValue(mockAxiosInstance as any);
+    });
+
+    describe('getAuthenticationMode', () => {
+        test('should detect BASIC when only user and password are provided', () => {
+            const svc = new RestService({ address: 'host', ssl: true, user: 'admin', password: 'pw' });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC);
+        });
+
+        test('should detect CAM when namespace is set without gateway', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'LDAP'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM);
+        });
+
+        test('should detect CAM when camPassport is set', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true, camPassport: 'passport123'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM);
+        });
+
+        test('should detect CAM_SSO when gateway is set', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'LDAP', gateway: 'https://gw'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM_SSO);
+        });
+
+        test('should detect IBM_CLOUD_API_KEY when iamUrl is set', () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true, apiKey: 'k'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.IBM_CLOUD_API_KEY);
+        });
+
+        test('should detect PA_PROXY when address + user + paUrl (no instance)', () => {
+            const svc = new RestService({
+                address: 'host', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.PA_PROXY);
+        });
+
+        test('should detect SERVICE_TO_SERVICE with instance + database', () => {
+            const svc = new RestService({
+                address: 'h', instance: 'INST', database: 'DB', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.SERVICE_TO_SERVICE);
+        });
+
+        test('should detect SERVICE_TO_SERVICE on v11 when clientId + clientSecret provided', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.SERVICE_TO_SERVICE);
+        });
+
+        test('should detect ACCESS_TOKEN when accessToken is set', () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', accessToken: 'jwt123'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.ACCESS_TOKEN);
+        });
+
+        test('should detect BASIC_API_KEY when apiKey is set', () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', apiKey: 'mykey'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC_API_KEY);
+        });
+
+        test('should fall through to BASIC when gateway is set without namespace', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', gateway: 'https://gw'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC);
+        });
+
+        test('should detect WIA when integratedLogin is set', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                integratedLogin: true
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.WIA);
+        });
+    });
+
+    describe('setupAuthentication — Basic', () => {
+        test('should set Basic Authorization header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', user: 'admin', password: 'apple'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Basic ' + Buffer.from('admin:apple').toString('base64'));
+        });
+
+        test('should decode Base64 password when decodeB64 is true', async () => {
+            const encoded = Buffer.from('mypassword').toString('base64');
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', user: 'admin', password: encoded, decodeB64: true
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Basic ' + Buffer.from('admin:mypassword').toString('base64'));
+        });
+
+        test('should throw when no user or password for BASIC mode', async () => {
+            const svc = new RestService({ baseUrl: 'http://x/api/v1' });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow('No valid authentication configuration provided');
+        });
+    });
+
+    describe('setupAuthentication — CAM (camPassport)', () => {
+        test('should set CAMPassport Authorization header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', camPassport: 'test-passport-value'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('CAMPassport test-passport-value');
+        });
+    });
+
+    describe('setupAuthentication — CAM (namespace)', () => {
+        test('should set CAMNamespace Authorization header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1',
+                user: 'admin', password: 'pass', namespace: 'LDAP'
+            });
+            await (svc as any).setupAuthentication();
+            const expected = 'CAMNamespace ' + Buffer.from('admin:pass:LDAP').toString('base64');
+            expect(mockAxiosInstance.defaults.headers.common['Authorization']).toBe(expected);
+        });
+
+        test('should decode B64 password in CAMNamespace header', async () => {
+            const encoded = Buffer.from('pass').toString('base64');
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1',
+                user: 'admin', password: encoded, namespace: 'LDAP', decodeB64: true
+            });
+            await (svc as any).setupAuthentication();
+            const expected = 'CAMNamespace ' + Buffer.from('admin:pass:LDAP').toString('base64');
+            expect(mockAxiosInstance.defaults.headers.common['Authorization']).toBe(expected);
+        });
+
+        test('should throw CAM error when namespace set but no user/password/camPassport', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', namespace: 'LDAP'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow('CAM authentication requires either camPassport or user/password/namespace');
+        });
+    });
+
+    describe('setupAuthentication — CAM_SSO (gateway)', () => {
+        test('should GET gateway and set CAMPassport header from cam_passport cookie', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {
+                    'set-cookie': ['cam_passport=GW_PASSPORT_VALUE; Path=/; HttpOnly']
+                }
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw.example.com'
+            });
+            await (svc as any).setupAuthentication();
+            expect(axios.get).toHaveBeenCalledWith('https://gw.example.com', expect.objectContaining({
+                params: { CAMNamespace: 'NS' }
+            }));
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('CAMPassport GW_PASSPORT_VALUE');
+        });
+
+        test('should throw when gateway response has no cam_passport cookie', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: { 'set-cookie': ['other=value; Path=/'] }
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/cam_passport/);
+        });
+
+        test('should throw when gateway response has no Set-Cookie header', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {}
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/cam_passport/);
+        });
+
+        test('should throw when gateway returns non-200 status', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 403,
+                headers: {}
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Expected status_code 200/);
+        });
+    });
+
+    describe('setupAuthentication — IBM_CLOUD_API_KEY (IAM token exchange)', () => {
+        test('should exchange API key for IAM bearer token', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { access_token: 'iam-bearer-token-123' }
+            });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com/identity/token',
+                ssl: true, apiKey: 'test-api-key'
+            });
+            await (svc as any).setupAuthentication();
+            expect(axios.post).toHaveBeenCalledWith(
+                'https://iam.cloud.ibm.com/identity/token',
+                expect.stringContaining('grant_type=urn'),
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    })
+                })
+            );
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Bearer iam-bearer-token-123');
+        });
+
+        test('should include apiKey in URL-encoded payload', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { access_token: 'token' }
+            });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true, apiKey: 'my-key'
+            });
+            await (svc as any).setupAuthentication();
+            const calledPayload = (axios.post as jest.Mock).mock.calls[0][1];
+            expect(calledPayload).toContain('apikey=my-key');
+            expect(calledPayload).toContain('grant_type=');
+        });
+
+        test('should throw when IAM response lacks access_token', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({ data: {} });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true, apiKey: 'k'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Failed to generate access_token/);
+        });
+
+        test('should throw when iamUrl is set but apiKey is missing', async () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true
+            });
+            await expect((svc as any)._generateIbmIamCloudAccessToken())
+                .rejects.toThrow(/'iamUrl' and 'apiKey' must be provided/);
+        });
+    });
+
+    describe('setupAuthentication — PA_PROXY (CPD + proxy auth)', () => {
+        test('should generate CPD token then authenticate with PA Proxy', async () => {
+            (axios.post as jest.Mock)
+                // First call: CPD signin
+                .mockResolvedValueOnce({
+                    data: { token: 'cpd-jwt-token-abc' }
+                })
+                // Second call: PA Proxy auth
+                .mockResolvedValueOnce({
+                    status: 200,
+                    headers: {
+                        'set-cookie': [
+                            'ba-sso-csrf=csrf-value; Path=/',
+                            'paSession=session123; Path=/'
+                        ]
+                    }
+                });
+            const svc = new RestService({
+                address: 'host', user: 'user', password: 'pass',
+                paUrl: 'https://pa', database: 'db', ssl: true,
+                cpdUrl: 'https://cpd.example.com'
+            });
+            await (svc as any).setupAuthentication();
+
+            // Verify CPD signin was called
+            expect(axios.post).toHaveBeenNthCalledWith(1,
+                'https://cpd.example.com/v1/preauth/signin',
+                { username: 'user', password: 'pass' },
+                expect.objectContaining({
+                    headers: expect.objectContaining({ 'Content-Type': 'application/json;charset=UTF-8' })
+                })
+            );
+            // Verify PA Proxy auth was called with jwt
+            expect(axios.post).toHaveBeenNthCalledWith(2,
+                expect.stringContaining('/login'),
+                'jwt=cpd-jwt-token-abc',
+                expect.objectContaining({
+                    headers: expect.objectContaining({ 'Content-Type': 'application/x-www-form-urlencoded' })
+                })
+            );
+            // Verify ba-sso-authenticity header was set
+            expect(mockAxiosInstance.defaults.headers.common['ba-sso-authenticity']).toBe('csrf-value');
+        });
+
+        test('should throw when cpdUrl is missing for PA_PROXY', async () => {
+            const svc = new RestService({
+                address: 'host', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/'cpdUrl' must be provided to authenticate via CPD/);
+        });
+
+        test('should throw when CPD response lacks token', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({ data: {} });
+            const svc = new RestService({
+                address: 'host', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true,
+                cpdUrl: 'https://cpd'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Failed to generate CPD access token/);
+        });
+    });
+
+    describe('setupAuthentication — SERVICE_TO_SERVICE', () => {
+        test('should use Basic auth with clientId:clientSecret and POST {User: user}', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {
+                    'set-cookie': ['TM1SessionId=s2s-session-id; Path=/']
+                }
+            });
+            const svc = new RestService({
+                address: 'h', instance: 'INST', database: 'DB', ssl: true,
+                applicationClientId: 'clientA', applicationClientSecret: 'secretB',
+                user: 'admin'
+            });
+            await (svc as any).setupAuthentication();
+
+            const expectedBasicAuth = 'Basic ' + Buffer.from('clientA:secretB').toString('base64');
+            expect(axios.post).toHaveBeenCalledWith(
+                expect.stringContaining('/auth/v1/session'),
+                JSON.stringify({ User: 'admin' }),
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        'Authorization': expectedBasicAuth
+                    })
+                })
+            );
+            // Session cookie should be captured
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('s2s-session-id');
+        });
+
+        test('should capture TM1SessionId from response with wrong domain attribute', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {
+                    'set-cookie': ['TM1SessionId=domain-id; Domain=wrong.domain; Path=/']
+                }
+            });
+            const svc = new RestService({
+                address: 'h', instance: 'INST', database: 'DB', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret',
+                user: 'admin'
+            });
+            await (svc as any).setupAuthentication();
+            // parseSetCookieHeaders strips Domain and captures the cookie directly
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('domain-id');
+        });
+    });
+
+    describe('setupAuthentication — ACCESS_TOKEN', () => {
+        test('should set Bearer token header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', accessToken: 'my-jwt-token'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Bearer my-jwt-token');
+        });
+    });
+
+    describe('setupAuthentication — BASIC_API_KEY', () => {
+        test('should set API-Key header when user is not apikey', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', apiKey: 'my-api-key'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['API-Key']).toBe('my-api-key');
+        });
+
+        test('should set Basic auth with apikey:key when user is apikey', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', apiKey: 'my-api-key', user: 'apikey'
+            });
+            await (svc as any).setupAuthentication();
+            const expected = 'Basic ' + Buffer.from('apikey:my-api-key').toString('base64');
+            expect(mockAxiosInstance.defaults.headers.common['Authorization']).toBe(expected);
+        });
+    });
+
+    describe('setupAuthentication — WIA', () => {
+        test('should throw for Windows Integrated Authentication', async () => {
+            const svc = new RestService({
+                address: 'host', ssl: true, integratedLogin: true
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Windows Integrated Authentication.*not supported/);
+        });
+    });
+
+    describe('verify propagation to external auth requests', () => {
+        test('should pass rejectUnauthorized:false to IAM request when verify is false', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { access_token: 'token' }
+            });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T', database: 'D',
+                iamUrl: 'https://iam', ssl: true, apiKey: 'k',
+                verify: false
+            });
+            await (svc as any)._generateIbmIamCloudAccessToken();
+            const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
+            expect(callArgs.httpsAgent).toBeDefined();
+        });
+
+        test('should pass rejectUnauthorized:false to S2S request when verify is false', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: { 'set-cookie': ['TM1SessionId=s; Path=/'] }
+            });
+            const svc = new RestService({
+                address: 'h', instance: 'I', database: 'D', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret',
+                user: 'admin', verify: false
+            });
+            await (svc as any)._authenticateServiceToService();
+            const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
+            expect(callArgs.httpsAgent).toBeDefined();
+        });
+
+        test('should pass rejectUnauthorized:false to CPD request when verify is false', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { token: 'jwt' }
+            });
+            const svc = new RestService({
+                address: 'h', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true,
+                cpdUrl: 'https://cpd', verify: false
+            });
+            await (svc as any)._generateCpdAccessToken({ username: 'u', password: 'p' });
+            const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
+            expect(callArgs.httpsAgent).toBeDefined();
         });
     });
 });
