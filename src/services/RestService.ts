@@ -1,5 +1,6 @@
 import axios, { AxiosInstance, AxiosResponse, AxiosRequestConfig } from 'axios';
 import { TM1RestException, TM1TimeoutException } from '../exceptions/TM1Exception';
+import { formatUrl } from '../utils/Utils';
 
 export enum AuthenticationMode {
     BASIC = 1,
@@ -431,7 +432,7 @@ export class RestService {
         data?: any,
         options?: RequestOptions
     ): Promise<AxiosResponse | string> {
-        const timeout = options?.timeout || this._timeout;
+        const timeout = options?.timeout ?? this._timeout;
         const cancelAtTimeout = options?.cancelAtTimeout ?? this._cancelAtTimeout;
         const asyncMode = options?.returnAsyncId || (options?.asyncRequestsMode ?? this._asyncRequestsMode);
         const verifyResponse = options?.verifyResponse ?? true;
@@ -549,7 +550,10 @@ export class RestService {
     }
 
     public isLoggedIn(): boolean {
-        return this.isConnected && !!this.getSessionCookieValue();
+        return this.isConnected && (
+            !!this.getSessionCookieValue() ||
+            !!this.axiosInstance.defaults.headers.common['Authorization']
+        );
     }
 
     public async getApiMetadata(): Promise<any> {
@@ -887,7 +891,10 @@ export class RestService {
      * Check if currently connected to TM1
      */
     public is_connected(): boolean {
-        return this.isConnected && !!this.getSessionCookieValue();
+        return this.isConnected && (
+            !!this.getSessionCookieValue() ||
+            !!this.axiosInstance.defaults.headers.common['Authorization']
+        );
     }
 
     /**
@@ -1007,7 +1014,7 @@ export class RestService {
      * Cancel an async operation by ID
      */
     public async cancel_async_operation(async_id: string): Promise<void> {
-        await this.delete(`/_async('${async_id}')`, { asyncRequestsMode: false });
+        await this.delete(formatUrl("/_async('{}')", async_id), { asyncRequestsMode: false });
     }
 
     /**
@@ -1019,7 +1026,7 @@ export class RestService {
         // on status_code in [200, 201]. Mirror that: accept all statuses so
         // transient 404s (resource not yet materialized) or 202s (still
         // running) flow through to the polling loop rather than aborting it.
-        return this.get(`/_async('${async_id}')`, {
+        return this.get(formatUrl("/_async('{}')", async_id), {
             asyncRequestsMode: false,
             verifyResponse: false,
             validateStatus: () => true
