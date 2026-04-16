@@ -539,6 +539,9 @@ export class RestService {
         const response = await this.axiosInstance.request(config);
 
         if (response.status !== 202) {
+            // Server completed synchronously. If the caller asked for an async
+            // ID (returnAsyncId: true) there is none to return — hand back the
+            // full response so the caller can inspect the result directly.
             return response;
         }
 

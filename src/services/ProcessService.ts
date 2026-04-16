@@ -255,6 +255,9 @@ export class ProcessService extends ObjectService {
             // build_response_from_binary_response. Add support if needed.
             return this._executeWithReturnParseResponse(response.data);
         } catch (error: any) {
+            // 404 means the async resource hasn't materialized yet — return null
+            // so the caller can retry. This differs from AsyncOperationService
+            // which treats 404 as terminal FAILED for locally-tracked operations.
             const status = error?.status ?? error?.response?.status;
             if (status === 404) {
                 return null;

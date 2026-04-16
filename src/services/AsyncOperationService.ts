@@ -149,6 +149,9 @@ export class AsyncOperationService {
         } catch (error: any) {
             // HTTP 4xx/5xx surfaces as a thrown TM1RestException — treat as a terminal FAILED
             // so callers stop polling. Network errors (no status) leave cached status intact.
+            // Note: 404 is treated as FAILED here (operation never materialized). This differs
+            // from ProcessService.pollExecuteWithReturn which treats 404 as "not ready yet"
+            // because process async IDs can take a moment to register on the server.
             const status = error?.status ?? error?.response?.status;
             if (typeof status === 'number' && status >= 400) {
                 operation.status = OperationStatus.FAILED;
