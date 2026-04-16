@@ -3,7 +3,7 @@
  * Comprehensive tests for TM1 REST API operations with proper mocking
  */
 
-import { RestService } from '../services/RestService';
+import { RestService, AuthenticationMode } from '../services/RestService';
 import axios, { AxiosResponse } from 'axios';
 
 // Mock axios
@@ -966,7 +966,7 @@ describe('RestService authentication flows', () => {
     describe('getAuthenticationMode', () => {
         test('should detect BASIC when only user and password are provided', () => {
             const svc = new RestService({ address: 'host', ssl: true, user: 'admin', password: 'pw' });
-            expect(svc.getAuthenticationMode()).toBe(1); // BASIC
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC);
         });
 
         test('should detect CAM when namespace is set without gateway', () => {
@@ -974,14 +974,14 @@ describe('RestService authentication flows', () => {
                 address: 'host', ssl: true,
                 user: 'u', password: 'p', namespace: 'LDAP'
             });
-            expect(svc.getAuthenticationMode()).toBe(3); // CAM
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM);
         });
 
         test('should detect CAM when camPassport is set', () => {
             const svc = new RestService({
                 address: 'host', ssl: true, camPassport: 'passport123'
             });
-            expect(svc.getAuthenticationMode()).toBe(3); // CAM
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM);
         });
 
         test('should detect CAM_SSO when gateway is set', () => {
@@ -989,7 +989,7 @@ describe('RestService authentication flows', () => {
                 address: 'host', ssl: true,
                 user: 'u', password: 'p', namespace: 'LDAP', gateway: 'https://gw'
             });
-            expect(svc.getAuthenticationMode()).toBe(4); // CAM_SSO
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM_SSO);
         });
 
         test('should detect IBM_CLOUD_API_KEY when iamUrl is set', () => {
@@ -997,7 +997,7 @@ describe('RestService authentication flows', () => {
                 address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
                 iamUrl: 'https://iam.cloud.ibm.com', ssl: true, apiKey: 'k'
             });
-            expect(svc.getAuthenticationMode()).toBe(5); // IBM_CLOUD_API_KEY
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.IBM_CLOUD_API_KEY);
         });
 
         test('should detect PA_PROXY when address + user + paUrl (no instance)', () => {
@@ -1005,7 +1005,7 @@ describe('RestService authentication flows', () => {
                 address: 'host', user: 'u', password: 'p',
                 paUrl: 'https://pa', database: 'db', ssl: true
             });
-            expect(svc.getAuthenticationMode()).toBe(7); // PA_PROXY
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.PA_PROXY);
         });
 
         test('should detect SERVICE_TO_SERVICE with instance + database', () => {
@@ -1013,7 +1013,7 @@ describe('RestService authentication flows', () => {
                 address: 'h', instance: 'INST', database: 'DB', ssl: true,
                 applicationClientId: 'id', applicationClientSecret: 'secret'
             });
-            expect(svc.getAuthenticationMode()).toBe(6); // SERVICE_TO_SERVICE
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.SERVICE_TO_SERVICE);
         });
 
         test('should detect SERVICE_TO_SERVICE on v11 when clientId + clientSecret provided', () => {
@@ -1021,21 +1021,21 @@ describe('RestService authentication flows', () => {
                 address: 'host', ssl: true,
                 applicationClientId: 'id', applicationClientSecret: 'secret'
             });
-            expect(svc.getAuthenticationMode()).toBe(6); // SERVICE_TO_SERVICE
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.SERVICE_TO_SERVICE);
         });
 
         test('should detect ACCESS_TOKEN when accessToken is set', () => {
             const svc = new RestService({
                 baseUrl: 'http://x/api/v1', accessToken: 'jwt123'
             });
-            expect(svc.getAuthenticationMode()).toBe(9); // ACCESS_TOKEN
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.ACCESS_TOKEN);
         });
 
         test('should detect BASIC_API_KEY when apiKey is set', () => {
             const svc = new RestService({
                 baseUrl: 'http://x/api/v1', apiKey: 'mykey'
             });
-            expect(svc.getAuthenticationMode()).toBe(8); // BASIC_API_KEY
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC_API_KEY);
         });
 
         test('should detect WIA when integratedLogin is set', () => {
@@ -1043,7 +1043,7 @@ describe('RestService authentication flows', () => {
                 address: 'host', ssl: true,
                 integratedLogin: true
             });
-            expect(svc.getAuthenticationMode()).toBe(2); // WIA
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.WIA);
         });
     });
 
@@ -1284,7 +1284,7 @@ describe('RestService authentication flows', () => {
                 paUrl: 'https://pa', database: 'db', ssl: true
             });
             await expect((svc as any).setupAuthentication())
-                .rejects.toThrow(/'cpdUrl' must be provided/);
+                .rejects.toThrow(/'cpdUrl' must be provided to authenticate via CPD/);
         });
 
         test('should throw when CPD response lacks token', async () => {
@@ -1328,12 +1328,11 @@ describe('RestService authentication flows', () => {
             expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('s2s-session-id');
         });
 
-        test('should extract TM1SessionId manually when normal cookie parsing fails', async () => {
-            // Simulate a reverse-proxy that corrupts cookie domain
+        test('should capture TM1SessionId from response with wrong domain attribute', async () => {
             (axios.post as jest.Mock).mockResolvedValue({
                 status: 200,
                 headers: {
-                    'set-cookie': ['TM1SessionId=fallback-id; Domain=wrong.domain; Path=/']
+                    'set-cookie': ['TM1SessionId=domain-id; Domain=wrong.domain; Path=/']
                 }
             });
             const svc = new RestService({
@@ -1342,8 +1341,8 @@ describe('RestService authentication flows', () => {
                 user: 'admin'
             });
             await (svc as any).setupAuthentication();
-            // Cookie should be captured via regex fallback even if domain is wrong
-            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('fallback-id');
+            // parseSetCookieHeaders strips Domain and captures the cookie directly
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('domain-id');
         });
     });
 

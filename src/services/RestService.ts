@@ -125,7 +125,7 @@ export class RestService {
 
     private parseSetCookieHeaders(setCookie: string[] | string | undefined): void {
         if (!setCookie) return;
-        const list = Array.isArray(setCookie) ? setCookie : [setCookie];
+        const list = RestService.normaliseSetCookie(setCookie);
         for (const raw of list) {
             const firstSegment = raw.split(';')[0];
             const eqIdx = firstSegment.indexOf('=');
@@ -526,6 +526,39 @@ export class RestService {
     }
 
     /**
+     * Build an httpsAgent option that skips TLS verification when verify is false.
+     */
+    private static insecureAgentOption(
+        verify?: boolean | string
+    ): { httpsAgent: https.Agent } | Record<string, never> {
+        return verify === false
+            ? { httpsAgent: new https.Agent({ rejectUnauthorized: false }) }
+            : {};
+    }
+
+    /**
+     * Normalise a Set-Cookie header value (string | string[] | undefined) into a string[].
+     */
+    private static normaliseSetCookie(raw: string | string[] | undefined): string[] {
+        if (!raw) return [];
+        return Array.isArray(raw) ? raw : [raw];
+    }
+
+    /**
+     * Extract a named cookie value from raw Set-Cookie headers.
+     */
+    private static extractCookieValue(
+        raw: string | string[] | undefined,
+        name: string
+    ): string | undefined {
+        for (const header of RestService.normaliseSetCookie(raw)) {
+            const match = header.match(new RegExp(`${name}=([^;]+)`));
+            if (match?.[1]) return match[1];
+        }
+        return undefined;
+    }
+
+    /**
      * Build Basic Authorization header.
      * Mirrors tm1py's _build_authorization_token_basic.
      */
@@ -563,9 +596,7 @@ export class RestService {
     ): Promise<string> {
         const response = await axios.get(gateway, {
             params: { CAMNamespace: namespace },
-            ...(verify === false && {
-                httpsAgent: new https.Agent({ rejectUnauthorized: false })
-            })
+            ...RestService.insecureAgentOption(verify)
         });
         if (response.status !== 200) {
             throw new Error(
@@ -573,22 +604,15 @@ export class RestService {
                 response.status
             );
         }
-        const setCookie = response.headers['set-cookie'];
-        if (!setCookie) {
+        const passport = RestService.extractCookieValue(
+            response.headers['set-cookie'], 'cam_passport'
+        );
+        if (!passport) {
             throw new Error(
                 "Failed to authenticate through CAM. HTTP response does not contain 'cam_passport' cookie"
             );
         }
-        const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-        for (const cookie of cookies) {
-            const match = cookie.match(/cam_passport=([^;]+)/);
-            if (match) {
-                return 'CAMPassport ' + match[1];
-            }
-        }
-        throw new Error(
-            "Failed to authenticate through CAM. HTTP response does not contain 'cam_passport' cookie"
-        );
+        return 'CAMPassport ' + passport;
     }
 
     /**
@@ -607,9 +631,7 @@ export class RestService {
         };
         const response = await axios.post(iamUrl, payload, {
             headers,
-            ...(this.config.verify === false && {
-                httpsAgent: new https.Agent({ rejectUnauthorized: false })
-            })
+            ...RestService.insecureAgentOption(this.config.verify)
         });
         if (!response.data?.access_token) {
             throw new Error(`Failed to generate access_token from URL: '${iamUrl}'`);
@@ -626,15 +648,13 @@ export class RestService {
     ): Promise<string> {
         const { cpdUrl } = this.config;
         if (!cpdUrl) {
-            throw new Error("'cpdUrl' must be provided to authenticate via PA Proxy");
+            throw new Error("'cpdUrl' must be provided to authenticate via CPD/Cloud Pak for Data");
         }
         const url = `${cpdUrl}/v1/preauth/signin`;
         const headers = { 'Content-Type': 'application/json;charset=UTF-8' };
         const response = await axios.post(url, credentials, {
             headers,
-            ...(this.config.verify === false && {
-                httpsAgent: new https.Agent({ rejectUnauthorized: false })
-            })
+            ...RestService.insecureAgentOption(this.config.verify)
         });
         if (!response.data?.token) {
             throw new Error(`Failed to generate CPD access token from URL: '${url}'`);
@@ -652,21 +672,12 @@ export class RestService {
         const payload = `jwt=${jwt}`;
         const response = await axios.post(authRoot, payload, {
             headers,
-            ...(this.config.verify === false && {
-                httpsAgent: new https.Agent({ rejectUnauthorized: false })
-            })
+            ...RestService.insecureAgentOption(this.config.verify)
         });
-        // Extract ba-sso-csrf cookie and set ba-sso-authenticity header (tm1py parity)
         const setCookie = response.headers['set-cookie'];
-        if (setCookie) {
-            const cookies = Array.isArray(setCookie) ? setCookie : [setCookie];
-            for (const cookie of cookies) {
-                const match = cookie.match(/ba-sso-csrf=([^;]+)/);
-                if (match) {
-                    this.axiosInstance.defaults.headers.common['ba-sso-authenticity'] = match[1];
-                    break;
-                }
-            }
+        const csrfValue = RestService.extractCookieValue(setCookie, 'ba-sso-csrf');
+        if (csrfValue) {
+            this.axiosInstance.defaults.headers.common['ba-sso-authenticity'] = csrfValue;
         }
         this.parseSetCookieHeaders(setCookie);
     }
@@ -713,34 +724,11 @@ export class RestService {
                     ...RestService.HEADERS,
                     'Authorization': `Basic ${basicAuth}`
                 },
-                ...(this.config.verify === false && {
-                    httpsAgent: new https.Agent({ rejectUnauthorized: false })
-                })
+                ...RestService.insecureAgentOption(this.config.verify)
             }
         );
 
-        // Capture session cookies; if normal parsing fails (reverse-proxy domain
-        // mismatch), extract TM1SessionId manually — mirrors tm1py's fallback.
         this.parseSetCookieHeaders(response.headers['set-cookie']);
-        if (!this.getSessionCookieValue()) {
-            const rawCookies = response.headers['set-cookie'];
-            if (rawCookies) {
-                const list = Array.isArray(rawCookies) ? rawCookies : [rawCookies];
-                for (const c of list) {
-                    const match = c.match(/TM1SessionId=([^;]+)/);
-                    if (match?.[1]) {
-                        this.sessionCookies.set('TM1SessionId', match[1]);
-                        console.warn(
-                            'TM1SessionId has failed to be automatically added to the session cookies, ' +
-                            'future requests using this TM1Service will use the session id extracted ' +
-                            'from the first response. Check the tm1-gateway domain settings are correct ' +
-                            'in the container orchestrator.'
-                        );
-                        break;
-                    }
-                }
-            }
-        }
     }
 
     /**
@@ -796,9 +784,8 @@ export class RestService {
 
             case AuthenticationMode.BASIC_API_KEY:
                 if (this.config.user === 'apikey') {
-                    // PaaS-style: Authorization: Basic apikey:<key>
                     this.axiosInstance.defaults.headers.common['Authorization'] =
-                        `Basic ${Buffer.from(`apikey:${this.config.apiKey}`).toString('base64')}`;
+                        RestService._buildAuthorizationTokenBasic('apikey', this.config.apiKey!);
                 } else {
                     this.axiosInstance.defaults.headers.common['API-Key'] = this.config.apiKey!;
                 }
@@ -825,22 +812,13 @@ export class RestService {
                 break;
 
             case AuthenticationMode.CAM_SSO: {
-                if (this.config.gateway) {
-                    const token = await RestService._buildAuthorizationTokenCamSso(
-                        this.config.gateway,
-                        this.config.namespace!,
-                        this.config.verify
-                    );
-                    this.axiosInstance.defaults.headers.common['Authorization'] = token;
-                } else if (this.config.camPassport) {
-                    this.axiosInstance.defaults.headers.common['Authorization'] =
-                        'CAMPassport ' + this.config.camPassport;
-                } else {
-                    this.axiosInstance.defaults.headers.common['Authorization'] =
-                        RestService._buildAuthorizationTokenCam(
-                            this.config.user!, password!, this.config.namespace!
-                        );
-                }
+                // CAM_SSO is only reached when gateway is set (see getAuthenticationMode)
+                const token = await RestService._buildAuthorizationTokenCamSso(
+                    this.config.gateway!,
+                    this.config.namespace!,
+                    this.config.verify
+                );
+                this.axiosInstance.defaults.headers.common['Authorization'] = token;
                 break;
             }
 
