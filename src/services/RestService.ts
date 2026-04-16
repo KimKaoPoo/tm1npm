@@ -375,7 +375,7 @@ export class RestService {
             return response;
         }
 
-        const location = response.headers['location'] || response.headers['Location'] || '';
+        const location = response.headers['location'] || '';
         const match = typeof location === 'string' ? location.match(/\('([^']+)'\)/) : null;
         const asyncId = match ? match[1] : undefined;
 
@@ -507,31 +507,31 @@ export class RestService {
      * `200/201`, the full `AxiosResponse` is returned instead — the
      * declared `Promise<string>` return type is a best-effort narrowing.
      */
-    public async get(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
+    public async get(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
     public async get(url: string, options?: RequestOptions): Promise<AxiosResponse>;
     public async get(url: string, options?: RequestOptions): Promise<AxiosResponse | string> {
         return this._request('GET', url, undefined, { idempotent: true, ...options });
     }
 
-    public async post(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
+    public async post(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
     public async post(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
     public async post(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
         return this._request('POST', url, data, options);
     }
 
-    public async patch(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
+    public async patch(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
     public async patch(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
     public async patch(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
         return this._request('PATCH', url, data, options);
     }
 
-    public async put(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
+    public async put(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
     public async put(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
     public async put(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
         return this._request('PUT', url, data, options);
     }
 
-    public async delete(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string>;
+    public async delete(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
     public async delete(url: string, options?: RequestOptions): Promise<AxiosResponse>;
     public async delete(url: string, options?: RequestOptions): Promise<AxiosResponse | string> {
         return this._request('DELETE', url, undefined, options);
@@ -1041,7 +1041,7 @@ export class RestService {
      * status so callers are not handed a 500 as "success".
      */
     private verifyAsyncResultHeader(response: AxiosResponse): void {
-        const headerValue = response.headers?.['asyncresult'] ?? response.headers?.['AsyncResult'];
+        const headerValue = response.headers?.['asyncresult'];
         if (typeof headerValue !== 'string') return;
         const embeddedStatus = parseInt(headerValue.trim().split(/\s+/)[0], 10);
         if (Number.isNaN(embeddedStatus)) return;

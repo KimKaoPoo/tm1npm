@@ -164,7 +164,7 @@ export class AsyncOperationService {
         if (response.status === 202) {
             return OperationStatus.RUNNING;
         }
-        const asyncResult = response.headers?.['asyncresult'] ?? response.headers?.['AsyncResult'];
+        const asyncResult = response.headers?.['asyncresult'];
         if (typeof asyncResult === 'string') {
             const embedded = parseInt(asyncResult.trim().split(/\s+/)[0], 10);
             if (!Number.isNaN(embedded) && (embedded < 200 || embedded >= 300)) {
@@ -178,7 +178,7 @@ export class AsyncOperationService {
     }
 
     private extractErrorFromResponse(response: any): string {
-        const asyncResult = response.headers?.['asyncresult'] ?? response.headers?.['AsyncResult'];
+        const asyncResult = response.headers?.['asyncresult'];
         if (typeof asyncResult === 'string') {
             return asyncResult;
         }
