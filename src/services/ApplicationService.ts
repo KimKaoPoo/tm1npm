@@ -1,4 +1,4 @@
-import { AxiosRequestConfig, AxiosResponse } from 'axios';
+import { AxiosResponse } from 'axios';
 import { promises as fs } from 'fs';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
@@ -152,7 +152,7 @@ export class ApplicationService extends ObjectService {
             requestName
         );
 
-        const arrayBufferResponse = await this.rest.get(contentUrl, { responseType: 'arraybuffer' } as AxiosRequestConfig);
+        const arrayBufferResponse = await this.rest.get(contentUrl, { responseType: 'arraybuffer' });
         const metadataResponse = await this.rest.get(metadataUrl);
 
         const buffer = Buffer.from(arrayBufferResponse.data);
@@ -183,7 +183,7 @@ export class ApplicationService extends ObjectService {
             );
             await this.rest.put(contentUrl, application.content, {
                 headers: this.binaryHttpHeader
-            } as AxiosRequestConfig);
+            });
         }
 
         return response;
@@ -204,7 +204,7 @@ export class ApplicationService extends ObjectService {
             );
             return await this.rest.post(url, application.content, {
                 headers: this.binaryHttpHeader
-            } as AxiosRequestConfig);
+            });
         }
 
         const url = formatUrl(

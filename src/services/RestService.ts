@@ -2,6 +2,7 @@ import axios, { AxiosInstance, AxiosResponse, AxiosRequestConfig } from 'axios';
 import * as https from 'https';
 import * as fs from 'fs';
 import { TM1RestException, TM1TimeoutException } from '../exceptions/TM1Exception';
+import { formatUrl } from '../utils/Utils';
 
 type UrlTopology = 'base_url' | 'v11' | 'ibm_cloud' | 'pa_proxy' | 's2s';
 
@@ -34,6 +35,9 @@ export interface RestServiceConfig {
     timeout?: number;
     cancelAtTimeout?: boolean;
     asyncRequestsMode?: boolean;
+    asyncPollingInitialDelay?: number;
+    asyncPollingMaxDelay?: number;
+    asyncPollingBackoffFactor?: number;
     connectionPoolSize?: number;
     poolConnections?: number;
     instance?: string;
@@ -67,6 +71,15 @@ export interface RestServiceConfig {
     cert?: string | [string, string];
 }
 
+export interface RequestOptions extends Omit<AxiosRequestConfig, 'timeout'> {
+    asyncRequestsMode?: boolean;
+    returnAsyncId?: boolean;
+    timeout?: number;
+    cancelAtTimeout?: boolean;
+    idempotent?: boolean;
+    verifyResponse?: boolean;
+}
+
 export class RestService {
     private static readonly HEADERS = {
         'Connection': 'keep-alive',
@@ -87,6 +100,12 @@ export class RestService {
     private sandboxName?: string;
     private isConnected: boolean = false;
     private _serverVersion?: string;
+    private _asyncRequestsMode: boolean;
+    private _cancelAtTimeout: boolean;
+    private _timeout: number;
+    private _asyncPollingInitialDelay: number;
+    private _asyncPollingMaxDelay: number;
+    private _asyncPollingBackoffFactor: number;
 
     public get version(): string | undefined {
         return this._serverVersion;
@@ -94,6 +113,12 @@ export class RestService {
 
     constructor(config: RestServiceConfig) {
         this.config = { ...config };
+        this._asyncRequestsMode = config.asyncRequestsMode ?? false;
+        this._cancelAtTimeout = config.cancelAtTimeout ?? false;
+        this._timeout = config.timeout ?? 60;
+        this._asyncPollingInitialDelay = config.asyncPollingInitialDelay ?? 0.1;
+        this._asyncPollingMaxDelay = config.asyncPollingMaxDelay ?? 1.0;
+        this._asyncPollingBackoffFactor = config.asyncPollingBackoffFactor ?? 2.0;
         this.setupAxiosInstance();
         if (this.config.sessionId) {
             // Mirror tm1py's _set_session_id_cookie: v12 topologies use paSession,
@@ -164,7 +189,7 @@ export class RestService {
 
         const axiosConfig: AxiosRequestConfig = {
             baseURL,
-            timeout: (this.config.timeout || 60) * 1000,
+            timeout: this._timeout * 1000,
             headers: {
                 ...RestService.HEADERS,
                 ...(this.config.sessionContext && { 'TM1-SessionContext': this.config.sessionContext })
@@ -351,13 +376,13 @@ export class RestService {
                 const originalRequest = error.config;
 
                 // Handle timeout errors
-                if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+                if (error.code === 'ECONNABORTED' || error.message?.includes?.('timeout')) {
                     throw new TM1TimeoutException(`Request timeout: ${error.message}`);
                 }
 
                 // Handle authentication errors with retry. Guarded by this.isConnected so a 401
                 // during disconnect()'s tm1.Close POST cannot recurse back into reAuthenticate().
-                if (error.response?.status === 401 && !originalRequest._retry && this.isConnected) {
+                if (error.response?.status === 401 && originalRequest && !originalRequest._retry && this.isConnected) {
                     originalRequest._retry = true;
 
                     try {
@@ -375,7 +400,7 @@ export class RestService {
                 }
 
                 // Handle connection errors with retry
-                if (this.shouldRetryRequest(error) && this.canRetryRequest(originalRequest)) {
+                if (originalRequest && this.shouldRetryRequest(error) && this.canRetryRequest(originalRequest)) {
                     return this.retryRequest(originalRequest);
                 }
 
@@ -406,6 +431,9 @@ export class RestService {
      * Check if a request can be retried
      */
     private canRetryRequest(config: any): boolean {
+        if (config._idempotent === false) {
+            return false;
+        }
         // Don't retry if already retried maximum times
         config._retryCount = config._retryCount || 0;
         return config._retryCount < 3;
@@ -438,6 +466,177 @@ export class RestService {
         }
     }
 
+    private *waitTimeGenerator(timeout: number): Generator<number> {
+        let delay = this._asyncPollingInitialDelay;
+        let elapsed = 0;
+
+        if (timeout) {
+            while (elapsed < timeout) {
+                yield delay;
+                elapsed += delay;
+                delay = Math.min(delay * this._asyncPollingBackoffFactor, this._asyncPollingMaxDelay);
+            }
+        } else {
+            while (true) {
+                yield delay;
+                delay = Math.min(delay * this._asyncPollingBackoffFactor, this._asyncPollingMaxDelay);
+            }
+        }
+    }
+
+    private async _executeSyncRequest(
+        method: string,
+        url: string,
+        data?: any,
+        timeout?: number,
+        idempotent?: boolean,
+        axiosExtras?: Partial<AxiosRequestConfig>
+    ): Promise<AxiosResponse> {
+        const config: AxiosRequestConfig = {
+            method: method as AxiosRequestConfig['method'],
+            url,
+            data,
+            ...axiosExtras
+        };
+
+        if (timeout !== undefined) {
+            config.timeout = timeout * 1000;
+        }
+
+        (config as any)._idempotent = idempotent ?? false;
+
+        return this.axiosInstance.request(config);
+    }
+
+    private async _executeAsyncRequest(
+        method: string,
+        url: string,
+        data?: any,
+        timeout?: number,
+        cancelAtTimeout?: boolean,
+        returnAsyncId?: boolean,
+        idempotent?: boolean,
+        axiosExtras?: Partial<AxiosRequestConfig>
+    ): Promise<AxiosResponse | string> {
+        const preferValue = returnAsyncId ? 'respond-async' : 'respond-async,wait=55';
+        const config: AxiosRequestConfig = {
+            method: method as AxiosRequestConfig['method'],
+            url,
+            data,
+            ...axiosExtras,
+            headers: {
+                ...axiosExtras?.headers,
+                Prefer: preferValue
+            }
+        };
+
+        if (timeout !== undefined) {
+            config.timeout = timeout * 1000;
+        }
+
+        (config as any)._idempotent = idempotent ?? false;
+
+        const response = await this.axiosInstance.request(config);
+
+        if (response.status !== 202) {
+            // Server completed synchronously. If the caller asked for an async
+            // ID (returnAsyncId: true) there is none to return — hand back the
+            // full response so the caller can inspect the result directly.
+            return response;
+        }
+
+        const location = response.headers['location'] || '';
+        const match = typeof location === 'string' ? location.match(/\('([^']+)'\)/) : null;
+        const asyncId = match ? match[1] : undefined;
+
+        if (!asyncId) {
+            throw new TM1RestException(
+                `Async request returned 202 but no valid async ID in Location header: ${location}`
+            );
+        }
+
+        if (returnAsyncId) {
+            return asyncId;
+        }
+
+        return this._pollAsyncResponse(
+            asyncId,
+            timeout ?? this._timeout,
+            cancelAtTimeout ?? this._cancelAtTimeout
+        );
+    }
+
+    private async _pollAsyncResponse(
+        asyncId: string,
+        timeout: number,
+        cancelAtTimeout: boolean
+    ): Promise<AxiosResponse> {
+        for (const wait of this.waitTimeGenerator(timeout)) {
+            const response = await this.retrieve_async_response(asyncId);
+
+            if (response.status === 200 || response.status === 201) {
+                this.verifyAsyncResultHeader(response);
+                return response;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, wait * 1000));
+        }
+
+        if (cancelAtTimeout) {
+            try {
+                await this.cancel_async_operation(asyncId);
+            } catch (cancelError) {
+                console.warn(`Failed to cancel async operation ${asyncId} at timeout:`, cancelError);
+            }
+        }
+
+        throw new TM1TimeoutException(
+            `Async operation ${asyncId} timed out after ${timeout} seconds`,
+            timeout
+        );
+    }
+
+    private async _request(
+        method: string,
+        url: string,
+        data?: any,
+        options?: RequestOptions
+    ): Promise<AxiosResponse | string> {
+        const timeout = options?.timeout ?? this._timeout;
+        const cancelAtTimeout = options?.cancelAtTimeout ?? this._cancelAtTimeout;
+        const asyncMode = options?.returnAsyncId || (options?.asyncRequestsMode ?? this._asyncRequestsMode);
+        const verifyResponse = options?.verifyResponse ?? true;
+        const idempotent = options?.idempotent ?? false;
+        const {
+            asyncRequestsMode: _asyncModeOpt,
+            returnAsyncId,
+            cancelAtTimeout: _cancelAtTimeoutOpt,
+            idempotent: _idempotentOpt,
+            verifyResponse: _verifyResponseOpt,
+            timeout: _timeoutOpt,
+            ...axiosExtras
+        } = options ?? {};
+
+        if (!verifyResponse && axiosExtras.validateStatus === undefined) {
+            axiosExtras.validateStatus = () => true;
+        }
+
+        if (asyncMode) {
+            return this._executeAsyncRequest(
+                method,
+                url,
+                data,
+                timeout,
+                cancelAtTimeout,
+                returnAsyncId,
+                idempotent,
+                axiosExtras
+            );
+        }
+
+        return this._executeSyncRequest(method, url, data, timeout, idempotent, axiosExtras);
+    }
+
     public async connect(): Promise<void> {
         try {
             if (this.getSessionCookieValue() === undefined) {
@@ -459,7 +658,7 @@ export class RestService {
     }
 
     public async disconnect(): Promise<void> {
-        const shouldClose = this.isConnected && !!this.getSessionCookieValue();
+        const shouldClose = this.isConnected;
         // Flip isConnected first so a 401 on tm1.Close cannot trigger reAuthenticate recursion
         this.isConnected = false;
         if (shouldClose) {
@@ -472,24 +671,40 @@ export class RestService {
         this.sessionCookies.clear();
     }
 
-    public async get(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.get(url, config);
+    /**
+     * When `returnAsyncId: true`, the caller receives the async id string
+     * iff the server returns `202 Accepted`. If TM1 short-circuits with
+     * `200/201`, the full `AxiosResponse` is returned instead — the
+     * declared `Promise<string>` return type is a best-effort narrowing.
+     */
+    public async get(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
+    public async get(url: string, options?: RequestOptions): Promise<AxiosResponse>;
+    public async get(url: string, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('GET', url, undefined, { idempotent: true, ...options });
     }
 
-    public async post(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.post(url, data, config);
+    public async post(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
+    public async post(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
+    public async post(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('POST', url, data, options);
     }
 
-    public async patch(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.patch(url, data, config);
+    public async patch(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
+    public async patch(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
+    public async patch(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('PATCH', url, data, options);
     }
 
-    public async put(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.put(url, data, config);
+    public async put(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
+    public async put(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
+    public async put(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('PUT', url, data, options);
     }
 
-    public async delete(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.delete(url, config);
+    public async delete(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
+    public async delete(url: string, options?: RequestOptions): Promise<AxiosResponse>;
+    public async delete(url: string, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('DELETE', url, undefined, options);
     }
 
     public getSessionId(): string | undefined {
@@ -505,7 +720,10 @@ export class RestService {
     }
 
     public isLoggedIn(): boolean {
-        return this.isConnected && !!this.getSessionCookieValue();
+        return this.isConnected && (
+            !!this.getSessionCookieValue() ||
+            !!this.axiosInstance.defaults.headers.common['Authorization']
+        );
     }
 
     public async getApiMetadata(): Promise<any> {
@@ -916,7 +1134,7 @@ export class RestService {
             sessionId: this.getSessionCookieValue(),
             authMode: this.getAuthenticationMode(),
             baseUrl: this.buildBaseUrl(),
-            timeout: (this.config.timeout || 60) * 1000,
+            timeout: this._timeout,
             sandbox: this.sandboxName
         };
     }
@@ -1018,7 +1236,10 @@ export class RestService {
      * Check if currently connected to TM1
      */
     public is_connected(): boolean {
-        return this.isConnected && !!this.getSessionCookieValue();
+        return this.isConnected && (
+            !!this.getSessionCookieValue() ||
+            !!this.axiosInstance.defaults.headers.common['Authorization']
+        );
     }
 
     /**
@@ -1138,78 +1359,82 @@ export class RestService {
      * Cancel an async operation by ID
      */
     public async cancel_async_operation(async_id: string): Promise<void> {
-        try {
-            await this.post(`/AsyncOperations('${async_id}')/tm1.Cancel`);
-        } catch (error) {
-            throw new TM1RestException(`Failed to cancel async operation ${async_id}: ${error}`);
-        }
+        await this.delete(formatUrl("/_async('{}')", async_id), { asyncRequestsMode: false });
     }
 
     /**
      * Retrieve async operation response
      */
-    public async retrieve_async_response(async_id: string): Promise<any> {
-        try {
-            const response = await this.get(`/AsyncOperations('${async_id}')`);
-            // Axios treats 2xx as success, but 202 means the operation is still running
-            if (response.status === 202) {
-                throw new TM1RestException('Async operation still running', 202, response);
-            }
-            return response.data;
-        } catch (error: any) {
-            if (error instanceof TM1RestException) {
-                throw error;
-            }
-            const status = error?.status ?? error?.response?.status;
-            throw new TM1RestException(
-                `Failed to retrieve async response ${async_id}: ${error}`,
-                status,
-                error?.response
-            );
-        }
+    public async retrieve_async_response(async_id: string): Promise<AxiosResponse> {
+        // tm1py's retrieve_async_response returns the raw response without
+        // raising on non-2xx because its caller (_poll_async_response) gates
+        // on status_code in [200, 201]. Mirror that: accept all statuses so
+        // transient 404s (resource not yet materialized) or 202s (still
+        // running) flow through to the polling loop rather than aborting it.
+        return this.get(formatUrl("/_async('{}')", async_id), {
+            asyncRequestsMode: false,
+            verifyResponse: false,
+            validateStatus: () => true
+        }) as Promise<AxiosResponse>;
     }
 
     /**
-     * Get async operation status
+     * TM1 v12 returns completed async results with HTTP 200 and encodes
+     * the true operation status in the `asyncresult` header (e.g.
+     * "500 Internal Server Error"). Mirror tm1py's
+     * `_transform_async_response` by throwing on any embedded non-2xx
+     * status so callers are not handed a 500 as "success".
      */
-    public async get_async_operation_status(async_id: string): Promise<string> {
-        try {
-            const response = await this.get(`/AsyncOperations('${async_id}')/Status/$value`);
-            return response.data;
-        } catch (error) {
-            throw new TM1RestException(`Failed to get async operation status ${async_id}: ${error}`);
-        }
+    private verifyAsyncResultHeader(response: AxiosResponse): void {
+        const headerValue = response.headers?.['asyncresult'];
+        if (typeof headerValue !== 'string') return;
+        const embeddedStatus = parseInt(headerValue.trim().split(/\s+/)[0], 10);
+        if (Number.isNaN(embeddedStatus)) return;
+        if (embeddedStatus >= 200 && embeddedStatus < 300) return;
+        throw new TM1RestException(
+            `Async operation failed with status ${headerValue}`,
+            embeddedStatus,
+            response
+        );
     }
 
     /**
-     * Wait for async operation to complete
+     * Wait for async operation to complete using a fixed polling cadence.
+     *
+     * Unlike the internal dispatcher's {@link waitTimeGenerator} (capped
+     * exponential backoff), this public helper polls every
+     * {@link poll_interval_seconds} seconds so existing callers who tuned
+     * the cadence keep their original behavior.
      */
     public async wait_for_async_operation(
         async_id: string,
         timeout_seconds: number = 300,
-        poll_interval_seconds: number = 1
+        poll_interval_seconds: number = 1,
+        cancel_at_timeout: boolean = false
     ): Promise<any> {
-        const start_time = Date.now();
-        const timeout_ms = timeout_seconds * 1000;
-        const poll_interval_ms = poll_interval_seconds * 1000;
+        const deadline = Date.now() + timeout_seconds * 1000;
 
-        while (Date.now() - start_time < timeout_ms) {
-            const status = await this.get_async_operation_status(async_id);
-
-            if (status === 'Completed' || status === 'CompletedSuccessfully') {
-                return await this.retrieve_async_response(async_id);
+        while (Date.now() < deadline) {
+            const response = await this.retrieve_async_response(async_id);
+            if (response.status === 200 || response.status === 201) {
+                this.verifyAsyncResultHeader(response);
+                return response.data;
             }
-
-            if (status === 'Failed' || status === 'CompletedWithError') {
-                const response = await this.retrieve_async_response(async_id);
-                throw new TM1RestException(`Async operation failed: ${JSON.stringify(response)}`);
-            }
-
-            // Wait before polling again
-            await new Promise(resolve => setTimeout(resolve, poll_interval_ms));
+            await new Promise(resolve => setTimeout(resolve, poll_interval_seconds * 1000));
         }
 
-        throw new TM1TimeoutException(`Async operation ${async_id} timed out after ${timeout_seconds} seconds`);
+        if (cancel_at_timeout) {
+            try {
+                await this.cancel_async_operation(async_id);
+            } catch (cancelError) {
+                console.warn(`Failed to cancel async operation ${async_id} at timeout:`, cancelError);
+            }
+        }
+
+        throw new TM1TimeoutException(
+            `Async operation ${async_id} timed out after ${timeout_seconds} seconds`,
+            timeout_seconds
+        );
     }
 
     /**

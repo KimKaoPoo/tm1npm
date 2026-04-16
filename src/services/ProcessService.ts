@@ -1,6 +1,6 @@
 import { AxiosResponse } from 'axios';
 import { v4 as uuidv4 } from 'uuid';
-import { RestService } from './RestService';
+import { RequestOptions, RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { Process } from '../objects/Process';
 import { ProcessDebugBreakpoint, BreakPointType, HitMode } from '../objects/ProcessDebugBreakpoint';
@@ -208,9 +208,9 @@ export class ProcessService extends ObjectService {
             }));
         }
 
-        const config: any = {};
+        const config: RequestOptions = {};
         if (timeout) {
-            config.timeout = timeout * 1000;
+            config.timeout = timeout;
         }
 
         return await this.rest.post(url, JSON.stringify(body), config);
@@ -247,13 +247,19 @@ export class ProcessService extends ObjectService {
     public async pollExecuteWithReturn(asyncId: string): Promise<[boolean, string, string | null] | null> {
         try {
             const response = await this.rest.retrieve_async_response(asyncId);
+            // tm1py returns None while the async op is still in-flight (status 202).
+            if (response.status !== 200 && response.status !== 201) {
+                return null;
+            }
             // TODO: tm1py handles TM1 < v11 binary-wrapped responses via
             // build_response_from_binary_response. Add support if needed.
-            return this._executeWithReturnParseResponse(response);
+            return this._executeWithReturnParseResponse(response.data);
         } catch (error: any) {
-            // Return null for HTTP 202 (accepted/pending) or 404 (not found yet)
+            // 404 means the async resource hasn't materialized yet — return null
+            // so the caller can retry. This differs from AsyncOperationService
+            // which treats 404 as terminal FAILED for locally-tracked operations.
             const status = error?.status ?? error?.response?.status;
-            if (status === 202 || status === 404) {
+            if (status === 404) {
                 return null;
             }
             throw error;
@@ -681,9 +687,9 @@ export class ProcessService extends ObjectService {
             }));
         }
 
-        const config: any = {};
+        const config: RequestOptions = {};
         if (timeout) {
-            config.timeout = timeout * 1000;
+            config.timeout = timeout;
         }
 
         const response = await this.rest.post(url, JSON.stringify(body), config);
