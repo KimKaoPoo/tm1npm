@@ -551,9 +551,12 @@ export class RestService {
         raw: string | string[] | undefined,
         name: string
     ): string | undefined {
+        const prefix = name + '=';
         for (const header of RestService.normaliseSetCookie(raw)) {
-            const match = header.match(new RegExp(`${name}=([^;]+)`));
-            if (match?.[1]) return match[1];
+            const segment = header.split(';')[0];
+            if (segment.startsWith(prefix)) {
+                return segment.slice(prefix.length);
+            }
         }
         return undefined;
     }
@@ -758,7 +761,7 @@ export class RestService {
                     return AuthenticationMode.SERVICE_TO_SERVICE;
                 }
                 if (c.camPassport) return AuthenticationMode.CAM;
-                if (c.gateway) return AuthenticationMode.CAM_SSO;
+                if (c.gateway && c.namespace) return AuthenticationMode.CAM_SSO;
                 if (c.integratedLogin) return AuthenticationMode.WIA;
                 if (c.namespace) return AuthenticationMode.CAM;
                 return AuthenticationMode.BASIC;
@@ -799,9 +802,12 @@ export class RestService {
             }
 
             case AuthenticationMode.PA_PROXY: {
+                if (!this.config.user || !password) {
+                    throw new Error('PA Proxy authentication requires user and password');
+                }
                 const jwt = await this._generateCpdAccessToken({
-                    username: this.config.user!,
-                    password: password!
+                    username: this.config.user,
+                    password
                 });
                 await this._authenticateWithPaProxy(jwt);
                 break;

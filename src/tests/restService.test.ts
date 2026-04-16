@@ -1038,6 +1038,14 @@ describe('RestService authentication flows', () => {
             expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC_API_KEY);
         });
 
+        test('should fall through to BASIC when gateway is set without namespace', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', gateway: 'https://gw'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC);
+        });
+
         test('should detect WIA when integratedLogin is set', () => {
             const svc = new RestService({
                 address: 'host', ssl: true,
@@ -1397,6 +1405,21 @@ describe('RestService authentication flows', () => {
                 verify: false
             });
             await (svc as any)._generateIbmIamCloudAccessToken();
+            const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
+            expect(callArgs.httpsAgent).toBeDefined();
+        });
+
+        test('should pass rejectUnauthorized:false to S2S request when verify is false', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: { 'set-cookie': ['TM1SessionId=s; Path=/'] }
+            });
+            const svc = new RestService({
+                address: 'h', instance: 'I', database: 'D', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret',
+                user: 'admin', verify: false
+            });
+            await (svc as any)._authenticateServiceToService();
             const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
             expect(callArgs.httpsAgent).toBeDefined();
         });
