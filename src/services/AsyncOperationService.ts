@@ -132,7 +132,7 @@ export class AsyncOperationService {
         // TM1 v12 may encode embedded failures in the `asyncresult` response header.
         try {
             const url = formatUrl("/_async('{}')", operationId);
-            const response = await this.rest.get(url);
+            const response = await this.rest.get(url, { asyncRequestsMode: false });
             const serverStatus = this.deriveStatusFromResponse(response);
 
             operation.status = serverStatus;
@@ -232,11 +232,10 @@ export class AsyncOperationService {
         this.stopPolling(operationId);
 
         try {
-            // Try to cancel on server if supported
             const url = formatUrl("/_async('{}')", operationId);
-            await this.rest.delete(url);
+            await this.rest.delete(url, { asyncRequestsMode: false });
         } catch (error) {
-            // If server doesn't support cancellation, just mark as cancelled locally
+            console.warn(`Failed to cancel async operation ${operationId} on server:`, error);
         }
 
         // Update operation status

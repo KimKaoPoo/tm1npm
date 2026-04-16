@@ -37,6 +37,12 @@ All notable changes to this project are documented here.
   now the fourth parameter (after `poll_interval_seconds`) to preserve
   the pre-existing signature of callers passing a polling cadence.
 
+- **`getConnectionStats().timeout` is now in seconds** (was
+  `(config.timeout || 60) * 1000` i.e. milliseconds). Dashboards or
+  logging that compare the value against an ms threshold will need
+  updating.
+  - Migration: `stats.timeout / 1000` → `stats.timeout` (already seconds).
+
 ### Added
 
 - Central `_request()` dispatcher in `RestService` that routes to sync or
@@ -70,3 +76,14 @@ All notable changes to this project are documented here.
 - `retrieve_async_response` no longer throws on non-2xx statuses; it
   returns the raw `AxiosResponse` so the internal poller can retry on
   transient 404s (resource not yet materialized) without aborting.
+
+### Known Parity Gaps
+
+- **No `cancel_running_operation` / thread cancellation on sync
+  timeout.** tm1py's `request()` catches `Timeout` / `ConnectionError`
+  and calls `cancel_running_operation()` (which uses
+  `MonitoringService.cancel_thread()` to abort the server-side thread).
+  tm1npm cancels via `DELETE /_async('{id}')` in the async-polling path,
+  but has no top-level thread-cancellation fallback for sync-mode
+  timeouts or pre-202 async timeouts. Tracked for a future PR once
+  `MonitoringService.cancelThread` is implemented.
