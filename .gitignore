@@ -220,3 +220,5 @@ build/Release
 CLAUDE.md
 .mcp.json
 IMPLEMENTATION_PLAN.md
+.envrc
+
