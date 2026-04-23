@@ -1,219 +1,421 @@
-/**
- * RestService Tests for tm1npm
- * Comprehensive tests for TM1 REST API operations with proper mocking
- */
-
-import { RestService } from '../services/RestService';
 import axios, { AxiosResponse } from 'axios';
+import { RestService, AuthenticationMode } from '../services/RestService';
+import { TM1RestException, TM1TimeoutException } from '../exceptions/TM1Exception';
 
-// Mock axios
 jest.mock('axios');
+
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
-// Helper function to create mock AxiosResponse
-const createMockResponse = (data: any, status: number = 200): AxiosResponse => ({
+const createMockResponse = (data: any, status = 200, headers: Record<string, any> = {}): AxiosResponse => ({
     data,
     status,
-    statusText: status === 200 ? 'OK' : status === 201 ? 'Created' : status === 204 ? 'No Content' : 'Error',
-    headers: {},
+    statusText: status === 200 ? 'OK' : status === 201 ? 'Created' : status === 202 ? 'Accepted' : 'Error',
+    headers,
     config: {} as any
 });
 
-describe('RestService Tests', () => {
+describe('RestService', () => {
     let restService: RestService;
+    let mockAxiosInstance: any;
+    let responseErrorHandler: ((error: any) => Promise<any>) | undefined;
 
     beforeEach(() => {
-        // Clear all mocks
         jest.clearAllMocks();
-        
-        // Mock axios.create
-        const mockAxiosInstance = {
+        jest.useRealTimers();
+        responseErrorHandler = undefined;
+
+        mockAxiosInstance = Object.assign(jest.fn(), {
             get: jest.fn(),
             post: jest.fn(),
             patch: jest.fn(),
-            delete: jest.fn(),
             put: jest.fn(),
+            delete: jest.fn(),
+            request: jest.fn(),
+            defaults: { headers: { common: {} } },
             interceptors: {
-                request: { use: jest.fn() },
-                response: { use: jest.fn() }
+                request: {
+                    use: jest.fn()
+                },
+                response: {
+                    use: jest.fn((onFulfilled: any, onRejected: any) => {
+                        responseErrorHandler = onRejected;
+                        return 0;
+                    })
+                }
             }
-        };
+        });
 
-        mockedAxios.create.mockReturnValue(mockAxiosInstance as any);
-        
-        const config = {
+        mockedAxios.create.mockReturnValue(mockAxiosInstance);
+
+        restService = new RestService({
             baseUrl: 'http://localhost:8879/api/v1',
             user: 'admin',
             password: 'password',
-            timeout: 30000
+            timeout: 60
+        });
+    });
+
+    test('routes sync GET requests through the central dispatcher', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({ value: '11.8.0' }));
+
+        const response = await restService.get('/Configuration/ProductVersion');
+
+        expect(response.data.value).toBe('11.8.0');
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                method: 'GET',
+                url: '/Configuration/ProductVersion',
+                timeout: 60000,
+                _idempotent: true
+            })
+        );
+    });
+
+    test('routes async requests with Prefer header and polls /_async endpoint', async () => {
+        mockAxiosInstance.request
+            .mockResolvedValueOnce(createMockResponse({}, 202, {
+                location: "/api/v1/_async('async-001')"
+            }))
+            .mockResolvedValueOnce(createMockResponse({ done: true }, 200));
+
+        const response = await restService.get('/Threads', { asyncRequestsMode: true });
+
+        expect(response.data.done).toBe(true);
+        expect(mockAxiosInstance.request).toHaveBeenNthCalledWith(1,
+            expect.objectContaining({
+                method: 'GET',
+                url: '/Threads',
+                headers: expect.objectContaining({
+                    Prefer: 'respond-async,wait=55'
+                })
+            })
+        );
+        expect(mockAxiosInstance.request).toHaveBeenNthCalledWith(2,
+            expect.objectContaining({
+                method: 'GET',
+                url: "/_async('async-001')"
+            })
+        );
+    });
+
+    test('returns async ID when returnAsyncId is true', async () => {
+        mockAxiosInstance.request.mockResolvedValue(
+            createMockResponse({}, 202, {
+                location: "/api/v1/_async('async-123')"
+            })
+        );
+
+        const asyncId = await restService.post('/Processes', {}, { returnAsyncId: true });
+
+        expect(asyncId).toBe('async-123');
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                headers: expect.objectContaining({
+                    Prefer: 'respond-async'
+                })
+            })
+        );
+    });
+
+    test('uses per-request asyncRequestsMode over the instance default', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({ ok: true }));
+
+        await restService.get('/test', { asyncRequestsMode: true });
+
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                headers: expect.objectContaining({
+                    Prefer: 'respond-async,wait=55'
+                })
+            })
+        );
+    });
+
+    test('uses per-request timeout in seconds', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({ ok: true }));
+
+        await restService.post('/test', {}, { timeout: 10 });
+
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                timeout: 10000
+            })
+        );
+    });
+
+    test('passes responseType and custom headers through to Axios', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse(Buffer.from('abc')));
+
+        await restService.get('/files/test', {
+            responseType: 'arraybuffer',
+            headers: {
+                'X-Test': 'value'
+            }
+        });
+
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                responseType: 'arraybuffer',
+                headers: expect.objectContaining({
+                    'X-Test': 'value'
+                })
+            })
+        );
+    });
+
+    test('honors explicit idempotent: false on a GET request', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({ ok: true }));
+
+        await restService.get('/Configuration/ServerName', { idempotent: false });
+
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                _idempotent: false
+            })
+        );
+    });
+
+    test('preserves caller-supplied validateStatus when verifyResponse is false', async () => {
+        const callerValidate = jest.fn().mockReturnValue(true);
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({}, 500));
+
+        await restService.get('/bad', {
+            verifyResponse: false,
+            validateStatus: callerValidate
+        });
+
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                validateStatus: callerValidate
+            })
+        );
+    });
+
+    test('skips response verification when verifyResponse is false', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({ error: 'bad request' }, 400));
+
+        const response = await restService.get('/bad-request', { verifyResponse: false });
+
+        expect(response.status).toBe(400);
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                validateStatus: expect.any(Function)
+            })
+        );
+    });
+
+    test('throws when async response has no Location header', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({}, 202));
+
+        await expect(restService.post('/Processes', {}, { asyncRequestsMode: true }))
+            .rejects
+            .toThrow(TM1RestException);
+    });
+
+    test('returns initial response when async request completes synchronously', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({ ok: true }, 200));
+
+        const response = await restService.get('/Threads', { asyncRequestsMode: true });
+
+        expect(response.status).toBe(200);
+        expect(mockAxiosInstance.get).not.toHaveBeenCalled();
+    });
+
+    test('propagates errors thrown by poll requests', async () => {
+        const pollError = new TM1RestException('Internal Server Error', 500);
+        mockAxiosInstance.request
+            .mockResolvedValueOnce(createMockResponse({}, 202, {
+                location: "/api/v1/_async('async-err')"
+            }))
+            .mockRejectedValueOnce(pollError);
+
+        await expect(restService.get('/Threads', { asyncRequestsMode: true }))
+            .rejects.toBe(pollError);
+    });
+
+    test('cancels async operation on timeout when cancelAtTimeout is true', async () => {
+        jest.useFakeTimers();
+
+        mockAxiosInstance.request.mockImplementation((config: any) => {
+            if (config.method === 'GET' && config.url === '/Threads') {
+                return Promise.resolve(createMockResponse({}, 202, {
+                    location: "/api/v1/_async('async-timeout')"
+                }));
+            }
+            if (config.method === 'DELETE') {
+                return Promise.resolve(createMockResponse({}, 204));
+            }
+            return Promise.resolve(createMockResponse({}, 202));
+        });
+
+        const pending = restService.get('/Threads', {
+            asyncRequestsMode: true,
+            timeout: 0.25,
+            cancelAtTimeout: true
+        });
+        const expectation = expect(pending).rejects.toThrow(TM1TimeoutException);
+
+        await Promise.resolve();
+        await jest.advanceTimersByTimeAsync(1000);
+
+        await expectation;
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                method: 'DELETE',
+                url: "/_async('async-timeout')"
+            })
+        );
+    });
+
+    test('retry interceptor does not retry non-idempotent requests', async () => {
+        expect(responseErrorHandler).toBeDefined();
+
+        const error = {
+            config: { _idempotent: false },
+            code: 'ECONNRESET',
+            message: 'socket hang up'
         };
-        
-        restService = new RestService(config);
+
+        await expect(responseErrorHandler!(error)).rejects.toThrow('socket hang up');
+        expect(mockAxiosInstance).not.toHaveBeenCalled();
     });
 
-    describe('Basic HTTP Operations', () => {
-        test('should handle GET requests', async () => {
-            const mockResponse = createMockResponse({ value: '11.8.0' });
-            (restService as any).axiosInstance.get.mockResolvedValue(mockResponse);
+    test('retry interceptor retries idempotent requests', async () => {
+        jest.useFakeTimers();
+        expect(responseErrorHandler).toBeDefined();
 
-            const response = await restService.get('/Configuration/ProductVersion');
-            
-            expect(response.status).toBe(200);
-            expect(response.data.value).toBe('11.8.0');
-        });
+        mockAxiosInstance.mockResolvedValue(createMockResponse({ ok: true }));
 
-        test('should handle POST requests', async () => {
-            const mockResponse = createMockResponse({}, 201);
-            (restService as any).axiosInstance.post.mockResolvedValue(mockResponse);
+        const error = {
+            config: { _idempotent: true, headers: {} },
+            code: 'ECONNRESET',
+            message: 'socket hang up'
+        };
 
-            const response = await restService.post('/test', { data: 'test' });
-            
-            expect(response.status).toBe(201);
-        });
+        const retryPromise = responseErrorHandler!(error);
+        await jest.advanceTimersByTimeAsync(2000);
 
-        test('should handle PATCH requests', async () => {
-            const mockResponse = createMockResponse({}, 200);
-            (restService as any).axiosInstance.patch.mockResolvedValue(mockResponse);
-
-            const response = await restService.patch('/test', { data: 'updated' });
-            
-            expect(response.status).toBe(200);
-        });
-
-        test('should handle DELETE requests', async () => {
-            const mockResponse = createMockResponse({}, 204);
-            (restService as any).axiosInstance.delete.mockResolvedValue(mockResponse);
-
-            const response = await restService.delete('/test');
-            
-            expect(response.status).toBe(204);
-        });
-
-        test('should handle PUT requests', async () => {
-            const mockResponse = createMockResponse({}, 200);
-            (restService as any).axiosInstance.put.mockResolvedValue(mockResponse);
-
-            const response = await restService.put('/test', { data: 'test' });
-            
-            expect(response.status).toBe(200);
-        });
+        await expect(retryPromise).resolves.toMatchObject({ data: { ok: true } });
+        expect(mockAxiosInstance).toHaveBeenCalledWith(
+            expect.objectContaining({
+                _retryCount: 1
+            })
+        );
     });
 
-    describe('Configuration and Setup', () => {
-        test('should build base URL correctly', () => {
-            expect(restService).toBeDefined();
-            expect((restService as any).config.baseUrl).toContain('localhost:8879');
-        });
+    test('waitTimeGenerator produces capped exponential backoff', () => {
+        const generator = (restService as any).waitTimeGenerator(4);
+        const waits = Array.from({ length: 7 }, () => generator.next().value);
 
-        test('should set timeout correctly', () => {
-            expect((restService as any).config.timeout).toBe(30000);
-        });
-
-        test('should handle authentication config', () => {
-            expect((restService as any).config.user).toBe('admin');
-            expect((restService as any).config.password).toBe('password');
-        });
+        expect(waits).toEqual([0.1, 0.2, 0.4, 0.8, 1, 1, 1]);
     });
 
-    describe('Session Management', () => {
-        test('should handle session ID', () => {
-            restService.setSandbox('TestSandbox');
-            expect(restService.getSandbox()).toBe('TestSandbox');
-        });
+    test('waitTimeGenerator runs unbounded when timeout is falsy', () => {
+        const generator = (restService as any).waitTimeGenerator(0);
+        const waits = Array.from({ length: 5 }, () => generator.next().value);
 
-        test('should check login status', () => {
-            // Initially not logged in
-            expect(restService.isLoggedIn()).toBe(false);
-        });
+        expect(waits).toEqual([0.1, 0.2, 0.4, 0.8, 1]);
+        expect(generator.next().done).toBe(false);
     });
 
-    describe('Error Handling', () => {
-        test('should handle network errors', async () => {
-            const networkError = new Error('Network Error');
-            (restService as any).axiosInstance.get.mockRejectedValue(networkError);
+    test('waitTimeGenerator stops once timeout is exceeded', () => {
+        const generator = (restService as any).waitTimeGenerator(0.5);
+        const waits: number[] = [];
 
-            await expect(restService.get('/test')).rejects.toThrow('Network Error');
-        });
+        while (true) {
+            const next = generator.next();
+            if (next.done) {
+                break;
+            }
+            waits.push(next.value);
+        }
 
-        test('should handle HTTP errors', async () => {
-            const httpError = {
-                response: {
-                    status: 404,
-                    statusText: 'Not Found',
-                    data: { error: 'Resource not found' }
-                }
-            };
-            (restService as any).axiosInstance.get.mockRejectedValue(httpError);
-
-            await expect(restService.get('/nonexistent')).rejects.toMatchObject(httpError);
-        });
-
-        test('should handle timeout errors', async () => {
-            const timeoutError = {
-                code: 'ECONNABORTED',
-                message: 'timeout of 30000ms exceeded'
-            };
-            (restService as any).axiosInstance.get.mockRejectedValue(timeoutError);
-
-            await expect(restService.get('/slow-endpoint')).rejects.toMatchObject(timeoutError);
-        });
+        expect(waits).toEqual([0.1, 0.2, 0.4]);
     });
 
-    describe('API Metadata', () => {
-        test('should get API metadata', async () => {
-            const mockResponse = createMockResponse({ 
-                version: '1.0',
-                capabilities: ['read', 'write'] 
-            });
-            (restService as any).axiosInstance.get.mockResolvedValue(mockResponse);
+    test('cancel_async_operation uses DELETE against /_async', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({}, 204));
 
-            const metadata = await restService.getApiMetadata();
-            
-            expect(metadata.version).toBe('1.0');
-            expect(metadata.capabilities).toEqual(['read', 'write']);
-        });
+        await restService.cancel_async_operation('cancel-001');
+
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                method: 'DELETE',
+                url: "/_async('cancel-001')"
+            })
+        );
     });
 
-    describe('RestService Integration', () => {
-        test('should handle complex request scenarios', async () => {
-            // Mock a sequence of operations
-            const getMockResponse = createMockResponse({ id: 'test123' });
-            const postMockResponse = createMockResponse({}, 201);
-            const patchMockResponse = createMockResponse({}, 200);
-            const deleteMockResponse = createMockResponse({}, 204);
+    test('retrieve_async_response uses /_async and returns full response', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({ Status: 'CompletedSuccessfully' }));
 
-            (restService as any).axiosInstance.get
-                .mockResolvedValueOnce(getMockResponse);
-            (restService as any).axiosInstance.post
-                .mockResolvedValueOnce(postMockResponse);
-            (restService as any).axiosInstance.patch
-                .mockResolvedValueOnce(patchMockResponse);
-            (restService as any).axiosInstance.delete
-                .mockResolvedValueOnce(deleteMockResponse);
+        const response = await restService.retrieve_async_response('poll-001');
 
-            // Execute sequence
-            const getResponse = await restService.get('/test');
-            expect(getResponse.data.id).toBe('test123');
+        expect(response.data.Status).toBe('CompletedSuccessfully');
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                method: 'GET',
+                url: "/_async('poll-001')"
+            })
+        );
+    });
 
-            const postResponse = await restService.post('/test', { name: 'test' });
-            expect(postResponse.status).toBe(201);
+    test('async dispatcher retries on transient 404 from /_async resource not yet materialized', async () => {
+        mockAxiosInstance.request
+            .mockResolvedValueOnce(createMockResponse({}, 202, {
+                location: "/api/v1/_async('async-404')"
+            }))
+            .mockResolvedValueOnce(createMockResponse({}, 404))
+            .mockResolvedValueOnce(createMockResponse({ done: true }, 200));
 
-            const patchResponse = await restService.patch('/test', { name: 'updated' });
-            expect(patchResponse.status).toBe(200);
+        const response = await restService.get('/Threads', { asyncRequestsMode: true });
 
-            const deleteResponse = await restService.delete('/test');
-            expect(deleteResponse.status).toBe(204);
-        });
+        expect(response.data.done).toBe(true);
+        expect(mockAxiosInstance.request).toHaveBeenNthCalledWith(2,
+            expect.objectContaining({
+                method: 'GET',
+                url: "/_async('async-404')",
+                validateStatus: expect.any(Function)
+            })
+        );
+    });
 
-        test('should maintain consistency across operations', async () => {
-            const mockResponse = createMockResponse({ consistent: true });
-            (restService as any).axiosInstance.get.mockResolvedValue(mockResponse);
+    test('async dispatcher throws when poll response carries non-2xx asyncresult header', async () => {
+        mockAxiosInstance.request
+            .mockResolvedValueOnce(createMockResponse({}, 202, {
+                location: "/api/v1/_async('async-fail')"
+            }))
+            .mockResolvedValueOnce(createMockResponse({}, 200, {
+                asyncresult: '500 Internal Server Error'
+            }));
 
-            const response1 = await restService.get('/test');
-            const response2 = await restService.get('/test');
+        await expect(restService.get('/Threads', { asyncRequestsMode: true }))
+            .rejects.toMatchObject({ status: 500 });
+    });
 
-            expect(response1.data).toEqual(response2.data);
-        });
+    test('wait_for_async_operation throws when asyncresult header encodes non-2xx status', async () => {
+        mockAxiosInstance.request.mockResolvedValue(
+            createMockResponse({ ok: false }, 200, {
+                asyncresult: '500 Internal Server Error'
+            })
+        );
+
+        await expect(restService.wait_for_async_operation('poll-500', 1))
+            .rejects.toMatchObject({ status: 500 });
+    });
+
+    test('wait_for_async_operation returns response data', async () => {
+        mockAxiosInstance.request.mockResolvedValue(createMockResponse({ Status: 'Completed', Result: 1 }, 200));
+
+        const data = await restService.wait_for_async_operation('poll-002', 1);
+
+        expect(data).toEqual({ Status: 'Completed', Result: 1 });
+        expect(mockAxiosInstance.request).toHaveBeenCalledWith(
+            expect.objectContaining({
+                method: 'GET',
+                url: "/_async('poll-002')"
+            })
+        );
     });
 
     describe('Cookie-based Session Management', () => {
@@ -531,219 +733,6 @@ describe('RestService Tests', () => {
                 (svc as any).isConnected = true;
                 (svc as any).sessionCookies.set('TM1SessionId', 'abc');
                 expect(svc.isLoggedIn()).toBe(true);
-            });
-        });
-
-        describe('Admin role checks (issue #81)', () => {
-            test('ADMIN username fast-path seeds all four caches at construction', () => {
-                const { svc, instance } = makeSvc({ user: 'ADMIN' });
-                expect(svc.isAdmin).toBe(true);
-                expect(svc.isDataAdmin).toBe(true);
-                expect(svc.isSecurityAdmin).toBe(true);
-                expect(svc.isOpsAdmin).toBe(true);
-                expect(instance.get).not.toHaveBeenCalled();
-            });
-
-            test('ADMIN fast-path is case-and-space insensitive', () => {
-                expect(makeSvc({ user: 'admin' }).svc.isAdmin).toBe(true);
-                expect(makeSvc({ user: ' A D M I N ' }).svc.isAdmin).toBe(true);
-                expect(makeSvc({ user: 'Admin' }).svc.isAdmin).toBe(true);
-            });
-
-            test('sync isAdmin getter returns false before roles loaded', () => {
-                const { svc } = makeSvc({ user: 'alice' });
-                expect(svc.isAdmin).toBe(false);
-                expect(svc.isDataAdmin).toBe(false);
-                expect(svc.isSecurityAdmin).toBe(false);
-                expect(svc.isOpsAdmin).toBe(false);
-            });
-
-            test('is_admin loads roles once then caches across all methods', async () => {
-                const { svc, instance } = makeSvc({ user: 'alice' });
-                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'ADMIN' }] }));
-                expect(await svc.is_admin()).toBe(true);
-                expect(await svc.is_data_admin()).toBe(true);
-                expect(await svc.is_security_admin()).toBe(true);
-                expect(await svc.is_ops_admin()).toBe(true);
-                expect(instance.get).toHaveBeenCalledTimes(1);
-            });
-
-            test('is_admin matches group name case/space insensitively', async () => {
-                const { svc, instance } = makeSvc({ user: 'alice' });
-                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'A D M I N' }] }));
-                expect(await svc.is_admin()).toBe(true);
-                expect(svc.isAdmin).toBe(true);
-            });
-
-            test('is_data_admin matches "Data Admin" with spaces', async () => {
-                const { svc, instance } = makeSvc({ user: 'alice' });
-                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'Data Admin' }] }));
-                expect(await svc.is_data_admin()).toBe(true);
-                expect(await svc.is_admin()).toBe(false);
-            });
-
-            test('is_security_admin maps to SecurityAdmin group only', async () => {
-                const { svc, instance } = makeSvc({ user: 'alice' });
-                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'SecurityAdmin' }] }));
-                expect(await svc.is_security_admin()).toBe(true);
-                expect(await svc.is_ops_admin()).toBe(false);
-            });
-
-            test('is_ops_admin maps to OperationsAdmin group only', async () => {
-                const { svc, instance } = makeSvc({ user: 'alice' });
-                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'OperationsAdmin' }] }));
-                expect(await svc.is_ops_admin()).toBe(true);
-                expect(await svc.is_security_admin()).toBe(false);
-            });
-
-            test('concurrent is_*_admin() calls share a single HTTP request', async () => {
-                const { svc, instance } = makeSvc({ user: 'alice' });
-                instance.get.mockResolvedValue(createMockResponse({ value: [{ Name: 'ADMIN' }] }));
-                const [a, b, c, d] = await Promise.all([
-                    svc.is_admin(),
-                    svc.is_data_admin(),
-                    svc.is_security_admin(),
-                    svc.is_ops_admin()
-                ]);
-                expect([a, b, c, d]).toEqual([true, true, true, true]);
-                expect(instance.get).toHaveBeenCalledTimes(1);
-            });
-
-            test('failed /ActiveUser/Groups returns false transiently without caching', async () => {
-                const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-                const { svc, instance } = makeSvc({ user: 'alice' });
-                instance.get.mockRejectedValueOnce(new Error('network down'));
-                expect(await svc.is_admin()).toBe(false);
-                // Cache must NOT be poisoned by the transient failure.
-                expect((svc as any)._isAdmin).toBeUndefined();
-                expect((svc as any)._rolesLoading).toBeUndefined();
-
-                instance.get.mockResolvedValueOnce(createMockResponse({ value: [{ Name: 'ADMIN' }] }));
-                expect(await svc.is_admin()).toBe(true);
-                expect(instance.get).toHaveBeenCalledTimes(2);
-                warnSpy.mockRestore();
-            });
-        });
-
-        describe('Static utility methods (issue #81)', () => {
-            test('translate_to_boolean handles bool/number/string', () => {
-                expect(RestService.translate_to_boolean(true)).toBe(true);
-                expect(RestService.translate_to_boolean(false)).toBe(false);
-                expect(RestService.translate_to_boolean(1)).toBe(true);
-                expect(RestService.translate_to_boolean(0)).toBe(false);
-                expect(RestService.translate_to_boolean('true')).toBe(true);
-                expect(RestService.translate_to_boolean('True')).toBe(true);
-                expect(RestService.translate_to_boolean('FALSE')).toBe(false);
-                expect(RestService.translate_to_boolean(' T R U E ')).toBe(true);
-                expect(RestService.translate_to_boolean('yes')).toBe(false);
-                expect(RestService.translate_to_boolean('')).toBe(false);
-            });
-
-            test('translate_to_boolean throws on unsupported types', () => {
-                expect(() => RestService.translate_to_boolean({} as any)).toThrow();
-                expect(() => RestService.translate_to_boolean(null as any)).toThrow();
-                expect(() => RestService.translate_to_boolean(undefined as any)).toThrow();
-            });
-
-            test('b64_decode_password round-trips a UTF-8 string', () => {
-                const encoded = Buffer.from('s3cr3t', 'utf-8').toString('base64');
-                expect(RestService.b64_decode_password(encoded)).toBe('s3cr3t');
-                expect(RestService.b64_decode_password('')).toBe('');
-            });
-        });
-
-        describe('add_compact_json_header (issue #81)', () => {
-            test('inserts tm1.compact=v0 at position 1 and returns prior Accept value', () => {
-                const { svc, instance } = makeSvc();
-                instance.defaults.headers.common['Accept'] = 'application/json;odata.metadata=none,text/plain';
-                const prev = svc.add_compact_json_header();
-                expect(prev).toBe('application/json;odata.metadata=none,text/plain');
-                const after = instance.defaults.headers.common['Accept'] as string;
-                expect(after.split(';')[1]).toBe('tm1.compact=v0');
-                expect(after).toBe('application/json;tm1.compact=v0;odata.metadata=none,text/plain');
-            });
-
-            test('falls back to class HEADERS Accept when axios default is unset', () => {
-                const { svc, instance } = makeSvc();
-                delete instance.defaults.headers.common['Accept'];
-                const prev = svc.add_compact_json_header();
-                expect(prev).toContain('application/json');
-                expect(instance.defaults.headers.common['Accept']).toContain('tm1.compact=v0');
-            });
-        });
-
-        describe('Reconnect configuration (issue #81)', () => {
-            test('applies tm1py-compatible defaults', () => {
-                const { svc } = makeSvc();
-                expect((svc as any).reConnectOnSessionTimeout).toBe(true);
-                expect((svc as any).reConnectOnRemoteDisconnect).toBe(true);
-                expect((svc as any).remoteDisconnectMaxRetries).toBe(5);
-                expect((svc as any).remoteDisconnectRetryDelay).toBe(1);
-                expect((svc as any).remoteDisconnectMaxDelay).toBe(30);
-                expect((svc as any).remoteDisconnectBackoffFactor).toBe(2);
-            });
-
-            test('honors custom overrides', () => {
-                const { svc } = makeSvc({
-                    reConnectOnSessionTimeout: false,
-                    reConnectOnRemoteDisconnect: false,
-                    remoteDisconnectMaxRetries: 7,
-                    remoteDisconnectRetryDelay: 2,
-                    remoteDisconnectMaxDelay: 60,
-                    remoteDisconnectBackoffFactor: 3
-                });
-                expect((svc as any).reConnectOnSessionTimeout).toBe(false);
-                expect((svc as any).reConnectOnRemoteDisconnect).toBe(false);
-                expect((svc as any).remoteDisconnectMaxRetries).toBe(7);
-                expect((svc as any).remoteDisconnectRetryDelay).toBe(2);
-                expect((svc as any).remoteDisconnectMaxDelay).toBe(60);
-                expect((svc as any).remoteDisconnectBackoffFactor).toBe(3);
-            });
-
-            test('canRetryRequest honors remoteDisconnectMaxRetries', () => {
-                const { svc } = makeSvc({ remoteDisconnectMaxRetries: 1 });
-                const cfg: any = {};
-                expect((svc as any).canRetryRequest(cfg)).toBe(true);
-                cfg._retryCount = 1;
-                expect((svc as any).canRetryRequest(cfg)).toBe(false);
-            });
-
-            test('retryRequest caps delay at remoteDisconnectMaxDelay', async () => {
-                jest.useFakeTimers();
-                const { svc, instance } = makeSvc({ remoteDisconnectRetryDelay: 1, remoteDisconnectMaxDelay: 2 });
-                const axiosCallable = jest.fn().mockResolvedValue({ data: 'ok' });
-                (svc as any).axiosInstance = Object.assign(axiosCallable, instance);
-                const cfg: any = { _retryCount: 5 }; // large exponential term triggers the cap
-                const promise = (svc as any).retryRequest(cfg);
-                // Delay should be capped at 2000ms (remoteDisconnectMaxDelay), not 2^5 * 1000 = 32000ms
-                await jest.advanceTimersByTimeAsync(2000);
-                await promise;
-                expect(cfg._retryCount).toBe(6);
-                expect(axiosCallable).toHaveBeenCalledWith(cfg);
-                jest.useRealTimers();
-            });
-
-            test('retryRequest uses remoteDisconnectBackoffFactor for exponential term', async () => {
-                jest.useFakeTimers();
-                const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
-                // retryDelay=1s, backoffFactor=3, maxDelay=1000s (so cap never engages).
-                // On 2nd retry (_retryCount becomes 2), delay = 1000 * 3^(2-1) = 3000ms.
-                const { svc, instance } = makeSvc({
-                    remoteDisconnectRetryDelay: 1,
-                    remoteDisconnectMaxDelay: 1000,
-                    remoteDisconnectBackoffFactor: 3
-                });
-                const axiosCallable = jest.fn().mockResolvedValue({ data: 'ok' });
-                (svc as any).axiosInstance = Object.assign(axiosCallable, instance);
-                const cfg: any = { _retryCount: 1 };
-                const promise = (svc as any).retryRequest(cfg);
-                await jest.advanceTimersByTimeAsync(3000);
-                await promise;
-                // Confirm the delay passed to setTimeout is exactly 3000ms (1000 * 3^1)
-                const delays = setTimeoutSpy.mock.calls.map(call => call[1]);
-                expect(delays).toContain(3000);
-                setTimeoutSpy.mockRestore();
-                jest.useRealTimers();
             });
         });
     });
@@ -1123,7 +1112,7 @@ describe('RestService URL topology dispatch', () => {
                 applicationClientId: 'id',
                 applicationClientSecret: 'secret'
             });
-            await expect((svc as any).setupServiceToServiceAuthentication()).rejects.toThrow(
+            await expect((svc as any)._authenticateServiceToService()).rejects.toThrow(
                 /'authUrl' is required for Service-to-Service authentication on v11 topology/
             );
         });
@@ -1134,7 +1123,7 @@ describe('RestService URL topology dispatch', () => {
                 applicationClientId: 'id',
                 applicationClientSecret: 'secret'
             });
-            await expect((svc as any).setupServiceToServiceAuthentication()).rejects.toThrow(
+            await expect((svc as any)._authenticateServiceToService()).rejects.toThrow(
                 /'authUrl' is required for Service-to-Service authentication on v11 topology/
             );
         });
@@ -1147,8 +1136,695 @@ describe('RestService URL topology dispatch', () => {
                 applicationClientSecret: 'secret'
             });
             // Will reject with network-level error when trying to POST, but NOT the guard error.
-            await expect((svc as any).setupServiceToServiceAuthentication())
+            await expect((svc as any)._authenticateServiceToService())
                 .rejects.not.toThrow(/'authUrl' is required/);
+        });
+    });
+});
+
+// =========================================================================
+// Authentication flow tests — issue #59
+// =========================================================================
+describe('RestService authentication flows', () => {
+    let mockAxiosInstance: any;
+
+    beforeEach(() => {
+        jest.clearAllMocks();
+        mockAxiosInstance = {
+            get: jest.fn(),
+            post: jest.fn(),
+            patch: jest.fn(),
+            delete: jest.fn(),
+            put: jest.fn(),
+            interceptors: {
+                request: { use: jest.fn() },
+                response: { use: jest.fn() }
+            },
+            defaults: { headers: { common: {} as Record<string, string> } }
+        };
+        mockedAxios.create.mockReturnValue(mockAxiosInstance as any);
+    });
+
+    describe('getAuthenticationMode', () => {
+        test('should detect BASIC when only user and password are provided', () => {
+            const svc = new RestService({ address: 'host', ssl: true, user: 'admin', password: 'pw' });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC);
+        });
+
+        test('should detect CAM when namespace is set without gateway', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'LDAP'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM);
+        });
+
+        test('should detect CAM when camPassport is set', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true, camPassport: 'passport123'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM);
+        });
+
+        test('should detect CAM_SSO when gateway is set', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'LDAP', gateway: 'https://gw'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.CAM_SSO);
+        });
+
+        test('should detect IBM_CLOUD_API_KEY when iamUrl is set', () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true, apiKey: 'k'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.IBM_CLOUD_API_KEY);
+        });
+
+        test('should detect PA_PROXY when address + user + paUrl (no instance)', () => {
+            const svc = new RestService({
+                address: 'host', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.PA_PROXY);
+        });
+
+        test('should detect SERVICE_TO_SERVICE with instance + database', () => {
+            const svc = new RestService({
+                address: 'h', instance: 'INST', database: 'DB', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.SERVICE_TO_SERVICE);
+        });
+
+        test('should detect SERVICE_TO_SERVICE on v11 when clientId + clientSecret provided', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.SERVICE_TO_SERVICE);
+        });
+
+        test('should detect ACCESS_TOKEN when accessToken is set', () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', accessToken: 'jwt123'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.ACCESS_TOKEN);
+        });
+
+        test('should detect BASIC_API_KEY when apiKey is set', () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', apiKey: 'mykey'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC_API_KEY);
+        });
+
+        test('should fall through to BASIC when gateway is set without namespace', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', gateway: 'https://gw'
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.BASIC);
+        });
+
+        test('should detect WIA when integratedLogin is set', () => {
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                integratedLogin: true
+            });
+            expect(svc.getAuthenticationMode()).toBe(AuthenticationMode.WIA);
+        });
+    });
+
+    describe('setupAuthentication — Basic', () => {
+        test('should set Basic Authorization header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', user: 'admin', password: 'apple'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Basic ' + Buffer.from('admin:apple').toString('base64'));
+        });
+
+        test('should decode Base64 password when decodeB64 is true', async () => {
+            const encoded = Buffer.from('mypassword').toString('base64');
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', user: 'admin', password: encoded, decodeB64: true
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Basic ' + Buffer.from('admin:mypassword').toString('base64'));
+        });
+
+        test('should throw when no user or password for BASIC mode', async () => {
+            const svc = new RestService({ baseUrl: 'http://x/api/v1' });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow('No valid authentication configuration provided');
+        });
+    });
+
+    describe('setupAuthentication — CAM (camPassport)', () => {
+        test('should set CAMPassport Authorization header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', camPassport: 'test-passport-value'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('CAMPassport test-passport-value');
+        });
+    });
+
+    describe('setupAuthentication — CAM (namespace)', () => {
+        test('should set CAMNamespace Authorization header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1',
+                user: 'admin', password: 'pass', namespace: 'LDAP'
+            });
+            await (svc as any).setupAuthentication();
+            const expected = 'CAMNamespace ' + Buffer.from('admin:pass:LDAP').toString('base64');
+            expect(mockAxiosInstance.defaults.headers.common['Authorization']).toBe(expected);
+        });
+
+        test('should decode B64 password in CAMNamespace header', async () => {
+            const encoded = Buffer.from('pass').toString('base64');
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1',
+                user: 'admin', password: encoded, namespace: 'LDAP', decodeB64: true
+            });
+            await (svc as any).setupAuthentication();
+            const expected = 'CAMNamespace ' + Buffer.from('admin:pass:LDAP').toString('base64');
+            expect(mockAxiosInstance.defaults.headers.common['Authorization']).toBe(expected);
+        });
+
+        test('should throw CAM error when namespace set but no user/password/camPassport', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', namespace: 'LDAP'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow('CAM authentication requires either camPassport or user/password/namespace');
+        });
+    });
+
+    describe('setupAuthentication — CAM_SSO (gateway)', () => {
+        test('should GET gateway and set CAMPassport header from cam_passport cookie', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {
+                    'set-cookie': ['cam_passport=GW_PASSPORT_VALUE; Path=/; HttpOnly']
+                }
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw.example.com'
+            });
+            await (svc as any).setupAuthentication();
+            expect(axios.get).toHaveBeenCalledWith('https://gw.example.com', expect.objectContaining({
+                params: { CAMNamespace: 'NS' }
+            }));
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('CAMPassport GW_PASSPORT_VALUE');
+        });
+
+        test('should throw when gateway response has no cam_passport cookie', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: { 'set-cookie': ['other=value; Path=/'] }
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/cam_passport/);
+        });
+
+        test('should throw when gateway response has no Set-Cookie header', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {}
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/cam_passport/);
+        });
+
+        test('should throw when gateway returns non-200 status', async () => {
+            (axios.get as jest.Mock).mockResolvedValue({
+                status: 403,
+                headers: {}
+            });
+            const svc = new RestService({
+                address: 'host', ssl: true,
+                user: 'u', password: 'p', namespace: 'NS', gateway: 'https://gw'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Expected status_code 200/);
+        });
+    });
+
+    describe('setupAuthentication — IBM_CLOUD_API_KEY (IAM token exchange)', () => {
+        test('should exchange API key for IAM bearer token', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { access_token: 'iam-bearer-token-123' }
+            });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com/identity/token',
+                ssl: true, apiKey: 'test-api-key'
+            });
+            await (svc as any).setupAuthentication();
+            expect(axios.post).toHaveBeenCalledWith(
+                'https://iam.cloud.ibm.com/identity/token',
+                expect.stringContaining('grant_type=urn'),
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        'Content-Type': 'application/x-www-form-urlencoded'
+                    })
+                })
+            );
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Bearer iam-bearer-token-123');
+        });
+
+        test('should include apiKey in URL-encoded payload', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { access_token: 'token' }
+            });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true, apiKey: 'my-key'
+            });
+            await (svc as any).setupAuthentication();
+            const calledPayload = (axios.post as jest.Mock).mock.calls[0][1];
+            expect(calledPayload).toContain('apikey=my-key');
+            expect(calledPayload).toContain('grant_type=');
+        });
+
+        test('should throw when IAM response lacks access_token', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({ data: {} });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true, apiKey: 'k'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Failed to generate access_token/);
+        });
+
+        test('should throw when iamUrl is set but apiKey is missing', async () => {
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T1', database: 'DB1',
+                iamUrl: 'https://iam.cloud.ibm.com', ssl: true
+            });
+            await expect((svc as any)._generateIbmIamCloudAccessToken())
+                .rejects.toThrow(/'iamUrl' and 'apiKey' must be provided/);
+        });
+    });
+
+    describe('setupAuthentication — PA_PROXY (CPD + proxy auth)', () => {
+        test('should generate CPD token then authenticate with PA Proxy', async () => {
+            (axios.post as jest.Mock)
+                // First call: CPD signin
+                .mockResolvedValueOnce({
+                    data: { token: 'cpd-jwt-token-abc' }
+                })
+                // Second call: PA Proxy auth
+                .mockResolvedValueOnce({
+                    status: 200,
+                    headers: {
+                        'set-cookie': [
+                            'ba-sso-csrf=csrf-value; Path=/',
+                            'paSession=session123; Path=/'
+                        ]
+                    }
+                });
+            const svc = new RestService({
+                address: 'host', user: 'user', password: 'pass',
+                paUrl: 'https://pa', database: 'db', ssl: true,
+                cpdUrl: 'https://cpd.example.com'
+            });
+            await (svc as any).setupAuthentication();
+
+            // Verify CPD signin was called
+            expect(axios.post).toHaveBeenNthCalledWith(1,
+                'https://cpd.example.com/v1/preauth/signin',
+                { username: 'user', password: 'pass' },
+                expect.objectContaining({
+                    headers: expect.objectContaining({ 'Content-Type': 'application/json;charset=UTF-8' })
+                })
+            );
+            // Verify PA Proxy auth was called with jwt
+            expect(axios.post).toHaveBeenNthCalledWith(2,
+                expect.stringContaining('/login'),
+                'jwt=cpd-jwt-token-abc',
+                expect.objectContaining({
+                    headers: expect.objectContaining({ 'Content-Type': 'application/x-www-form-urlencoded' })
+                })
+            );
+            // Verify ba-sso-authenticity header was set
+            expect(mockAxiosInstance.defaults.headers.common['ba-sso-authenticity']).toBe('csrf-value');
+        });
+
+        test('should throw when cpdUrl is missing for PA_PROXY', async () => {
+            const svc = new RestService({
+                address: 'host', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/'cpdUrl' must be provided to authenticate via CPD/);
+        });
+
+        test('should throw when CPD response lacks token', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({ data: {} });
+            const svc = new RestService({
+                address: 'host', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true,
+                cpdUrl: 'https://cpd'
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Failed to generate CPD access token/);
+        });
+    });
+
+    describe('setupAuthentication — SERVICE_TO_SERVICE', () => {
+        test('should use Basic auth with clientId:clientSecret and POST {User: user}', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {
+                    'set-cookie': ['TM1SessionId=s2s-session-id; Path=/']
+                }
+            });
+            const svc = new RestService({
+                address: 'h', instance: 'INST', database: 'DB', ssl: true,
+                applicationClientId: 'clientA', applicationClientSecret: 'secretB',
+                user: 'admin'
+            });
+            await (svc as any).setupAuthentication();
+
+            const expectedBasicAuth = 'Basic ' + Buffer.from('clientA:secretB').toString('base64');
+            expect(axios.post).toHaveBeenCalledWith(
+                expect.stringContaining('/auth/v1/session'),
+                JSON.stringify({ User: 'admin' }),
+                expect.objectContaining({
+                    headers: expect.objectContaining({
+                        'Authorization': expectedBasicAuth
+                    })
+                })
+            );
+            // Session cookie should be captured
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('s2s-session-id');
+        });
+
+        test('should capture TM1SessionId from response with wrong domain attribute', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: {
+                    'set-cookie': ['TM1SessionId=domain-id; Domain=wrong.domain; Path=/']
+                }
+            });
+            const svc = new RestService({
+                address: 'h', instance: 'INST', database: 'DB', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret',
+                user: 'admin'
+            });
+            await (svc as any).setupAuthentication();
+            // parseSetCookieHeaders strips Domain and captures the cookie directly
+            expect((svc as any).sessionCookies.get('TM1SessionId')).toBe('domain-id');
+        });
+    });
+
+    describe('setupAuthentication — ACCESS_TOKEN', () => {
+        test('should set Bearer token header', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', accessToken: 'my-jwt-token'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['Authorization'])
+                .toBe('Bearer my-jwt-token');
+        });
+    });
+
+    describe('setupAuthentication — BASIC_API_KEY', () => {
+        test('should set API-Key header when user is not apikey', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', apiKey: 'my-api-key'
+            });
+            await (svc as any).setupAuthentication();
+            expect(mockAxiosInstance.defaults.headers.common['API-Key']).toBe('my-api-key');
+        });
+
+        test('should set Basic auth with apikey:key when user is apikey', async () => {
+            const svc = new RestService({
+                baseUrl: 'http://x/api/v1', apiKey: 'my-api-key', user: 'apikey'
+            });
+            await (svc as any).setupAuthentication();
+            const expected = 'Basic ' + Buffer.from('apikey:my-api-key').toString('base64');
+            expect(mockAxiosInstance.defaults.headers.common['Authorization']).toBe(expected);
+        });
+    });
+
+    describe('setupAuthentication — WIA', () => {
+        test('should throw for Windows Integrated Authentication', async () => {
+            const svc = new RestService({
+                address: 'host', ssl: true, integratedLogin: true
+            });
+            await expect((svc as any).setupAuthentication())
+                .rejects.toThrow(/Windows Integrated Authentication.*not supported/);
+        });
+    });
+
+    describe('verify propagation to external auth requests', () => {
+        test('should pass rejectUnauthorized:false to IAM request when verify is false', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { access_token: 'token' }
+            });
+            const svc = new RestService({
+                address: 'pa.ibm.com', tenant: 'T', database: 'D',
+                iamUrl: 'https://iam', ssl: true, apiKey: 'k',
+                verify: false
+            });
+            await (svc as any)._generateIbmIamCloudAccessToken();
+            const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
+            expect(callArgs.httpsAgent).toBeDefined();
+        });
+
+        test('should pass rejectUnauthorized:false to S2S request when verify is false', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                status: 200,
+                headers: { 'set-cookie': ['TM1SessionId=s; Path=/'] }
+            });
+            const svc = new RestService({
+                address: 'h', instance: 'I', database: 'D', ssl: true,
+                applicationClientId: 'id', applicationClientSecret: 'secret',
+                user: 'admin', verify: false
+            });
+            await (svc as any)._authenticateServiceToService();
+            const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
+            expect(callArgs.httpsAgent).toBeDefined();
+        });
+
+        test('should pass rejectUnauthorized:false to CPD request when verify is false', async () => {
+            (axios.post as jest.Mock).mockResolvedValue({
+                data: { token: 'jwt' }
+            });
+            const svc = new RestService({
+                address: 'h', user: 'u', password: 'p',
+                paUrl: 'https://pa', database: 'db', ssl: true,
+                cpdUrl: 'https://cpd', verify: false
+            });
+            await (svc as any)._generateCpdAccessToken({ username: 'u', password: 'p' });
+            const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
+            expect(callArgs.httpsAgent).toBeDefined();
+        });
+    });
+
+    describe('issue #81 — admin checks, utility helpers, reconnect config', () => {
+        let svcMock: any;
+        let onError: ((error: any) => Promise<any>) | undefined;
+
+        const buildService = (extra: Record<string, any> = {}) => {
+            svcMock = Object.assign(jest.fn(), {
+                get: jest.fn(),
+                post: jest.fn(),
+                patch: jest.fn(),
+                put: jest.fn(),
+                delete: jest.fn(),
+                request: jest.fn(),
+                defaults: { headers: { common: {} as Record<string, string> } },
+                interceptors: {
+                    request: { use: jest.fn() },
+                    response: {
+                        use: jest.fn((_onFulfilled: any, onRejected: any) => {
+                            onError = onRejected;
+                            return 0;
+                        })
+                    }
+                }
+            });
+            mockedAxios.create.mockReturnValue(svcMock);
+
+            return new RestService({
+                baseUrl: 'http://localhost:8879/api/v1',
+                user: 'bob',
+                password: 'pw',
+                timeout: 60,
+                ...extra
+            });
+        };
+
+        test('caches is_admin and only calls /ActiveUser/Groups once', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'ADMIN' }] })
+            );
+
+            const first = await svc.is_admin();
+            const second = await svc.is_admin();
+
+            expect(first).toBe(true);
+            expect(second).toBe(true);
+            expect(svcMock.request).toHaveBeenCalledTimes(1);
+        });
+
+        test('is_admin returns false when ADMIN group not present', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'Users' }] })
+            );
+
+            expect(await svc.is_admin()).toBe(false);
+        });
+
+        test('is_admin matches ADMIN case-insensitively in returned group names', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'admin' }] })
+            );
+
+            expect(await svc.is_admin()).toBe(true);
+        });
+
+        test('pre-populates all admin flags when configured user is ADMIN (any casing)', async () => {
+            for (const user of ['ADMIN', 'admin', 'Ad Min']) {
+                const svc = buildService({ user });
+
+                expect(await svc.is_admin()).toBe(true);
+                expect(await svc.is_data_admin()).toBe(true);
+                expect(await svc.is_security_admin()).toBe(true);
+                expect(await svc.is_ops_admin()).toBe(true);
+                expect(svcMock.request).not.toHaveBeenCalled();
+            }
+        });
+
+        test('is_data_admin matches Admin or DataAdmin case+space insensitively', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'Data Admin' }] })
+            );
+
+            expect(await svc.is_data_admin()).toBe(true);
+        });
+
+        test('is_security_admin matches SecurityAdmin', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'securityadmin' }] })
+            );
+
+            expect(await svc.is_security_admin()).toBe(true);
+        });
+
+        test('is_ops_admin matches OperationsAdmin', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'Operations Admin' }] })
+            );
+
+            expect(await svc.is_ops_admin()).toBe(true);
+        });
+
+        test('admin checks propagate errors instead of swallowing them', async () => {
+            const svc = buildService();
+            svcMock.request.mockRejectedValue(new TM1RestException('boom', 500));
+
+            await expect(svc.is_admin()).rejects.toThrow('boom');
+        });
+
+        test('b64_decode_password roundtrips Base64 to UTF-8', () => {
+            const secret = 'p@ssw0rd_äß';
+            const encoded = Buffer.from(secret, 'utf-8').toString('base64');
+
+            expect(RestService.b64_decode_password(encoded)).toBe(secret);
+        });
+
+        test('translate_to_boolean handles booleans, numbers, and strings', () => {
+            expect(RestService.translate_to_boolean(true)).toBe(true);
+            expect(RestService.translate_to_boolean(false)).toBe(false);
+            expect(RestService.translate_to_boolean(1)).toBe(true);
+            expect(RestService.translate_to_boolean(0)).toBe(false);
+            expect(RestService.translate_to_boolean('True')).toBe(true);
+            expect(RestService.translate_to_boolean('  TRUE  ')).toBe(true);
+            expect(RestService.translate_to_boolean('false')).toBe(false);
+            expect(RestService.translate_to_boolean('no')).toBe(false);
+        });
+
+        test('translate_to_boolean throws on invalid types', () => {
+            expect(() => RestService.translate_to_boolean(null)).toThrow(/Invalid argument/);
+            expect(() => RestService.translate_to_boolean(undefined)).toThrow(/Invalid argument/);
+            expect(() => RestService.translate_to_boolean({})).toThrow(/Invalid argument/);
+        });
+
+        test('add_compact_json_header inserts tm1.compact=v0 at position 1 and returns original', () => {
+            const svc = buildService();
+            const accept = 'application/json;odata.metadata=none,text/plain';
+            svcMock.defaults.headers.common['Accept'] = accept;
+
+            const original = svc.add_compact_json_header();
+
+            expect(original).toBe(accept);
+            expect(svcMock.defaults.headers.common['Accept']).toBe(
+                'application/json;tm1.compact=v0;odata.metadata=none,text/plain'
+            );
+        });
+
+        test('skips 401 reauth when reConnectOnSessionTimeout is false', async () => {
+            const svc = buildService({ reConnectOnSessionTimeout: false });
+            (svc as any).isConnected = true;
+            const reAuthSpy = jest.spyOn(svc, 'reAuthenticate');
+
+            const error401: any = {
+                response: { status: 401, statusText: 'Unauthorized', data: {} },
+                config: { _idempotent: true }
+            };
+
+            await expect(onError!(error401)).rejects.toBeInstanceOf(TM1RestException);
+            expect(reAuthSpy).not.toHaveBeenCalled();
+        });
+
+        test('skips connection-error retry when reConnectOnRemoteDisconnect is false', async () => {
+            const svc = buildService({ reConnectOnRemoteDisconnect: false });
+            (svc as any).isConnected = true;
+
+            const networkError: any = { code: 'ECONNRESET', message: 'reset', config: { _idempotent: true } };
+
+            await expect(onError!(networkError)).rejects.toBeInstanceOf(TM1RestException);
+            expect(svcMock).not.toHaveBeenCalled();
+        });
+
+        test('respects remoteDisconnectMaxRetries: stops retrying once cap reached', async () => {
+            const svc = buildService({ remoteDisconnectMaxRetries: 1 });
+            (svc as any).isConnected = true;
+
+            // canRetryRequest is gated on the per-request _retryCount; pre-seed to the cap
+            // so the next retry attempt is rejected and the error propagates as TM1RestException.
+            const requestConfig: any = { _idempotent: true, _retryCount: 1 };
+            const networkError: any = { code: 'ECONNRESET', message: 'reset', config: requestConfig };
+
+            await expect(onError!(networkError)).rejects.toBeInstanceOf(TM1RestException);
+            expect(svcMock).not.toHaveBeenCalled();
         });
     });
 });

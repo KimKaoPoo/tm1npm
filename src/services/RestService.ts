@@ -2,7 +2,7 @@ import axios, { AxiosInstance, AxiosResponse, AxiosRequestConfig } from 'axios';
 import * as https from 'https';
 import * as fs from 'fs';
 import { TM1RestException, TM1TimeoutException } from '../exceptions/TM1Exception';
-import { CaseAndSpaceInsensitiveSet, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
+import { formatUrl, CaseAndSpaceInsensitiveSet, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
 
 type UrlTopology = 'base_url' | 'v11' | 'ibm_cloud' | 'pa_proxy' | 's2s';
 
@@ -35,6 +35,9 @@ export interface RestServiceConfig {
     timeout?: number;
     cancelAtTimeout?: boolean;
     asyncRequestsMode?: boolean;
+    asyncPollingInitialDelay?: number;
+    asyncPollingMaxDelay?: number;
+    asyncPollingBackoffFactor?: number;
     connectionPoolSize?: number;
     poolConnections?: number;
     instance?: string;
@@ -46,12 +49,6 @@ export interface RestServiceConfig {
     apiKey?: string;
     accessToken?: string;
     tenant?: string;
-    reConnectOnSessionTimeout?: boolean;
-    reConnectOnRemoteDisconnect?: boolean;
-    remoteDisconnectMaxRetries?: number;
-    remoteDisconnectRetryDelay?: number;
-    remoteDisconnectMaxDelay?: number;
-    remoteDisconnectBackoffFactor?: number;
 
     // v12 / Cloud URL components
     iamUrl?: string;
@@ -72,6 +69,22 @@ export interface RestServiceConfig {
     proxies?: { http?: string; https?: string };
     sslContext?: https.Agent;
     cert?: string | [string, string];
+
+    // Reconnect behavior (mirrors tm1py kwargs)
+    reConnectOnSessionTimeout?: boolean;
+    reConnectOnRemoteDisconnect?: boolean;
+    remoteDisconnectMaxRetries?: number;
+    remoteDisconnectRetryDelay?: number;
+    remoteDisconnectMaxDelay?: number;
+}
+
+export interface RequestOptions extends Omit<AxiosRequestConfig, 'timeout'> {
+    asyncRequestsMode?: boolean;
+    returnAsyncId?: boolean;
+    timeout?: number;
+    cancelAtTimeout?: boolean;
+    idempotent?: boolean;
+    verifyResponse?: boolean;
 }
 
 export class RestService {
@@ -94,41 +107,41 @@ export class RestService {
     private sandboxName?: string;
     private isConnected: boolean = false;
     private _serverVersion?: string;
-
+    private _asyncRequestsMode: boolean;
+    private _cancelAtTimeout: boolean;
+    private _timeout: number;
+    private _asyncPollingInitialDelay: number;
+    private _asyncPollingMaxDelay: number;
+    private _asyncPollingBackoffFactor: number;
+    private _reConnectOnSessionTimeout: boolean;
+    private _reConnectOnRemoteDisconnect: boolean;
+    private _remoteDisconnectMaxRetries: number;
+    private _remoteDisconnectRetryDelay: number;
+    private _remoteDisconnectMaxDelay: number;
     private _isAdmin?: boolean;
     private _isDataAdmin?: boolean;
     private _isSecurityAdmin?: boolean;
     private _isOpsAdmin?: boolean;
-    private _rolesLoading?: Promise<void>;
-
-    private reConnectOnSessionTimeout!: boolean;
-    private reConnectOnRemoteDisconnect!: boolean;
-    private remoteDisconnectMaxRetries!: number;
-    private remoteDisconnectRetryDelay!: number;
-    private remoteDisconnectMaxDelay!: number;
-    private remoteDisconnectBackoffFactor!: number;
 
     public get version(): string | undefined {
         return this._serverVersion;
     }
 
-    public get isAdmin(): boolean { return this._isAdmin ?? false; }
-    public get isDataAdmin(): boolean { return this._isDataAdmin ?? false; }
-    public get isSecurityAdmin(): boolean { return this._isSecurityAdmin ?? false; }
-    public get isOpsAdmin(): boolean { return this._isOpsAdmin ?? false; }
-
     constructor(config: RestServiceConfig) {
         this.config = { ...config };
+        this._asyncRequestsMode = config.asyncRequestsMode ?? false;
+        this._cancelAtTimeout = config.cancelAtTimeout ?? false;
+        this._timeout = config.timeout ?? 60;
+        this._asyncPollingInitialDelay = config.asyncPollingInitialDelay ?? 0.1;
+        this._asyncPollingMaxDelay = config.asyncPollingMaxDelay ?? 1.0;
+        this._asyncPollingBackoffFactor = config.asyncPollingBackoffFactor ?? 2.0;
+        this._reConnectOnSessionTimeout = config.reConnectOnSessionTimeout ?? true;
+        this._reConnectOnRemoteDisconnect = config.reConnectOnRemoteDisconnect ?? true;
+        this._remoteDisconnectMaxRetries = config.remoteDisconnectMaxRetries ?? 5;
+        this._remoteDisconnectRetryDelay = config.remoteDisconnectRetryDelay ?? 1;
+        this._remoteDisconnectMaxDelay = config.remoteDisconnectMaxDelay ?? 30;
 
-        // Reconnect knob defaults mirror tm1py RestService.__init__
-        this.reConnectOnSessionTimeout = config.reConnectOnSessionTimeout ?? true;
-        this.reConnectOnRemoteDisconnect = config.reConnectOnRemoteDisconnect ?? true;
-        this.remoteDisconnectMaxRetries = config.remoteDisconnectMaxRetries ?? 5;
-        this.remoteDisconnectRetryDelay = config.remoteDisconnectRetryDelay ?? 1;
-        this.remoteDisconnectMaxDelay = config.remoteDisconnectMaxDelay ?? 30;
-        this.remoteDisconnectBackoffFactor = config.remoteDisconnectBackoffFactor ?? 2;
-
-        // ADMIN username fast-path (tm1py RestService.__init__ — ADMIN short-circuit)
+        // Pre-populate admin flags for the built-in ADMIN user (mirrors tm1py)
         if (config.user && caseAndSpaceInsensitiveEquals(config.user, 'ADMIN')) {
             this._isAdmin = true;
             this._isDataAdmin = true;
@@ -167,7 +180,7 @@ export class RestService {
 
     private parseSetCookieHeaders(setCookie: string[] | string | undefined): void {
         if (!setCookie) return;
-        const list = Array.isArray(setCookie) ? setCookie : [setCookie];
+        const list = RestService.normaliseSetCookie(setCookie);
         for (const raw of list) {
             const firstSegment = raw.split(';')[0];
             const eqIdx = firstSegment.indexOf('=');
@@ -206,7 +219,7 @@ export class RestService {
 
         const axiosConfig: AxiosRequestConfig = {
             baseURL,
-            timeout: (this.config.timeout || 60) * 1000,
+            timeout: this._timeout * 1000,
             headers: {
                 ...RestService.HEADERS,
                 ...(this.config.sessionContext && { 'TM1-SessionContext': this.config.sessionContext })
@@ -393,14 +406,14 @@ export class RestService {
                 const originalRequest = error.config;
 
                 // Handle timeout errors
-                if (error.code === 'ECONNABORTED' || error.message.includes('timeout')) {
+                if (error.code === 'ECONNABORTED' || error.message?.includes?.('timeout')) {
                     throw new TM1TimeoutException(`Request timeout: ${error.message}`);
                 }
 
                 // Handle authentication errors with retry. Guarded by this.isConnected so a 401
                 // during disconnect()'s tm1.Close POST cannot recurse back into reAuthenticate().
-                if (this.reConnectOnSessionTimeout && error.response?.status === 401
-                    && !originalRequest._retry && this.isConnected) {
+                if (error.response?.status === 401 && originalRequest && !originalRequest._retry
+                    && this.isConnected && this._reConnectOnSessionTimeout) {
                     originalRequest._retry = true;
 
                     try {
@@ -417,9 +430,8 @@ export class RestService {
                     }
                 }
 
-                // Handle connection errors with retry (gated by reConnectOnRemoteDisconnect)
-                if (this.reConnectOnRemoteDisconnect
-                    && this.shouldRetryRequest(error) && this.canRetryRequest(originalRequest)) {
+                // Handle connection errors with retry
+                if (originalRequest && this.shouldRetryRequest(error) && this.canRetryRequest(originalRequest)) {
                     return this.retryRequest(originalRequest);
                 }
 
@@ -438,6 +450,7 @@ export class RestService {
      * Determine if a request should be retried
      */
     private shouldRetryRequest(error: any): boolean {
+        if (!this._reConnectOnRemoteDisconnect) return false;
         // Retry on network errors, timeouts, and 5xx server errors
         return !error.response ||
                error.code === 'ECONNRESET' ||
@@ -450,26 +463,38 @@ export class RestService {
      * Check if a request can be retried
      */
     private canRetryRequest(config: any): boolean {
+        if (config._idempotent === false) {
+            return false;
+        }
         // Don't retry if already retried maximum times
         config._retryCount = config._retryCount || 0;
-        return config._retryCount < this.remoteDisconnectMaxRetries;
+        return config._retryCount < this._remoteDisconnectMaxRetries;
     }
 
     /**
-     * Retry a failed request with exponential backoff, capped by remoteDisconnectMaxDelay
+     * Retry a failed request with exponential backoff, reconnecting the
+     * session before replay. Mirrors tm1py's _handle_remote_disconnect,
+     * which calls _manage_http_adapter() + connect() prior to retrying
+     * so a dropped session is re-established rather than replayed dead.
      */
     private async retryRequest(config: any): Promise<any> {
-        config._retryCount = (config._retryCount || 0) + 1;
+        config._retryCount = config._retryCount || 0;
+        config._retryCount++;
 
-        // Mirrors tm1py _handle_remote_disconnect:
-        //   min(retry_delay * (backoff_factor ** (attempt - 1)), max_delay)
-        const baseMs = this.remoteDisconnectRetryDelay * 1000;
-        const capMs = this.remoteDisconnectMaxDelay * 1000;
-        const delay = Math.min(
-            baseMs * Math.pow(this.remoteDisconnectBackoffFactor, config._retryCount - 1),
-            capMs
-        );
-        await new Promise(resolve => setTimeout(resolve, delay));
+        const baseDelay = this._remoteDisconnectRetryDelay * Math.pow(2, config._retryCount - 1);
+        const retryDelay = Math.min(baseDelay, this._remoteDisconnectMaxDelay) * 1000;
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+
+        // Re-establish session before replay. Flip isConnected=false first so
+        // connect()'s probe GET cannot recurse through the 401 re-auth branch,
+        // and so a fresh setupAuthentication runs when cookies were cleared.
+        this.isConnected = false;
+        await this.connect();
+
+        // Drop stale Cookie/Authorization on the original config — the request
+        // interceptor rebuilds Cookie from sessionCookies on replay.
+        this.deleteHeaderCaseInsensitive(config.headers, 'Cookie');
+        this.deleteHeaderCaseInsensitive(config.headers, 'Authorization');
 
         return this.axiosInstance(config);
     }
@@ -486,6 +511,177 @@ export class RestService {
         } catch {
             return `HTTP ${response.status}: ${response.statusText}`;
         }
+    }
+
+    private *waitTimeGenerator(timeout: number): Generator<number> {
+        let delay = this._asyncPollingInitialDelay;
+        let elapsed = 0;
+
+        if (timeout) {
+            while (elapsed < timeout) {
+                yield delay;
+                elapsed += delay;
+                delay = Math.min(delay * this._asyncPollingBackoffFactor, this._asyncPollingMaxDelay);
+            }
+        } else {
+            while (true) {
+                yield delay;
+                delay = Math.min(delay * this._asyncPollingBackoffFactor, this._asyncPollingMaxDelay);
+            }
+        }
+    }
+
+    private async _executeSyncRequest(
+        method: string,
+        url: string,
+        data?: any,
+        timeout?: number,
+        idempotent?: boolean,
+        axiosExtras?: Partial<AxiosRequestConfig>
+    ): Promise<AxiosResponse> {
+        const config: AxiosRequestConfig = {
+            method: method as AxiosRequestConfig['method'],
+            url,
+            data,
+            ...axiosExtras
+        };
+
+        if (timeout !== undefined) {
+            config.timeout = timeout * 1000;
+        }
+
+        (config as any)._idempotent = idempotent ?? false;
+
+        return this.axiosInstance.request(config);
+    }
+
+    private async _executeAsyncRequest(
+        method: string,
+        url: string,
+        data?: any,
+        timeout?: number,
+        cancelAtTimeout?: boolean,
+        returnAsyncId?: boolean,
+        idempotent?: boolean,
+        axiosExtras?: Partial<AxiosRequestConfig>
+    ): Promise<AxiosResponse | string> {
+        const preferValue = returnAsyncId ? 'respond-async' : 'respond-async,wait=55';
+        const config: AxiosRequestConfig = {
+            method: method as AxiosRequestConfig['method'],
+            url,
+            data,
+            ...axiosExtras,
+            headers: {
+                ...axiosExtras?.headers,
+                Prefer: preferValue
+            }
+        };
+
+        if (timeout !== undefined) {
+            config.timeout = timeout * 1000;
+        }
+
+        (config as any)._idempotent = idempotent ?? false;
+
+        const response = await this.axiosInstance.request(config);
+
+        if (response.status !== 202) {
+            // Server completed synchronously. If the caller asked for an async
+            // ID (returnAsyncId: true) there is none to return — hand back the
+            // full response so the caller can inspect the result directly.
+            return response;
+        }
+
+        const location = response.headers['location'] || '';
+        const match = typeof location === 'string' ? location.match(/\('([^']+)'\)/) : null;
+        const asyncId = match ? match[1] : undefined;
+
+        if (!asyncId) {
+            throw new TM1RestException(
+                `Async request returned 202 but no valid async ID in Location header: ${location}`
+            );
+        }
+
+        if (returnAsyncId) {
+            return asyncId;
+        }
+
+        return this._pollAsyncResponse(
+            asyncId,
+            timeout ?? this._timeout,
+            cancelAtTimeout ?? this._cancelAtTimeout
+        );
+    }
+
+    private async _pollAsyncResponse(
+        asyncId: string,
+        timeout: number,
+        cancelAtTimeout: boolean
+    ): Promise<AxiosResponse> {
+        for (const wait of this.waitTimeGenerator(timeout)) {
+            const response = await this.retrieve_async_response(asyncId);
+
+            if (response.status === 200 || response.status === 201) {
+                this.verifyAsyncResultHeader(response);
+                return response;
+            }
+
+            await new Promise(resolve => setTimeout(resolve, wait * 1000));
+        }
+
+        if (cancelAtTimeout) {
+            try {
+                await this.cancel_async_operation(asyncId);
+            } catch (cancelError) {
+                console.warn(`Failed to cancel async operation ${asyncId} at timeout:`, cancelError);
+            }
+        }
+
+        throw new TM1TimeoutException(
+            `Async operation ${asyncId} timed out after ${timeout} seconds`,
+            timeout
+        );
+    }
+
+    private async _request(
+        method: string,
+        url: string,
+        data?: any,
+        options?: RequestOptions
+    ): Promise<AxiosResponse | string> {
+        const timeout = options?.timeout ?? this._timeout;
+        const cancelAtTimeout = options?.cancelAtTimeout ?? this._cancelAtTimeout;
+        const asyncMode = options?.returnAsyncId || (options?.asyncRequestsMode ?? this._asyncRequestsMode);
+        const verifyResponse = options?.verifyResponse ?? true;
+        const idempotent = options?.idempotent ?? false;
+        const {
+            asyncRequestsMode: _asyncModeOpt,
+            returnAsyncId,
+            cancelAtTimeout: _cancelAtTimeoutOpt,
+            idempotent: _idempotentOpt,
+            verifyResponse: _verifyResponseOpt,
+            timeout: _timeoutOpt,
+            ...axiosExtras
+        } = options ?? {};
+
+        if (!verifyResponse && axiosExtras.validateStatus === undefined) {
+            axiosExtras.validateStatus = () => true;
+        }
+
+        if (asyncMode) {
+            return this._executeAsyncRequest(
+                method,
+                url,
+                data,
+                timeout,
+                cancelAtTimeout,
+                returnAsyncId,
+                idempotent,
+                axiosExtras
+            );
+        }
+
+        return this._executeSyncRequest(method, url, data, timeout, idempotent, axiosExtras);
     }
 
     public async connect(): Promise<void> {
@@ -509,7 +705,7 @@ export class RestService {
     }
 
     public async disconnect(): Promise<void> {
-        const shouldClose = this.isConnected && !!this.getSessionCookieValue();
+        const shouldClose = this.isConnected;
         // Flip isConnected first so a 401 on tm1.Close cannot trigger reAuthenticate recursion
         this.isConnected = false;
         if (shouldClose) {
@@ -522,24 +718,40 @@ export class RestService {
         this.sessionCookies.clear();
     }
 
-    public async get(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.get(url, config);
+    /**
+     * When `returnAsyncId: true`, the caller receives the async id string
+     * iff the server returns `202 Accepted`. If TM1 short-circuits with
+     * `200/201`, the full `AxiosResponse` is returned instead — the
+     * declared `Promise<string>` return type is a best-effort narrowing.
+     */
+    public async get(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
+    public async get(url: string, options?: RequestOptions): Promise<AxiosResponse>;
+    public async get(url: string, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('GET', url, undefined, { idempotent: true, ...options });
     }
 
-    public async post(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.post(url, data, config);
+    public async post(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
+    public async post(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
+    public async post(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('POST', url, data, options);
     }
 
-    public async patch(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.patch(url, data, config);
+    public async patch(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
+    public async patch(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
+    public async patch(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('PATCH', url, data, options);
     }
 
-    public async put(url: string, data?: any, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.put(url, data, config);
+    public async put(url: string, data: any, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
+    public async put(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse>;
+    public async put(url: string, data?: any, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('PUT', url, data, options);
     }
 
-    public async delete(url: string, config?: AxiosRequestConfig): Promise<AxiosResponse> {
-        return this.axiosInstance.delete(url, config);
+    public async delete(url: string, options: RequestOptions & { returnAsyncId: true }): Promise<string | AxiosResponse>;
+    public async delete(url: string, options?: RequestOptions): Promise<AxiosResponse>;
+    public async delete(url: string, options?: RequestOptions): Promise<AxiosResponse | string> {
+        return this._request('DELETE', url, undefined, options);
     }
 
     public getSessionId(): string | undefined {
@@ -555,7 +767,10 @@ export class RestService {
     }
 
     public isLoggedIn(): boolean {
-        return this.isConnected && !!this.getSessionCookieValue();
+        return this.isConnected && (
+            !!this.getSessionCookieValue() ||
+            !!this.axiosInstance.defaults.headers.common['Authorization']
+        );
     }
 
     public async getApiMetadata(): Promise<any> {
@@ -563,192 +778,347 @@ export class RestService {
         return response.data;
     }
 
+    // =========================================================================
+    // Authentication helpers — mirror tm1py's _build_authorization_token*,
+    // _generate_*_access_token, and _start_session flows
+    // =========================================================================
+
     /**
-     * Set up authentication based on configuration
+     * Build an httpsAgent option that skips TLS verification when verify is false.
      */
-    private async setupAuthentication(): Promise<void> {
-        // Access Token authentication (TM1 12+ with JWT tokens)
-        if (this.config.accessToken) {
-            this.axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${this.config.accessToken}`;
-            return;
-        }
-
-        // API Key authentication (TM1 12+ PAaaS)
-        if (this.config.apiKey) {
-            if (this.config.user === 'apikey') {
-                // IBM Cloud API Key style
-                this.axiosInstance.defaults.headers.common['Authorization'] = `Basic ${Buffer.from(`apikey:${this.config.apiKey}`).toString('base64')}`;
-            } else {
-                // Basic API Key style
-                this.axiosInstance.defaults.headers.common['API-Key'] = this.config.apiKey;
-            }
-            return;
-        }
-
-        // CAM (Cognos Access Manager) authentication
-        if (this.config.authUrl && this.config.camPassport) {
-            await this.setupCamAuthentication();
-            return;
-        }
-
-        // CAM SSO authentication
-        if (this.config.authUrl && this.config.user && this.config.password && this.config.namespace) {
-            await this.setupCamSsoAuthentication();
-            return;
-        }
-
-        // Service-to-Service authentication
-        if (this.config.applicationClientId && this.config.applicationClientSecret) {
-            await this.setupServiceToServiceAuthentication();
-            return;
-        }
-
-        // Basic authentication (default)
-        if (this.config.user && this.config.password) {
-            const credentials = Buffer.from(`${this.config.user}:${this.config.password}`).toString('base64');
-            this.axiosInstance.defaults.headers.common['Authorization'] = `Basic ${credentials}`;
-
-            // Add namespace for TM1 Cloud
-            if (this.config.namespace) {
-                this.axiosInstance.defaults.headers.common['TM1-Namespace'] = this.config.namespace;
-            }
-            return;
-        }
-
-        throw new Error('No valid authentication configuration provided');
+    private static insecureAgentOption(
+        verify?: boolean | string
+    ): { httpsAgent: https.Agent } | Record<string, never> {
+        return verify === false
+            ? { httpsAgent: new https.Agent({ rejectUnauthorized: false }) }
+            : {};
     }
 
     /**
-     * Set up CAM (Cognos Access Manager) authentication
+     * Normalise a Set-Cookie header value (string | string[] | undefined) into a string[].
      */
-    private async setupCamAuthentication(): Promise<void> {
-        if (!this.config.authUrl || !this.config.camPassport) {
-            throw new Error('CAM authentication requires authUrl and camPassport');
-        }
-
-        try {
-            const authResponse = await axios.post(this.config.authUrl, {
-                parameters: [{
-                    name: 'CAMPassport',
-                    value: this.config.camPassport
-                }]
-            }, {
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            if (authResponse.data && authResponse.data.sessionId) {
-                this.sessionCookies.set(RestService.SESSION_COOKIE_NAMES[0], authResponse.data.sessionId);
-            } else {
-                throw new Error('CAM authentication failed: No session ID returned');
-            }
-        } catch (error) {
-            throw new Error(`CAM authentication failed: ${error}`);
-        }
+    private static normaliseSetCookie(raw: string | string[] | undefined): string[] {
+        if (!raw) return [];
+        return Array.isArray(raw) ? raw : [raw];
     }
 
     /**
-     * Set up CAM SSO authentication
+     * Extract a named cookie value from raw Set-Cookie headers.
      */
-    private async setupCamSsoAuthentication(): Promise<void> {
-        if (!this.config.authUrl || !this.config.user || !this.config.password || !this.config.namespace) {
-            throw new Error('CAM SSO authentication requires authUrl, user, password, and namespace');
-        }
-
-        try {
-            const authPayload = {
-                username: this.config.user,
-                password: this.config.password,
-                namespace: this.config.namespace
-            };
-
-            const authResponse = await axios.post(this.config.authUrl, authPayload, {
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            });
-
-            if (authResponse.data && authResponse.data.token) {
-                this.axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${authResponse.data.token}`;
-            } else if (authResponse.data && authResponse.data.sessionId) {
-                this.sessionCookies.set(RestService.SESSION_COOKIE_NAMES[0], authResponse.data.sessionId);
-            } else {
-                throw new Error('CAM SSO authentication failed: No token or session ID returned');
+    private static extractCookieValue(
+        raw: string | string[] | undefined,
+        name: string
+    ): string | undefined {
+        const prefix = name + '=';
+        for (const header of RestService.normaliseSetCookie(raw)) {
+            const segment = header.split(';')[0];
+            if (segment.startsWith(prefix)) {
+                return segment.slice(prefix.length);
             }
-        } catch (error) {
-            throw new Error(`CAM SSO authentication failed: ${error}`);
         }
+        return undefined;
     }
 
     /**
-     * Set up Service-to-Service authentication
+     * Build Basic Authorization header.
+     * Mirrors tm1py's _build_authorization_token_basic.
      */
-    private async setupServiceToServiceAuthentication(): Promise<void> {
-        if (!this.config.applicationClientId || !this.config.applicationClientSecret) {
-            throw new Error('Service-to-Service authentication requires applicationClientId and applicationClientSecret');
+    private static _buildAuthorizationTokenBasic(user: string, password: string): string {
+        return 'Basic ' + Buffer.from(`${user}:${password}`).toString('base64');
+    }
+
+    /**
+     * Build CAMNamespace Authorization header.
+     * Mirrors tm1py's _build_authorization_token_cam (non-gateway path).
+     */
+    private static _buildAuthorizationTokenCam(
+        user: string,
+        password: string,
+        namespace: string
+    ): string {
+        return 'CAMNamespace ' + Buffer.from(`${user}:${password}:${namespace}`).toString('base64');
+    }
+
+    /**
+     * Build CAMPassport Authorization token via gateway SSO.
+     * Mirrors tm1py's _build_authorization_token_cam (gateway path).
+     * Makes a GET request to the gateway URL with CAMNamespace as a query
+     * parameter and extracts the cam_passport cookie from the response.
+     *
+     * Note: tm1py uses HttpNegotiateAuth (NTLM/Kerberos) for gateway requests,
+     * which is Windows-only. This implementation sends a plain GET and relies on
+     * the gateway being accessible without NTLM. For environments requiring NTLM,
+     * pass a pre-obtained cam_passport via config.camPassport instead.
+     */
+    private static async _buildAuthorizationTokenCamSso(
+        gateway: string,
+        namespace: string,
+        verify?: boolean | string
+    ): Promise<string> {
+        const response = await axios.get(gateway, {
+            params: { CAMNamespace: namespace },
+            ...RestService.insecureAgentOption(verify)
+        });
+        if (response.status !== 200) {
+            throw new Error(
+                'Failed to authenticate through CAM. Expected status_code 200, received status_code: ' +
+                response.status
+            );
+        }
+        const passport = RestService.extractCookieValue(
+            response.headers['set-cookie'], 'cam_passport'
+        );
+        if (!passport) {
+            throw new Error(
+                "Failed to authenticate through CAM. HTTP response does not contain 'cam_passport' cookie"
+            );
+        }
+        return 'CAMPassport ' + passport;
+    }
+
+    /**
+     * Generate IBM IAM Cloud access token.
+     * Mirrors tm1py's _generate_ibm_iam_cloud_access_token.
+     */
+    private async _generateIbmIamCloudAccessToken(): Promise<string> {
+        const { iamUrl, apiKey } = this.config;
+        if (!iamUrl || !apiKey) {
+            throw new Error("'iamUrl' and 'apiKey' must be provided to generate access token from IBM Cloud");
+        }
+        const payload = `grant_type=urn%3Aibm%3Aparams%3Aoauth%3Agrant-type%3Aapikey&apikey=${encodeURIComponent(apiKey)}`;
+        const headers = {
+            'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded'
+        };
+        const response = await axios.post(iamUrl, payload, {
+            headers,
+            ...RestService.insecureAgentOption(this.config.verify)
+        });
+        if (!response.data?.access_token) {
+            throw new Error(`Failed to generate access_token from URL: '${iamUrl}'`);
+        }
+        return response.data.access_token;
+    }
+
+    /**
+     * Generate CPD (Cloud Pak for Data) access token.
+     * Mirrors tm1py's _generate_cpd_access_token.
+     */
+    private async _generateCpdAccessToken(
+        credentials: { username: string; password: string }
+    ): Promise<string> {
+        const { cpdUrl } = this.config;
+        if (!cpdUrl) {
+            throw new Error("'cpdUrl' must be provided to authenticate via CPD/Cloud Pak for Data");
+        }
+        const url = `${cpdUrl}/v1/preauth/signin`;
+        const headers = { 'Content-Type': 'application/json;charset=UTF-8' };
+        const response = await axios.post(url, credentials, {
+            headers,
+            ...RestService.insecureAgentOption(this.config.verify)
+        });
+        if (!response.data?.token) {
+            throw new Error(`Failed to generate CPD access token from URL: '${url}'`);
+        }
+        return response.data.token;
+    }
+
+    /**
+     * Authenticate with PA Proxy using a CPD JWT token.
+     * Mirrors tm1py's PA_PROXY flow in _start_session.
+     */
+    private async _authenticateWithPaProxy(jwt: string): Promise<void> {
+        const authRoot = this.resolveRoots().authRoot;
+        const headers = { 'Content-Type': 'application/x-www-form-urlencoded' };
+        const payload = `jwt=${jwt}`;
+        const response = await axios.post(authRoot, payload, {
+            headers,
+            ...RestService.insecureAgentOption(this.config.verify)
+        });
+        const setCookie = response.headers['set-cookie'];
+        const csrfValue = RestService.extractCookieValue(setCookie, 'ba-sso-csrf');
+        if (csrfValue) {
+            this.axiosInstance.defaults.headers.common['ba-sso-authenticity'] = csrfValue;
+        }
+        this.parseSetCookieHeaders(setCookie);
+    }
+
+    /**
+     * Authenticate Service-to-Service (v12).
+     * Mirrors tm1py's SERVICE_TO_SERVICE flow in _start_session:
+     * Uses Basic auth with applicationClientId:applicationClientSecret,
+     * then POSTs {"User": user} to the auth endpoint.
+     */
+    private async _authenticateServiceToService(): Promise<void> {
+        const { applicationClientId, applicationClientSecret, user } = this.config;
+        if (!applicationClientId || !applicationClientSecret) {
+            throw new Error(
+                'Service-to-Service authentication requires applicationClientId and applicationClientSecret'
+            );
         }
 
-        // Both v11 and v11-style baseUrl topologies resolve authRoot to
-        // /Configuration/ProductVersion/$value — a metadata probe, not a token
-        // endpoint. Require callers to supply authUrl explicitly in those cases.
-        // Validation lives outside the try/catch so its message is not double-wrapped.
+        // Guard: v11 and plain baseUrl topologies resolve authRoot to a metadata
+        // probe URL, not a token endpoint. Require explicit authUrl in those cases.
         if (!this.config.authUrl) {
             const topo = this.determineTopology();
             const baseUrlIsV12 = topo === 'base_url'
                 && /api\/v1\/Databases/.test(this.config.baseUrl ?? '');
             if (topo === 'v11' || (topo === 'base_url' && !baseUrlIsV12)) {
-                throw new Error("'authUrl' is required for Service-to-Service authentication on v11 topology");
+                throw new Error(
+                    "'authUrl' is required for Service-to-Service authentication on v11 topology"
+                );
             }
         }
 
-        try {
-            const tokenEndpoint = this.config.authUrl || this.resolveRoots().authRoot;
+        const authRoot = this.config.authUrl || this.resolveRoots().authRoot;
+        const basicAuth = Buffer.from(
+            `${applicationClientId}:${applicationClientSecret}`
+        ).toString('base64');
 
-            const tokenPayload = {
-                grant_type: 'client_credentials',
-                client_id: this.config.applicationClientId,
-                client_secret: this.config.applicationClientSecret
-            };
+        this.axiosInstance.defaults.headers.common['Authorization'] = `Basic ${basicAuth}`;
 
-            const tokenResponse = await axios.post(tokenEndpoint, tokenPayload, {
+        const response = await axios.post(
+            authRoot,
+            JSON.stringify({ User: user }),
+            {
                 headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                }
-            });
-
-            if (tokenResponse.data && tokenResponse.data.access_token) {
-                this.axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${tokenResponse.data.access_token}`;
-            } else {
-                throw new Error('Service-to-Service authentication failed: No access token returned');
+                    ...RestService.HEADERS,
+                    'Authorization': `Basic ${basicAuth}`
+                },
+                ...RestService.insecureAgentOption(this.config.verify)
             }
-        } catch (error) {
-            throw new Error(`Service-to-Service authentication failed: ${error}`);
+        );
+
+        this.parseSetCookieHeaders(response.headers['set-cookie']);
+    }
+
+    /**
+     * Determine the authentication mode from config.
+     * Mirrors tm1py's _determine_auth_mode, using the URL topology as the
+     * primary discriminator for v12 modes.
+     */
+    public getAuthenticationMode(): AuthenticationMode {
+        const topo = this.determineTopology();
+        const c = this.config;
+
+        switch (topo) {
+            case 'ibm_cloud':
+                return AuthenticationMode.IBM_CLOUD_API_KEY;
+            case 'pa_proxy':
+                return AuthenticationMode.PA_PROXY;
+            case 's2s':
+                return AuthenticationMode.SERVICE_TO_SERVICE;
+
+            case 'v11':
+            case 'base_url':
+            default: {
+                // v11 / base_url: check auth-specific config flags
+                if (c.accessToken) return AuthenticationMode.ACCESS_TOKEN;
+                if (c.apiKey) return AuthenticationMode.BASIC_API_KEY;
+                if (c.applicationClientId && c.applicationClientSecret) {
+                    return AuthenticationMode.SERVICE_TO_SERVICE;
+                }
+                if (c.camPassport) return AuthenticationMode.CAM;
+                if (c.gateway && c.namespace) return AuthenticationMode.CAM_SSO;
+                if (c.integratedLogin) return AuthenticationMode.WIA;
+                if (c.namespace) return AuthenticationMode.CAM;
+                return AuthenticationMode.BASIC;
+            }
         }
     }
 
     /**
-     * Get the authentication mode being used
+     * Set up authentication based on configuration.
+     * Mirrors tm1py's _start_session routing.
      */
-    public getAuthenticationMode(): AuthenticationMode {
-        if (this.config.accessToken) {
-            return AuthenticationMode.ACCESS_TOKEN;
+    private async setupAuthentication(): Promise<void> {
+        const authMode = this.getAuthenticationMode();
+        const password = this.config.decodeB64 && this.config.password
+            ? RestService.b64_decode_password(this.config.password)
+            : this.config.password;
+
+        switch (authMode) {
+            case AuthenticationMode.ACCESS_TOKEN:
+                this.axiosInstance.defaults.headers.common['Authorization'] =
+                    `Bearer ${this.config.accessToken}`;
+                break;
+
+            case AuthenticationMode.BASIC_API_KEY:
+                if (this.config.user === 'apikey') {
+                    this.axiosInstance.defaults.headers.common['Authorization'] =
+                        RestService._buildAuthorizationTokenBasic('apikey', this.config.apiKey!);
+                } else {
+                    this.axiosInstance.defaults.headers.common['API-Key'] = this.config.apiKey!;
+                }
+                break;
+
+            case AuthenticationMode.IBM_CLOUD_API_KEY: {
+                const accessToken = await this._generateIbmIamCloudAccessToken();
+                this.axiosInstance.defaults.headers.common['Authorization'] =
+                    `Bearer ${accessToken}`;
+                break;
+            }
+
+            case AuthenticationMode.PA_PROXY: {
+                if (!this.config.user || !password) {
+                    throw new Error('PA Proxy authentication requires user and password');
+                }
+                const jwt = await this._generateCpdAccessToken({
+                    username: this.config.user,
+                    password
+                });
+                await this._authenticateWithPaProxy(jwt);
+                break;
+            }
+
+            case AuthenticationMode.SERVICE_TO_SERVICE:
+                await this._authenticateServiceToService();
+                break;
+
+            case AuthenticationMode.CAM_SSO: {
+                // CAM_SSO is only reached when gateway is set (see getAuthenticationMode)
+                const token = await RestService._buildAuthorizationTokenCamSso(
+                    this.config.gateway!,
+                    this.config.namespace!,
+                    this.config.verify
+                );
+                this.axiosInstance.defaults.headers.common['Authorization'] = token;
+                break;
+            }
+
+            case AuthenticationMode.CAM: {
+                if (this.config.camPassport) {
+                    this.axiosInstance.defaults.headers.common['Authorization'] =
+                        'CAMPassport ' + this.config.camPassport;
+                } else if (this.config.namespace && this.config.user && password) {
+                    this.axiosInstance.defaults.headers.common['Authorization'] =
+                        RestService._buildAuthorizationTokenCam(
+                            this.config.user, password, this.config.namespace
+                        );
+                } else {
+                    throw new Error(
+                        'CAM authentication requires either camPassport or user/password/namespace'
+                    );
+                }
+                break;
+            }
+
+            case AuthenticationMode.WIA:
+                throw new Error(
+                    'Windows Integrated Authentication (WIA) is not supported in Node.js. ' +
+                    'Use CAM or Basic authentication instead.'
+                );
+
+            case AuthenticationMode.BASIC:
+            default: {
+                if (!this.config.user || !password) {
+                    throw new Error('No valid authentication configuration provided');
+                }
+                this.axiosInstance.defaults.headers.common['Authorization'] =
+                    RestService._buildAuthorizationTokenBasic(this.config.user, password);
+                break;
+            }
         }
-        if (this.config.apiKey) {
-            return this.config.user === 'apikey' ?
-                AuthenticationMode.IBM_CLOUD_API_KEY :
-                AuthenticationMode.BASIC_API_KEY;
-        }
-        if (this.config.authUrl && this.config.camPassport) {
-            return AuthenticationMode.CAM;
-        }
-        if (this.config.authUrl && this.config.user && this.config.password && this.config.namespace) {
-            return AuthenticationMode.CAM_SSO;
-        }
-        if (this.config.applicationClientId && this.config.applicationClientSecret) {
-            return AuthenticationMode.SERVICE_TO_SERVICE;
-        }
-        return AuthenticationMode.BASIC;
     }
 
     /**
@@ -804,7 +1174,7 @@ export class RestService {
             sessionId: this.getSessionCookieValue(),
             authMode: this.getAuthenticationMode(),
             baseUrl: this.buildBaseUrl(),
-            timeout: (this.config.timeout || 60) * 1000,
+            timeout: this._timeout,
             sandbox: this.sandboxName
         };
     }
@@ -906,7 +1276,10 @@ export class RestService {
      * Check if currently connected to TM1
      */
     public is_connected(): boolean {
-        return this.isConnected && !!this.getSessionCookieValue();
+        return this.isConnected && (
+            !!this.getSessionCookieValue() ||
+            !!this.axiosInstance.defaults.headers.common['Authorization']
+        );
     }
 
     /**
@@ -940,97 +1313,58 @@ export class RestService {
     }
 
     /**
-     * Load /ActiveUser/Groups once and populate all four admin role caches.
-     * Deduplicates concurrent callers via _rolesLoading so parallel is_*_admin()
-     * calls share a single HTTP request.
-     * Uses CaseAndSpaceInsensitiveSet to match group names (tm1py is_admin / is_*_admin).
+     * Fetch the active user's group names as a CaseAndSpaceInsensitiveSet so
+     * membership tests are case- and whitespace-insensitive (mirrors tm1py).
      */
-    private loadActiveUserRoles(): Promise<void> {
-        if (this._rolesLoading) return this._rolesLoading;
-        this._rolesLoading = (async () => {
-            try {
-                const response = await this.get('/ActiveUser/Groups');
-                const groups = new CaseAndSpaceInsensitiveSet();
-                for (const g of (response.data.value || [])) {
-                    if (g && typeof g.Name === 'string') groups.add(g.Name);
-                }
-                if (this._isAdmin === undefined)         this._isAdmin         = groups.has('ADMIN');
-                if (this._isDataAdmin === undefined)     this._isDataAdmin     = groups.has('ADMIN') || groups.has('DataAdmin');
-                if (this._isSecurityAdmin === undefined) this._isSecurityAdmin = groups.has('ADMIN') || groups.has('SecurityAdmin');
-                if (this._isOpsAdmin === undefined)      this._isOpsAdmin      = groups.has('ADMIN') || groups.has('OperationsAdmin');
-            } catch (err) {
-                // Transient errors must not poison the cache: leave _is*Admin undefined so the
-                // next call retries the fetch. Clear _rolesLoading so the next call doesn't
-                // await this same already-failed promise.
-                console.warn('Failed to load /ActiveUser/Groups; admin role flags will retry on next call:', err);
-                this._rolesLoading = undefined;
-                throw err;
-            }
-        })();
-        return this._rolesLoading;
+    private async fetchActiveUserGroupNames(): Promise<CaseAndSpaceInsensitiveSet> {
+        const response = await this.get('/ActiveUser/Groups');
+        const set = new CaseAndSpaceInsensitiveSet();
+        const value = response.data?.value ?? [];
+        for (const group of value) {
+            if (group?.Name) set.add(group.Name);
+        }
+        return set;
     }
 
-    private async tryLoadActiveUserRoles(): Promise<void> {
-        try { await this.loadActiveUserRoles(); } catch { /* transient — caller returns false */ }
-    }
-
-    /** Check if current user is admin (cached, case/space-insensitive). */
+    /**
+     * Check if current user is admin. Result is cached after the first
+     * computation, and pre-populated when the configured user is ADMIN.
+     */
     public async is_admin(): Promise<boolean> {
-        if (this._isAdmin === undefined) await this.tryLoadActiveUserRoles();
-        return this._isAdmin ?? false;
+        if (this._isAdmin !== undefined) return this._isAdmin;
+        const groups = await this.fetchActiveUserGroupNames();
+        this._isAdmin = groups.has('ADMIN');
+        return this._isAdmin;
     }
 
-    /** Check if current user is data admin (cached, case/space-insensitive). */
+    /**
+     * Check if current user is data admin (member of Admin or DataAdmin).
+     */
     public async is_data_admin(): Promise<boolean> {
-        if (this._isDataAdmin === undefined) await this.tryLoadActiveUserRoles();
-        return this._isDataAdmin ?? false;
+        if (this._isDataAdmin !== undefined) return this._isDataAdmin;
+        const groups = await this.fetchActiveUserGroupNames();
+        this._isDataAdmin = groups.has('Admin') || groups.has('DataAdmin');
+        return this._isDataAdmin;
     }
 
-    /** Check if current user is ops admin (cached, case/space-insensitive). */
+    /**
+     * Check if current user is ops admin (member of Admin or OperationsAdmin).
+     */
     public async is_ops_admin(): Promise<boolean> {
-        if (this._isOpsAdmin === undefined) await this.tryLoadActiveUserRoles();
-        return this._isOpsAdmin ?? false;
+        if (this._isOpsAdmin !== undefined) return this._isOpsAdmin;
+        const groups = await this.fetchActiveUserGroupNames();
+        this._isOpsAdmin = groups.has('Admin') || groups.has('OperationsAdmin');
+        return this._isOpsAdmin;
     }
 
-    /** Check if current user is security admin (cached, case/space-insensitive). */
+    /**
+     * Check if current user is security admin (member of Admin or SecurityAdmin).
+     */
     public async is_security_admin(): Promise<boolean> {
-        if (this._isSecurityAdmin === undefined) await this.tryLoadActiveUserRoles();
-        return this._isSecurityAdmin ?? false;
-    }
-
-    /**
-     * Base64-decode an encoded password (tm1py RestService.b64_decode_password).
-     */
-    public static b64_decode_password(encryptedPassword: string): string {
-        return Buffer.from(encryptedPassword, 'base64').toString('utf-8');
-    }
-
-    /**
-     * Convert bool/number/string to boolean (tm1py RestService.translate_to_boolean).
-     * Strings: whitespace stripped, lowercased, compared to 'true'.
-     */
-    public static translate_to_boolean(value: boolean | number | string): boolean {
-        if (typeof value === 'boolean') return value;
-        if (typeof value === 'number') return Boolean(value);
-        if (typeof value === 'string') return value.replace(/\s+/g, '').toLowerCase() === 'true';
-        const rendered = (() => { try { return JSON.stringify(value); } catch { return String(value); } })();
-        throw new Error(`Invalid argument: '${rendered}'. Must be of type 'bool', 'number', or 'str'`);
-    }
-
-    /**
-     * Insert 'tm1.compact=v0' into the Accept header at position 1 and return the prior value.
-     * Mirrors tm1py RestService.add_compact_json_header exactly (no idempotency guard).
-     */
-    public add_compact_json_header(): string {
-        const current = this.axiosInstance.defaults.headers.common['Accept'];
-        // axios headers may be string, string[], number, boolean, or null; only string is a
-        // meaningful Accept value. Anything else falls back to the class default.
-        const original = typeof current === 'string' ? current : RestService.HEADERS['Accept'];
-        const parts = original.split(';');
-        parts.splice(1, 0, 'tm1.compact=v0');
-        const modified = parts.join(';');
-        this.add_http_header('Accept', modified);
-        return original;
+        if (this._isSecurityAdmin !== undefined) return this._isSecurityAdmin;
+        const groups = await this.fetchActiveUserGroupNames();
+        this._isSecurityAdmin = groups.has('Admin') || groups.has('SecurityAdmin');
+        return this._isSecurityAdmin;
     }
 
     /**
@@ -1065,81 +1399,123 @@ export class RestService {
     }
 
     /**
+     * Insert `tm1.compact=v0` into the Accept header (after the
+     * `application/json` segment) and return the previous header value.
+     * Mirrors tm1py's add_compact_json_header.
+     */
+    public add_compact_json_header(): string {
+        const original = (this.axiosInstance.defaults.headers.common['Accept'] as string | undefined) ?? '';
+        const parts = original.split(';');
+        // Insertion point matters: must come immediately after `application/json`
+        parts.splice(1, 0, 'tm1.compact=v0');
+        this.axiosInstance.defaults.headers.common['Accept'] = parts.join(';');
+        return original;
+    }
+
+    /**
+     * Decode a Base64-encoded password to its UTF-8 plaintext form
+     * (mirrors tm1py's b64_decode_password).
+     */
+    public static b64_decode_password(encryptedPassword: string): string {
+        return Buffer.from(encryptedPassword, 'base64').toString('utf-8');
+    }
+
+    /**
+     * Coerce a boolean/number/string config value to a boolean. Strings
+     * are stripped of whitespace and lowercased before comparison with
+     * `'true'` (mirrors tm1py's translate_to_boolean).
+     */
+    public static translate_to_boolean(value: unknown): boolean {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return Boolean(value);
+        if (typeof value === 'string') {
+            return value.replace(/\s+/g, '').toLowerCase() === 'true';
+        }
+        throw new Error(
+            `Invalid argument: '${String(value)}'. Must be type 'boolean', 'number', or 'string'`
+        );
+    }
+
+    /**
      * Cancel an async operation by ID
      */
     public async cancel_async_operation(async_id: string): Promise<void> {
-        try {
-            await this.post(`/AsyncOperations('${async_id}')/tm1.Cancel`);
-        } catch (error) {
-            throw new TM1RestException(`Failed to cancel async operation ${async_id}: ${error}`);
-        }
+        await this.delete(formatUrl("/_async('{}')", async_id), { asyncRequestsMode: false });
     }
 
     /**
      * Retrieve async operation response
      */
-    public async retrieve_async_response(async_id: string): Promise<any> {
-        try {
-            const response = await this.get(`/AsyncOperations('${async_id}')`);
-            // Axios treats 2xx as success, but 202 means the operation is still running
-            if (response.status === 202) {
-                throw new TM1RestException('Async operation still running', 202, response);
-            }
-            return response.data;
-        } catch (error: any) {
-            if (error instanceof TM1RestException) {
-                throw error;
-            }
-            const status = error?.status ?? error?.response?.status;
-            throw new TM1RestException(
-                `Failed to retrieve async response ${async_id}: ${error}`,
-                status,
-                error?.response
-            );
-        }
+    public async retrieve_async_response(async_id: string): Promise<AxiosResponse> {
+        // tm1py's retrieve_async_response returns the raw response without
+        // raising on non-2xx because its caller (_poll_async_response) gates
+        // on status_code in [200, 201]. Mirror that: accept all statuses so
+        // transient 404s (resource not yet materialized) or 202s (still
+        // running) flow through to the polling loop rather than aborting it.
+        return this.get(formatUrl("/_async('{}')", async_id), {
+            asyncRequestsMode: false,
+            verifyResponse: false,
+            validateStatus: () => true
+        }) as Promise<AxiosResponse>;
     }
 
     /**
-     * Get async operation status
+     * TM1 v12 returns completed async results with HTTP 200 and encodes
+     * the true operation status in the `asyncresult` header (e.g.
+     * "500 Internal Server Error"). Mirror tm1py's
+     * `_transform_async_response` by throwing on any embedded non-2xx
+     * status so callers are not handed a 500 as "success".
      */
-    public async get_async_operation_status(async_id: string): Promise<string> {
-        try {
-            const response = await this.get(`/AsyncOperations('${async_id}')/Status/$value`);
-            return response.data;
-        } catch (error) {
-            throw new TM1RestException(`Failed to get async operation status ${async_id}: ${error}`);
-        }
+    private verifyAsyncResultHeader(response: AxiosResponse): void {
+        const headerValue = response.headers?.['asyncresult'];
+        if (typeof headerValue !== 'string') return;
+        const embeddedStatus = parseInt(headerValue.trim().split(/\s+/)[0], 10);
+        if (Number.isNaN(embeddedStatus)) return;
+        if (embeddedStatus >= 200 && embeddedStatus < 300) return;
+        throw new TM1RestException(
+            `Async operation failed with status ${headerValue}`,
+            embeddedStatus,
+            response
+        );
     }
 
     /**
-     * Wait for async operation to complete
+     * Wait for async operation to complete using a fixed polling cadence.
+     *
+     * Unlike the internal dispatcher's {@link waitTimeGenerator} (capped
+     * exponential backoff), this public helper polls every
+     * {@link poll_interval_seconds} seconds so existing callers who tuned
+     * the cadence keep their original behavior.
      */
     public async wait_for_async_operation(
         async_id: string,
         timeout_seconds: number = 300,
-        poll_interval_seconds: number = 1
+        poll_interval_seconds: number = 1,
+        cancel_at_timeout: boolean = false
     ): Promise<any> {
-        const start_time = Date.now();
-        const timeout_ms = timeout_seconds * 1000;
-        const poll_interval_ms = poll_interval_seconds * 1000;
+        const deadline = Date.now() + timeout_seconds * 1000;
 
-        while (Date.now() - start_time < timeout_ms) {
-            const status = await this.get_async_operation_status(async_id);
-
-            if (status === 'Completed' || status === 'CompletedSuccessfully') {
-                return await this.retrieve_async_response(async_id);
+        while (Date.now() < deadline) {
+            const response = await this.retrieve_async_response(async_id);
+            if (response.status === 200 || response.status === 201) {
+                this.verifyAsyncResultHeader(response);
+                return response.data;
             }
-
-            if (status === 'Failed' || status === 'CompletedWithError') {
-                const response = await this.retrieve_async_response(async_id);
-                throw new TM1RestException(`Async operation failed: ${JSON.stringify(response)}`);
-            }
-
-            // Wait before polling again
-            await new Promise(resolve => setTimeout(resolve, poll_interval_ms));
+            await new Promise(resolve => setTimeout(resolve, poll_interval_seconds * 1000));
         }
 
-        throw new TM1TimeoutException(`Async operation ${async_id} timed out after ${timeout_seconds} seconds`);
+        if (cancel_at_timeout) {
+            try {
+                await this.cancel_async_operation(async_id);
+            } catch (cancelError) {
+                console.warn(`Failed to cancel async operation ${async_id} at timeout:`, cancelError);
+            }
+        }
+
+        throw new TM1TimeoutException(
+            `Async operation ${async_id} timed out after ${timeout_seconds} seconds`,
+            timeout_seconds
+        );
     }
 
     /**
