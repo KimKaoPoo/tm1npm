@@ -122,10 +122,19 @@ export class RestService {
     private _isDataAdmin?: boolean;
     private _isSecurityAdmin?: boolean;
     private _isOpsAdmin?: boolean;
+    private _activeUserGroupsPromise?: Promise<CaseAndSpaceInsensitiveSet>;
 
     public get version(): string | undefined {
         return this._serverVersion;
     }
+
+    // Sync accessors for cached role flags. Return false before the first
+    // is_*_admin() call resolves — callers that need the real value must
+    // await is_admin() / is_data_admin() / etc. first.
+    public get isAdmin(): boolean { return this._isAdmin ?? false; }
+    public get isDataAdmin(): boolean { return this._isDataAdmin ?? false; }
+    public get isSecurityAdmin(): boolean { return this._isSecurityAdmin ?? false; }
+    public get isOpsAdmin(): boolean { return this._isOpsAdmin ?? false; }
 
     constructor(config: RestServiceConfig) {
         this.config = { ...config };
@@ -690,7 +699,15 @@ export class RestService {
                 await this.setupAuthentication();
             }
 
-            await this.axiosInstance.get('/Configuration/ServerName');
+            // Mark probe non-idempotent so the response interceptor's retry
+            // branch skips it. Without this, a retry-triggered connect() whose
+            // probe also fails would spawn another connect(), recursively,
+            // bypassing remoteDisconnectMaxRetries (each probe has its own
+            // fresh _retryCount).
+            await this.axiosInstance.get(
+                '/Configuration/ServerName',
+                { _idempotent: false } as AxiosRequestConfig
+            );
 
             // Strip Authorization only if the session cookie is established; Bearer/API-key
             // modes that never issue a cookie must keep Authorization to stay authenticated
@@ -1315,15 +1332,28 @@ export class RestService {
     /**
      * Fetch the active user's group names as a CaseAndSpaceInsensitiveSet so
      * membership tests are case- and whitespace-insensitive (mirrors tm1py).
+     * Concurrent callers (e.g. Promise.all([is_admin(), is_data_admin(), ...]))
+     * coalesce onto a single in-flight request.
      */
-    private async fetchActiveUserGroupNames(): Promise<CaseAndSpaceInsensitiveSet> {
-        const response = await this.get('/ActiveUser/Groups');
-        const set = new CaseAndSpaceInsensitiveSet();
-        const value = response.data?.value ?? [];
-        for (const group of value) {
-            if (group?.Name) set.add(group.Name);
-        }
-        return set;
+    private fetchActiveUserGroupNames(): Promise<CaseAndSpaceInsensitiveSet> {
+        if (this._activeUserGroupsPromise) return this._activeUserGroupsPromise;
+
+        const clear = () => { this._activeUserGroupsPromise = undefined; };
+        const fetch = this.get('/ActiveUser/Groups').then(
+            (response) => {
+                clear();
+                const set = new CaseAndSpaceInsensitiveSet();
+                const value = response.data?.value ?? [];
+                for (const group of value) {
+                    if (group?.Name) set.add(group.Name);
+                }
+                return set;
+            },
+            (err) => { clear(); throw err; }
+        );
+
+        this._activeUserGroupsPromise = fetch;
+        return fetch;
     }
 
     /**

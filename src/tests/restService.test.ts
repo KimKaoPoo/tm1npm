@@ -574,8 +574,22 @@ describe('RestService', () => {
                 await svc.connect();
 
                 expect(authSpy).not.toHaveBeenCalled();
-                expect(instance.get).toHaveBeenCalledWith('/Configuration/ServerName');
+                expect(instance.get).toHaveBeenCalledWith(
+                    '/Configuration/ServerName',
+                    expect.objectContaining({ _idempotent: false })
+                );
                 expect(svc.isLoggedIn()).toBe(true);
+            });
+
+            test('connect probe is marked non-idempotent so interceptor retry skips it', async () => {
+                const { svc, instance } = makeSvc({ sessionId: 'seed' });
+                instance.get.mockResolvedValue(createMockResponse({ value: 'Server1' }));
+
+                await svc.connect();
+
+                const probeConfig = instance.get.mock.calls[0][1];
+                expect(probeConfig).toBeDefined();
+                expect(probeConfig._idempotent).toBe(false);
             });
 
             test('connect calls setupAuthentication when no session cookie is seeded', async () => {
@@ -1751,6 +1765,58 @@ describe('RestService authentication flows', () => {
             svcMock.request.mockRejectedValue(new TM1RestException('boom', 500));
 
             await expect(svc.is_admin()).rejects.toThrow('boom');
+        });
+
+        test('sync isAdmin/isDataAdmin/isSecurityAdmin/isOpsAdmin getters reflect cached state', async () => {
+            const svc = buildService();
+            // Before any is_*() call resolves, all sync getters return false.
+            expect(svc.isAdmin).toBe(false);
+            expect(svc.isDataAdmin).toBe(false);
+            expect(svc.isSecurityAdmin).toBe(false);
+            expect(svc.isOpsAdmin).toBe(false);
+
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'ADMIN' }] })
+            );
+            await svc.is_admin();
+            await svc.is_data_admin();
+            await svc.is_security_admin();
+            await svc.is_ops_admin();
+
+            expect(svc.isAdmin).toBe(true);
+            expect(svc.isDataAdmin).toBe(true);
+            expect(svc.isSecurityAdmin).toBe(true);
+            expect(svc.isOpsAdmin).toBe(true);
+        });
+
+        test('concurrent is_*_admin() calls coalesce onto a single /ActiveUser/Groups request', async () => {
+            const svc = buildService();
+            // Non-ADMIN user so pre-populated fast-path does not apply.
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'Users' }] })
+            );
+
+            const [a, b, c, d] = await Promise.all([
+                svc.is_admin(),
+                svc.is_data_admin(),
+                svc.is_security_admin(),
+                svc.is_ops_admin()
+            ]);
+
+            expect([a, b, c, d]).toEqual([false, false, false, false]);
+            expect(svcMock.request).toHaveBeenCalledTimes(1);
+        });
+
+        test('failed in-flight fetch does not poison subsequent calls', async () => {
+            const svc = buildService();
+            svcMock.request.mockRejectedValueOnce(new TM1RestException('boom', 500));
+            await expect(svc.is_admin()).rejects.toThrow('boom');
+
+            // In-flight promise cleared on rejection; next call hits a fresh request.
+            svcMock.request.mockResolvedValueOnce(
+                createMockResponse({ value: [{ Name: 'ADMIN' }] })
+            );
+            expect(await svc.is_admin()).toBe(true);
         });
 
         test('b64_decode_password roundtrips Base64 to UTF-8', () => {
