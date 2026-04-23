@@ -494,9 +494,15 @@ export class RestService {
         const retryDelay = Math.min(baseDelay, this._remoteDisconnectMaxDelay) * 1000;
         await new Promise(resolve => setTimeout(resolve, retryDelay));
 
-        // Re-establish session before replay. Flip isConnected=false first so
-        // connect()'s probe GET cannot recurse through the 401 re-auth branch,
-        // and so a fresh setupAuthentication runs when cookies were cleared.
+        // Re-establish session before replay. Clear sessionCookies first so
+        // connect() runs a full setupAuthentication (mirrors tm1py, whose
+        // connect() always re-runs _start_session / _set_session_id_cookie
+        // regardless of prior cookie state). Without this, a stale cookie
+        // from a server-invalidated session would be reused, the probe GET
+        // would 401, and the whole retry path would silently fail.
+        // Flip isConnected=false so the 401 re-auth branch cannot recurse
+        // through the probe.
+        this.sessionCookies.clear();
         this.isConnected = false;
         await this.connect();
 

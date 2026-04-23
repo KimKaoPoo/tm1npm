@@ -1892,5 +1892,32 @@ describe('RestService authentication flows', () => {
             await expect(onError!(networkError)).rejects.toBeInstanceOf(TM1RestException);
             expect(svcMock).not.toHaveBeenCalled();
         });
+
+        test('retryRequest clears sessionCookies so connect() re-runs setupAuthentication', async () => {
+            // Mirrors tm1py's _handle_remote_disconnect → connect() flow where
+            // connect() always re-runs auth regardless of any prior cookie
+            // state. Without clearing, connect()'s getSessionCookieValue check
+            // would skip setupAuthentication and reuse a stale cookie.
+            const svc = buildService({ remoteDisconnectMaxRetries: 1, remoteDisconnectRetryDelay: 0 });
+            (svc as any).isConnected = true;
+            (svc as any).sessionCookies.set('TM1SessionId', 'stale-cookie');
+
+            const authSpy = jest.fn().mockResolvedValue(undefined);
+            (svc as any).setupAuthentication = authSpy;
+
+            // Probe GET inside connect() succeeds; replayed request succeeds too.
+            svcMock.mockResolvedValue({ status: 200, data: {} });
+            svcMock.get.mockResolvedValue({ status: 200, data: { value: 'Server1' } });
+
+            const requestConfig: any = { _idempotent: true, headers: { Cookie: 'stale-cookie' } };
+            const networkError: any = { code: 'ECONNRESET', message: 'reset', config: requestConfig };
+
+            await onError!(networkError);
+
+            // sessionCookies cleared before connect() so setupAuthentication runs.
+            expect(authSpy).toHaveBeenCalledTimes(1);
+            // Stale Cookie header on replayed config was stripped.
+            expect(requestConfig.headers.Cookie).toBeUndefined();
+        });
     });
 });
