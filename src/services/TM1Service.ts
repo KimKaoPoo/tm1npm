@@ -252,21 +252,22 @@ export class TM1Service {
     }
 
     /**
-     * Tear down the current session and re-authenticate.
-     *
-     * Intentionally diverges from tm1py's `re_connect()` (which only calls
-     * `connect()` without disconnecting first) per the issue #82 spec, which
-     * asks for a full teardown + re-authenticate. If `disconnect()` throws,
-     * `connect()` is not attempted and the caller is left disconnected.
+     * Re-establish the REST session. Matches tm1py's `re_connect()`, which
+     * only calls `connect()` without tearing down the existing session.
+     * Use {@link reAuthenticate} for a full teardown + re-auth.
      */
     public async reConnect(): Promise<void> {
-        await this._tm1Rest.disconnect();
         await this._tm1Rest.connect();
     }
 
-    /** Backward-compatible alias for {@link reConnect}. */
+    /**
+     * Tear down the current session and re-authenticate. Unlike {@link reConnect}
+     * this calls `disconnect()` before `connect()`; if `disconnect()` throws,
+     * `connect()` is not attempted and the caller is left disconnected.
+     */
     public async reAuthenticate(): Promise<void> {
-        await this.reConnect();
+        await this._tm1Rest.disconnect();
+        await this._tm1Rest.connect();
     }
 
     // For use with try-with pattern in async contexts

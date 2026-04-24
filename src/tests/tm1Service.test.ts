@@ -199,13 +199,6 @@ describe('TM1Service', () => {
             expect(mockRestService.connect).toHaveBeenCalledTimes(1);
         });
 
-        test('reAuthenticate should delegate to reConnect', async () => {
-            const spy = jest.spyOn(tm1Service, 'reConnect').mockResolvedValueOnce();
-
-            await tm1Service.reAuthenticate();
-
-            expect(spy).toHaveBeenCalledTimes(1);
-        });
     });
 
     describe('Metadata and Version', () => {
@@ -435,31 +428,17 @@ describe('TM1Service', () => {
     });
 
     describe('reConnect (Issue #82)', () => {
-        test('should disconnect then connect', async () => {
+        test('should call connect without disconnecting (tm1py parity)', async () => {
             await tm1Service.reConnect();
 
-            expect(mockRestService.disconnect).toHaveBeenCalledTimes(1);
             expect(mockRestService.connect).toHaveBeenCalledTimes(1);
-
-            const disconnectOrder = mockRestService.disconnect.mock.invocationCallOrder[0];
-            const connectOrder = mockRestService.connect.mock.invocationCallOrder[0];
-            expect(disconnectOrder).toBeLessThan(connectOrder);
+            expect(mockRestService.disconnect).not.toHaveBeenCalled();
         });
 
-        test('should not call connect when disconnect fails', async () => {
-            const disconnectError = new Error('Disconnect failed');
-            mockRestService.disconnect.mockRejectedValueOnce(disconnectError);
-
-            await expect(tm1Service.reConnect()).rejects.toThrow('Disconnect failed');
-            expect(mockRestService.connect).not.toHaveBeenCalled();
-        });
-
-        test('should reject when connect fails after successful disconnect', async () => {
-            mockRestService.disconnect.mockResolvedValueOnce(void 0);
+        test('should propagate errors from connect', async () => {
             mockRestService.connect.mockRejectedValueOnce(new Error('Connect failed'));
 
             await expect(tm1Service.reConnect()).rejects.toThrow('Connect failed');
-            expect(mockRestService.disconnect).toHaveBeenCalledTimes(1);
             expect(mockRestService.connect).toHaveBeenCalledTimes(1);
         });
     });
