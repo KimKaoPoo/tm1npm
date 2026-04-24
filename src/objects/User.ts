@@ -1,12 +1,12 @@
 import { TM1Object } from './TM1Object';
-import { CaseAndSpaceInsensitiveSet, formatUrl } from '../utils/Utils';
+import { CaseAndSpaceInsensitiveSet, formatUrl, lowerAndDropSpaces } from '../utils/Utils';
 
 export enum UserType {
-    User = 0,
-    SecurityAdmin = 1,
-    DataAdmin = 2,
-    Admin = 3,
-    OperationsAdmin = 4
+    User = 'User',
+    SecurityAdmin = 'SecurityAdmin',
+    DataAdmin = 'DataAdmin',
+    Admin = 'Admin',
+    OperationsAdmin = 'OperationsAdmin'
 }
 
 export class User extends TM1Object {
@@ -70,21 +70,12 @@ export class User extends TM1Object {
     }
 
     public set userType(value: UserType | string) {
-        if (typeof value === 'string') {
-            // Parse string to UserType enum
-            const lowerValue = value.replace(/\s+/g, '').toLowerCase();
-            for (const [key, enumValue] of Object.entries(UserType)) {
-                if (key.toLowerCase() === lowerValue) {
-                    this._userType = enumValue as UserType;
-                    break;
-                }
-            }
-            if (this._userType === undefined) {
-                throw new Error(`Invalid element type=${value}`);
-            }
-        } else {
-            this._userType = value;
+        const lowerValue = lowerAndDropSpaces(value);
+        const match = Object.entries(UserType).find(([key]) => key.toLowerCase() === lowerValue);
+        if (!match) {
+            throw new Error(`Invalid user type=${value}`);
         }
+        this._userType = match[1] as UserType;
 
         // update groups as well, since TM1 doesn't react to change in user_type property
         if (this._userType !== UserType.User) {
