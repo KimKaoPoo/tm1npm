@@ -194,9 +194,17 @@ describe('TM1Service', () => {
 
         test('should re-authenticate successfully', async () => {
             await tm1Service.reAuthenticate();
-            
+
             expect(mockRestService.disconnect).toHaveBeenCalledTimes(1);
             expect(mockRestService.connect).toHaveBeenCalledTimes(1);
+        });
+
+        test('reAuthenticate should delegate to reConnect', async () => {
+            const spy = jest.spyOn(tm1Service, 'reConnect').mockResolvedValueOnce();
+
+            await tm1Service.reAuthenticate();
+
+            expect(spy).toHaveBeenCalledTimes(1);
         });
     });
 

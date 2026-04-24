@@ -124,6 +124,12 @@ export class TM1Service {
         return this._monitoring;
     }
 
+    // The following services (annotations..loggers) are exposed as lazy,
+    // read-only getters per the issue #82 spec. This diverges from tm1py,
+    // which eagerly initialises writable attributes in `__init__`. Keeping
+    // them lazy avoids paying construction cost for services a caller never
+    // touches; readers who need to inject a test double should mock the
+    // service module itself (see src/tests/tm1Service.test.ts).
     public get annotations(): AnnotationService {
         if (!this._annotations) {
             this._annotations = new AnnotationService(this._tm1Rest);
@@ -245,11 +251,20 @@ export class TM1Service {
         return this._tm1Rest.isLoggedIn();
     }
 
+    /**
+     * Tear down the current session and re-authenticate.
+     *
+     * Intentionally diverges from tm1py's `re_connect()` (which only calls
+     * `connect()` without disconnecting first) per the issue #82 spec, which
+     * asks for a full teardown + re-authenticate. If `disconnect()` throws,
+     * `connect()` is not attempted and the caller is left disconnected.
+     */
     public async reConnect(): Promise<void> {
         await this._tm1Rest.disconnect();
         await this._tm1Rest.connect();
     }
 
+    /** Backward-compatible alias for {@link reConnect}. */
     public async reAuthenticate(): Promise<void> {
         await this.reConnect();
     }
