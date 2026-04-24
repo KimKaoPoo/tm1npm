@@ -99,6 +99,7 @@ describe('TM1Service', () => {
             expect(tm1Service.security).toBeDefined();
             expect(tm1Service.files).toBeDefined();
             expect(tm1Service.sessions).toBeDefined();
+            expect(tm1Service.applications).toBeDefined();
         });
 
         test('should create RestService with provided config', () => {
@@ -382,7 +383,6 @@ describe('TM1Service', () => {
             'annotations',
             'chores',
             'git',
-            'applications',
             'sandboxes',
             'jobs',
             'users',
