@@ -22,6 +22,17 @@ interface ProcessExecuteSummary {
     ErrorLogFile?: { Filename?: string } | null;
 }
 
+interface ValidationError {
+    line: number;
+    message: string;
+    severity: string;
+}
+
+interface ValidationResult {
+    isValid: boolean;
+    errors: ValidationError[];
+}
+
 export class ProcessService extends ObjectService {
     /** Service to handle Object Updates for TI Processes
      * 
@@ -310,7 +321,7 @@ export class ProcessService extends ObjectService {
          */
         const url = formatUrl("/ProcessDebugContexts('{}')/Breakpoints", debugId);
         const response = await this.rest.get(url);
-        return response.data.value.map((bp: any) => ProcessDebugBreakpoint.fromDict(bp));
+        return response.data.value.map((bp: Record<string, unknown>) => ProcessDebugBreakpoint.fromDict(bp));
     }
 
     public async debugAddBreakpoint(
@@ -542,7 +553,7 @@ export class ProcessService extends ObjectService {
         }
 
         const response = await this.rest.get(url);
-        return response.data.value.map((log: any) => log.Filename);
+        return response.data.value.map((log: { Filename: string }) => log.Filename);
     }
 
     public async getErrorLogFilenames(
@@ -629,7 +640,7 @@ export class ProcessService extends ObjectService {
         }
 
         const response = await this.rest.get(url);
-        return response.data.value.map((process: any) => process.Name);
+        return response.data.value.map((process: { Name: string }) => process.Name);
     }
 
     public async updateOrCreate(process: Process): Promise<AxiosResponse> {
@@ -683,7 +694,7 @@ export class ProcessService extends ObjectService {
             processName
         );
 
-        const body: any = {};
+        const body: ProcessExecuteBody = {};
         if (parameters && Object.keys(parameters).length > 0) {
             body.Parameters = Object.entries(parameters).map(([name, value]) => ({
                 Name: name,
@@ -691,7 +702,7 @@ export class ProcessService extends ObjectService {
             }));
         }
 
-        const config: any = {};
+        const config: AxiosRequestConfig = {};
         if (timeout) {
             config.timeout = timeout * 1000;
         }
@@ -966,17 +977,17 @@ export class ProcessService extends ObjectService {
      * Validate process syntax without executing it
      *
      * @param processName - Name of the process
-     * @returns Promise<{isValid: boolean, errors: any[]}> - Validation result
+     * @returns Promise<ValidationResult> - Validation result
      *
      * @example
      * ```typescript
      * const result = await processService.validateProcessSyntax('MyProcess');
      * if (!result.isValid) {
-     *     console.error('Errors:', result.errors);
+     *     // result.errors contains ValidationError[] entries
      * }
      * ```
      */
-    public async validateProcessSyntax(processName: string): Promise<{isValid: boolean, errors: any[]}> {
+    public async validateProcessSyntax(processName: string): Promise<ValidationResult> {
         try {
             const response = await this.compile(processName);
             if (response.status === 200) {
@@ -986,8 +997,9 @@ export class ProcessService extends ObjectService {
                 isValid: false,
                 errors: [{ line: 0, message: response.statusText || 'Compilation failed', severity: 'Error' }]
             };
-        } catch (error: any) {
-            const errorMessage = error.response?.data?.error?.message || error.message || 'Validation failed';
+        } catch (error) {
+            const err = error as { response?: { data?: { error?: { message?: string } } }; message?: string };
+            const errorMessage = err.response?.data?.error?.message || err.message || 'Validation failed';
             return {
                 isValid: false,
                 errors: [{ line: 0, message: errorMessage, severity: 'Error' }]
@@ -1084,19 +1096,20 @@ export class ProcessService extends ObjectService {
 
         // Execute process asynchronously
         this.executeWithReturn(processName, parameters)
-            .then((result: any) => {
+            .then((result: unknown) => {
                 asyncOps.updateOperationStatus(
                     operationId,
                     OperationStatus.COMPLETED,
                     result
                 );
             })
-            .catch((error: any) => {
+            .catch((error: unknown) => {
+                const message = (error as { message?: string })?.message ?? String(error);
                 asyncOps.updateOperationStatus(
                     operationId,
                     OperationStatus.FAILED,
                     undefined,
-                    error.message || String(error)
+                    message
                 );
             });
 
