@@ -9,6 +9,10 @@ export enum UserType {
     OperationsAdmin = 'OperationsAdmin'
 }
 
+const USER_TYPE_LOOKUP = new Map<string, UserType>(
+    Object.entries(UserType).map(([k, v]) => [k.toLowerCase(), v as UserType])
+);
+
 export class User extends TM1Object {
     /** Abstraction of a TM1 User
      * 
@@ -70,16 +74,15 @@ export class User extends TM1Object {
     }
 
     public set userType(value: UserType | string) {
-        const lowerValue = lowerAndDropSpaces(value);
-        const match = Object.entries(UserType).find(([key]) => key.toLowerCase() === lowerValue);
-        if (!match) {
+        const resolved = USER_TYPE_LOOKUP.get(lowerAndDropSpaces(value));
+        if (resolved === undefined) {
             throw new Error(`Invalid user type=${value}`);
         }
-        this._userType = match[1] as UserType;
+        this._userType = resolved;
 
         // update groups as well, since TM1 doesn't react to change in user_type property
         if (this._userType !== UserType.User) {
-            this.addGroup(this._userType.toString());
+            this.addGroup(this._userType);
         }
     }
 

@@ -92,8 +92,8 @@ export class CaseAndSpaceInsensitiveSet extends Set<string> {
 
     delete(value: string): boolean {
         const key = lowerAndDropSpaces(value);
-        if (!this._normalizedMap.has(key)) return false;
-        const original = this._normalizedMap.get(key)!;
+        const original = this._normalizedMap.get(key);
+        if (original === undefined) return false;
         this._normalizedMap.delete(key);
         return super.delete(original);
     }
