@@ -1,4 +1,4 @@
-import { AxiosResponse } from 'axios';
+import { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { v4 as uuidv4 } from 'uuid';
 import { RestService } from './RestService';
 import { ObjectService } from './ObjectService';
@@ -11,6 +11,15 @@ import { OperationStatus, OperationType } from './AsyncOperationService';
 export interface CompileSyntaxError {
     LineNumber: number;
     Message: string;
+}
+
+interface ProcessExecuteBody {
+    Parameters?: Array<{ Name: string; Value: unknown }>;
+}
+
+interface ProcessExecuteSummary {
+    ProcessExecuteStatusCode: string;
+    ErrorLogFile?: { Filename?: string } | null;
 }
 
 export class ProcessService extends ObjectService {
@@ -79,7 +88,7 @@ export class ProcessService extends ObjectService {
 
         const response = await this.rest.get(url);
         const responseAsDict = response.data;
-        return responseAsDict.value.map((p: any) => Process.fromDict(p));
+        return responseAsDict.value.map((p: Record<string, unknown>) => Process.fromDict(p));
     }
 
     public async getAllNames(skipControlProcesses: boolean = false): Promise<string[]> {
@@ -93,7 +102,7 @@ export class ProcessService extends ObjectService {
         const url = "/Processes?$select=Name" + (skipControlProcesses ? modelProcessFilter : "");
 
         const response = await this.rest.get(url);
-        const processes = response.data.value.map((process: any) => process.Name);
+        const processes = response.data.value.map((process: { Name: string }) => process.Name);
         return processes;
     }
 
@@ -174,8 +183,8 @@ export class ProcessService extends ObjectService {
          * :return: response
          */
         const url = formatUrl("/Processes('{}')/tm1.Execute", processName);
-        
-        const body: any = {};
+
+        const body: ProcessExecuteBody = {};
         if (parameters && Object.keys(parameters).length > 0) {
             body.Parameters = Object.entries(parameters).map(([name, value]) => ({
                 Name: name,
@@ -199,8 +208,8 @@ export class ProcessService extends ObjectService {
          * :return: response including execution details
          */
         const url = formatUrl("/Processes('{}')/tm1.ExecuteWithReturn?$expand=*", processName);
-        
-        const body: any = {};
+
+        const body: ProcessExecuteBody = {};
         if (parameters && Object.keys(parameters).length > 0) {
             body.Parameters = Object.entries(parameters).map(([name, value]) => ({
                 Name: name,
@@ -208,7 +217,7 @@ export class ProcessService extends ObjectService {
             }));
         }
 
-        const config: any = {};
+        const config: AxiosRequestConfig = {};
         if (timeout) {
             config.timeout = timeout * 1000;
         }
@@ -249,10 +258,11 @@ export class ProcessService extends ObjectService {
             const response = await this.rest.retrieve_async_response(asyncId);
             // TODO: tm1py handles TM1 < v11 binary-wrapped responses via
             // build_response_from_binary_response. Add support if needed.
-            return this._executeWithReturnParseResponse(response);
-        } catch (error: any) {
+            return this._executeWithReturnParseResponse(response.data);
+        } catch (error) {
             // Return null for HTTP 202 (accepted/pending) or 404 (not found yet)
-            const status = error?.status ?? error?.response?.status;
+            const err = error as { status?: number; response?: { status?: number } };
+            const status = err?.status ?? err?.response?.status;
             if (status === 202 || status === 404) {
                 return null;
             }
@@ -260,7 +270,7 @@ export class ProcessService extends ObjectService {
         }
     }
 
-    private _executeWithReturnParseResponse(executionSummary: any): [boolean, string, string | null] {
+    private _executeWithReturnParseResponse(executionSummary: ProcessExecuteSummary): [boolean, string, string | null] {
         const success = executionSummary.ProcessExecuteStatusCode === 'CompletedSuccessfully';
         const status = executionSummary.ProcessExecuteStatusCode;
         const errorLogFile = executionSummary.ErrorLogFile?.Filename ?? null;
@@ -686,7 +696,9 @@ export class ProcessService extends ObjectService {
             config.timeout = timeout * 1000;
         }
 
-        const response = await this.rest.post(url, JSON.stringify(body), config);
+        // rest.post returns AxiosResponse | string (string only when caller
+        // opts into returnAsyncId). debugProcess never does, so narrow.
+        const response = (await this.rest.post(url, JSON.stringify(body), config)) as AxiosResponse;
         return response.data;
     }
 
@@ -885,8 +897,8 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * const deps = await processService.analyzeProcessDependencies('ImportData');
-     * console.log('Cubes used:', deps.cubes);
-     * console.log('Dimensions used:', deps.dimensions);
+     * // deps.cubes      => array of cube names referenced in the process
+     * // deps.dimensions => array of dimension names referenced in the process
      * ```
      */
     public async analyzeProcessDependencies(processName: string): Promise<any> {
@@ -992,7 +1004,7 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * const plan = await processService.getProcessExecutionPlan('ImportData');
-     * console.log('Estimated execution time:', plan.estimatedTime);
+     * // plan.estimatedTime => estimated execution time (ms)
      * ```
      */
     public async getProcessExecutionPlan(processName: string): Promise<any> {
@@ -1100,9 +1112,7 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * const status = await processService.pollProcessExecution(operationId);
-     * if (status === OperationStatus.COMPLETED) {
-     *     console.log('Process completed!');
-     * }
+     * // if (status === OperationStatus.COMPLETED) handle completion
      * ```
      */
     public async pollProcessExecution(operationId: string): Promise<OperationStatus> {
@@ -1123,7 +1133,7 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * await processService.cancelProcessExecution(operationId);
-     * console.log('Process execution cancelled');
+     * // cancellation is acknowledged once the promise resolves
      * ```
      */
     public async cancelProcessExecution(operationId: string): Promise<void> {
