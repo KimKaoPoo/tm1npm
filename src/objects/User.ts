@@ -103,7 +103,7 @@ export class User extends TM1Object {
     }
 
     public get isAdmin(): boolean {
-        return this._groups.has("ADMIN");
+        return this._groups.has("Admin");
     }
 
     public get isDataAdmin(): boolean {
@@ -159,7 +159,7 @@ export class User extends TM1Object {
             userAsDict.Groups.map((group: any) => group.Name),
             userAsDict.FriendlyName,
             undefined, // password not included in dict
-            userAsDict.Type,
+            userAsDict.Type ?? undefined,
             userAsDict.Enabled
         );
     }
