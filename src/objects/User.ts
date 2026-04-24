@@ -1,13 +1,17 @@
 import { TM1Object } from './TM1Object';
-import { CaseAndSpaceInsensitiveSet, formatUrl } from '../utils/Utils';
+import { CaseAndSpaceInsensitiveSet, formatUrl, lowerAndDropSpaces } from '../utils/Utils';
 
 export enum UserType {
-    User = 0,
-    SecurityAdmin = 1,
-    DataAdmin = 2,
-    Admin = 3,
-    OperationsAdmin = 4
+    User = 'User',
+    SecurityAdmin = 'SecurityAdmin',
+    DataAdmin = 'DataAdmin',
+    Admin = 'Admin',
+    OperationsAdmin = 'OperationsAdmin'
 }
+
+const USER_TYPE_LOOKUP = new Map<string, UserType>(
+    Object.entries(UserType).map(([k, v]) => [k.toLowerCase(), v as UserType])
+);
 
 export class User extends TM1Object {
     /** Abstraction of a TM1 User
@@ -70,25 +74,15 @@ export class User extends TM1Object {
     }
 
     public set userType(value: UserType | string) {
-        if (typeof value === 'string') {
-            // Parse string to UserType enum
-            const lowerValue = value.replace(/\s+/g, '').toLowerCase();
-            for (const [key, enumValue] of Object.entries(UserType)) {
-                if (key.toLowerCase() === lowerValue) {
-                    this._userType = enumValue as UserType;
-                    break;
-                }
-            }
-            if (this._userType === undefined) {
-                throw new Error(`Invalid element type=${value}`);
-            }
-        } else {
-            this._userType = value;
+        const resolved = USER_TYPE_LOOKUP.get(lowerAndDropSpaces(value));
+        if (resolved === undefined) {
+            throw new Error(`Invalid user type=${value}`);
         }
+        this._userType = resolved;
 
         // update groups as well, since TM1 doesn't react to change in user_type property
         if (this._userType !== UserType.User) {
-            this.addGroup(this._userType.toString());
+            this.addGroup(this._userType);
         }
     }
 
@@ -109,7 +103,7 @@ export class User extends TM1Object {
     }
 
     public get isAdmin(): boolean {
-        return this._groups.has("ADMIN");
+        return this._groups.has("Admin");
     }
 
     public get isDataAdmin(): boolean {
@@ -165,7 +159,7 @@ export class User extends TM1Object {
             userAsDict.Groups.map((group: any) => group.Name),
             userAsDict.FriendlyName,
             undefined, // password not included in dict
-            userAsDict.Type,
+            userAsDict.Type ?? undefined,
             userAsDict.Enabled
         );
     }

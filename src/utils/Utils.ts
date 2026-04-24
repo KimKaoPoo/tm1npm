@@ -65,20 +65,42 @@ export class CaseAndSpaceInsensitiveMap<T> extends Map<string, T> {
 }
 
 export class CaseAndSpaceInsensitiveSet extends Set<string> {
-    private normalizeValue(value: string): string {
-        return value.toLowerCase().replace(/\s+/g, '');
+    private _normalizedMap: Map<string, string>;
+
+    constructor(values?: Iterable<string>) {
+        super();
+        this._normalizedMap = new Map<string, string>();
+        if (values) {
+            for (const v of values) {
+                this.add(v);
+            }
+        }
     }
 
     add(value: string): this {
-        return super.add(this.normalizeValue(value));
+        const key = lowerAndDropSpaces(value);
+        if (!this._normalizedMap.has(key)) {
+            this._normalizedMap.set(key, value);
+            super.add(value);
+        }
+        return this;
     }
 
     has(value: string): boolean {
-        return super.has(this.normalizeValue(value));
+        return this._normalizedMap.has(lowerAndDropSpaces(value));
     }
 
     delete(value: string): boolean {
-        return super.delete(this.normalizeValue(value));
+        const key = lowerAndDropSpaces(value);
+        const original = this._normalizedMap.get(key);
+        if (original === undefined) return false;
+        this._normalizedMap.delete(key);
+        return super.delete(original);
+    }
+
+    clear(): void {
+        this._normalizedMap.clear();
+        super.clear();
     }
 }
 

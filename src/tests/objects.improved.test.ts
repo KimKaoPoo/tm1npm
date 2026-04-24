@@ -316,7 +316,7 @@ describe('Object Model - Improved Coverage', () => {
             const user = new User('TestUser', []);
             user.addGroup('NewGroup');
             
-            expect(user.groups).toContain('newgroup'); // lowercase due to CaseAndSpaceInsensitiveSet
+            expect(user.groups).toContain('NewGroup');
         });
     });
 
@@ -370,15 +370,15 @@ describe('Object Model - Improved Coverage', () => {
             
             // Add to basic group
             user.addGroup('Everyone');
-            expect(user.groups).toContain('everyone'); // lowercase
-            
+            expect(user.groups).toContain('Everyone');
+
             // Promote to power user
             user.addGroup('PowerUser');
             expect(user.groups.length).toBeGreaterThan(1);
-            
+
             // Remove from basic group
             user.removeGroup('Everyone');
-            expect(user.groups).toContain('poweruser'); // remaining group
+            expect(user.groups).toContain('PowerUser');
         });
     });
 });
