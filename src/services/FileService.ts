@@ -1,6 +1,6 @@
 import path from 'path';
-import { AxiosRequestConfig, AxiosResponse } from 'axios';
-import { RestService } from './RestService';
+import { AxiosResponse } from 'axios';
+import { RequestOptions, RestService } from './RestService';
 import { ObjectService } from './ObjectService';
 import { verifyVersion } from '../utils/Utils';
 
@@ -227,7 +227,7 @@ export class FileService extends ObjectService {
     }
 
     private async uploadFileContentWithoutMpu(url: string, content: Buffer): Promise<AxiosResponse> {
-        const config: AxiosRequestConfig = {
+        const config: RequestOptions = {
             headers: this.binaryHttpHeader
         };
         return await this.rest.put(url, content, config);

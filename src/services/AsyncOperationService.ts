@@ -52,6 +52,12 @@ export interface AsyncOperation {
     result?: any;
     parameters?: Record<string, any>;
     metadata?: Record<string, any>;
+    /**
+     * When true, the operation is tracked with a client-side UUID and the
+     * TM1 server has no record of it. `getAsyncOperationStatus` returns the
+     * cached status instead of polling `/_async('{id}')`.
+     */
+    trackedLocally?: boolean;
 }
 
 /**
@@ -113,28 +119,79 @@ export class AsyncOperationService {
             return operation.status;
         }
 
-        // Poll TM1 server for updated status
-        try {
-            const url = formatUrl("/AsyncOperations('{}')", operationId);
-            const response = await this.rest.get(url);
-            const serverStatus = this.mapServerStatus(response.data.Status);
+        // Locally tracked operations hold a client-side UUID; the TM1 server
+        // would return 404 for them. Rely on the in-memory cache, which is
+        // populated by background .then()/.catch() callbacks in helpers like
+        // ProcessService.executeWithReturnAsync.
+        if (operation.trackedLocally) {
+            return operation.status;
+        }
 
-            // Update operation status
+        // Poll TM1 server for updated status. /_async('{id}') returns 202 while
+        // the op is pending, and 200/201 with the final operation payload once done.
+        // TM1 v12 may encode embedded failures in the `asyncresult` response header.
+        try {
+            const url = formatUrl("/_async('{}')", operationId);
+            const response = await this.rest.get(url, { asyncRequestsMode: false });
+            const serverStatus = this.deriveStatusFromResponse(response);
+
             operation.status = serverStatus;
             if (this.isTerminalStatus(serverStatus)) {
                 operation.endTime = new Date();
-                if (serverStatus === OperationStatus.COMPLETED && response.data.Result) {
-                    operation.result = response.data.Result;
-                } else if (serverStatus === OperationStatus.FAILED && response.data.Error) {
-                    operation.error = response.data.Error;
+                if (serverStatus === OperationStatus.COMPLETED) {
+                    operation.result = response.data;
+                } else if (serverStatus === OperationStatus.FAILED) {
+                    operation.error = this.extractErrorFromResponse(response);
                 }
             }
 
             return serverStatus;
-        } catch (error) {
-            // If server doesn't support AsyncOperations endpoint, return cached status
+        } catch (error: any) {
+            // HTTP 4xx/5xx surfaces as a thrown TM1RestException — treat as a terminal FAILED
+            // so callers stop polling. Network errors (no status) leave cached status intact.
+            // Note: 404 is treated as FAILED here (operation never materialized). This differs
+            // from ProcessService.pollExecuteWithReturn which treats 404 as "not ready yet"
+            // because process async IDs can take a moment to register on the server.
+            const status = error?.status ?? error?.response?.status;
+            if (typeof status === 'number' && status >= 400) {
+                operation.status = OperationStatus.FAILED;
+                operation.endTime = new Date();
+                operation.error = error?.message ?? String(error);
+                return OperationStatus.FAILED;
+            }
             return operation.status;
         }
+    }
+
+    private deriveStatusFromResponse(response: any): OperationStatus {
+        if (response.status === 202) {
+            return OperationStatus.RUNNING;
+        }
+        const asyncResult = response.headers?.['asyncresult'];
+        if (typeof asyncResult === 'string') {
+            const embedded = parseInt(asyncResult.trim().split(/\s+/)[0], 10);
+            if (!Number.isNaN(embedded) && (embedded < 200 || embedded >= 300)) {
+                return OperationStatus.FAILED;
+            }
+        }
+        if (response.status === 200 || response.status === 201) {
+            return OperationStatus.COMPLETED;
+        }
+        return OperationStatus.PENDING;
+    }
+
+    private extractErrorFromResponse(response: any): string {
+        const asyncResult = response.headers?.['asyncresult'];
+        if (typeof asyncResult === 'string') {
+            return asyncResult;
+        }
+        if (typeof response.data === 'string') {
+            return response.data;
+        }
+        if (response.data?.error?.message) {
+            return response.data.error.message;
+        }
+        return JSON.stringify(response.data);
     }
 
     /**
@@ -178,11 +235,10 @@ export class AsyncOperationService {
         this.stopPolling(operationId);
 
         try {
-            // Try to cancel on server if supported
-            const url = formatUrl("/AsyncOperations('{}')/Cancel", operationId);
-            await this.rest.post(url, {});
+            const url = formatUrl("/_async('{}')", operationId);
+            await this.rest.delete(url, { asyncRequestsMode: false });
         } catch (error) {
-            // If server doesn't support cancellation, just mark as cancelled locally
+            console.warn(`Failed to cancel async operation ${operationId} on server:`, error);
         }
 
         // Update operation status
@@ -243,6 +299,9 @@ export class AsyncOperationService {
     public async createAsyncOperation(definition: AsyncOperationDefinition): Promise<string> {
         const operationId = this.generateOperationId();
 
+        // generateOperationId produces a client-side UUID; the server has no
+        // record of it, so polling /_async('{id}') would 404. Mark as locally
+        // tracked so getAsyncOperationStatus returns the cached status instead.
         const operation: AsyncOperation = {
             id: operationId,
             type: definition.type,
@@ -250,7 +309,8 @@ export class AsyncOperationService {
             status: OperationStatus.PENDING,
             startTime: new Date(),
             parameters: definition.parameters,
-            metadata: definition.metadata
+            metadata: definition.metadata,
+            trackedLocally: true
         };
 
         this.operations.set(operationId, operation);
@@ -440,19 +500,6 @@ export class AsyncOperationService {
                status === OperationStatus.FAILED ||
                status === OperationStatus.CANCELLED ||
                status === OperationStatus.TIMEOUT;
-    }
-
-    private mapServerStatus(serverStatus: string): OperationStatus {
-        const statusMap: Record<string, OperationStatus> = {
-            'Pending': OperationStatus.PENDING,
-            'Running': OperationStatus.RUNNING,
-            'CompletedSuccessfully': OperationStatus.COMPLETED,
-            'CompletedWithErrors': OperationStatus.FAILED,
-            'Cancelled': OperationStatus.CANCELLED,
-            'Timeout': OperationStatus.TIMEOUT
-        };
-
-        return statusMap[serverStatus] || OperationStatus.PENDING;
     }
 
     private stopPolling(operationId: string): void {
