@@ -2,7 +2,7 @@ import axios, { AxiosInstance, AxiosResponse, AxiosRequestConfig } from 'axios';
 import * as https from 'https';
 import * as fs from 'fs';
 import { TM1RestException, TM1TimeoutException } from '../exceptions/TM1Exception';
-import { formatUrl } from '../utils/Utils';
+import { formatUrl, CaseAndSpaceInsensitiveSet, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
 
 type UrlTopology = 'base_url' | 'v11' | 'ibm_cloud' | 'pa_proxy' | 's2s';
 
@@ -69,6 +69,13 @@ export interface RestServiceConfig {
     proxies?: { http?: string; https?: string };
     sslContext?: https.Agent;
     cert?: string | [string, string];
+
+    // Reconnect behavior (mirrors tm1py kwargs)
+    reConnectOnSessionTimeout?: boolean;
+    reConnectOnRemoteDisconnect?: boolean;
+    remoteDisconnectMaxRetries?: number;
+    remoteDisconnectRetryDelay?: number;
+    remoteDisconnectMaxDelay?: number;
 }
 
 export interface RequestOptions extends Omit<AxiosRequestConfig, 'timeout'> {
@@ -106,10 +113,28 @@ export class RestService {
     private _asyncPollingInitialDelay: number;
     private _asyncPollingMaxDelay: number;
     private _asyncPollingBackoffFactor: number;
+    private _reConnectOnSessionTimeout: boolean;
+    private _reConnectOnRemoteDisconnect: boolean;
+    private _remoteDisconnectMaxRetries: number;
+    private _remoteDisconnectRetryDelay: number;
+    private _remoteDisconnectMaxDelay: number;
+    private _isAdmin?: boolean;
+    private _isDataAdmin?: boolean;
+    private _isSecurityAdmin?: boolean;
+    private _isOpsAdmin?: boolean;
+    private _activeUserGroupsPromise?: Promise<CaseAndSpaceInsensitiveSet>;
 
     public get version(): string | undefined {
         return this._serverVersion;
     }
+
+    // Sync accessors for cached role flags. Return false before the first
+    // is_*_admin() call resolves — callers that need the real value must
+    // await is_admin() / is_data_admin() / etc. first.
+    public get isAdmin(): boolean { return this._isAdmin ?? false; }
+    public get isDataAdmin(): boolean { return this._isDataAdmin ?? false; }
+    public get isSecurityAdmin(): boolean { return this._isSecurityAdmin ?? false; }
+    public get isOpsAdmin(): boolean { return this._isOpsAdmin ?? false; }
 
     constructor(config: RestServiceConfig) {
         this.config = { ...config };
@@ -119,6 +144,20 @@ export class RestService {
         this._asyncPollingInitialDelay = config.asyncPollingInitialDelay ?? 0.1;
         this._asyncPollingMaxDelay = config.asyncPollingMaxDelay ?? 1.0;
         this._asyncPollingBackoffFactor = config.asyncPollingBackoffFactor ?? 2.0;
+        this._reConnectOnSessionTimeout = config.reConnectOnSessionTimeout ?? true;
+        this._reConnectOnRemoteDisconnect = config.reConnectOnRemoteDisconnect ?? true;
+        this._remoteDisconnectMaxRetries = config.remoteDisconnectMaxRetries ?? 5;
+        this._remoteDisconnectRetryDelay = config.remoteDisconnectRetryDelay ?? 1;
+        this._remoteDisconnectMaxDelay = config.remoteDisconnectMaxDelay ?? 30;
+
+        // Pre-populate admin flags for the built-in ADMIN user (mirrors tm1py)
+        if (config.user && caseAndSpaceInsensitiveEquals(config.user, 'ADMIN')) {
+            this._isAdmin = true;
+            this._isDataAdmin = true;
+            this._isSecurityAdmin = true;
+            this._isOpsAdmin = true;
+        }
+
         this.setupAxiosInstance();
         if (this.config.sessionId) {
             // Mirror tm1py's _set_session_id_cookie: v12 topologies use paSession,
@@ -382,7 +421,8 @@ export class RestService {
 
                 // Handle authentication errors with retry. Guarded by this.isConnected so a 401
                 // during disconnect()'s tm1.Close POST cannot recurse back into reAuthenticate().
-                if (error.response?.status === 401 && originalRequest && !originalRequest._retry && this.isConnected) {
+                if (error.response?.status === 401 && originalRequest && !originalRequest._retry
+                    && this.isConnected && this._reConnectOnSessionTimeout) {
                     originalRequest._retry = true;
 
                     try {
@@ -419,6 +459,7 @@ export class RestService {
      * Determine if a request should be retried
      */
     private shouldRetryRequest(error: any): boolean {
+        if (!this._reConnectOnRemoteDisconnect) return false;
         // Retry on network errors, timeouts, and 5xx server errors
         return !error.response ||
                error.code === 'ECONNRESET' ||
@@ -436,18 +477,39 @@ export class RestService {
         }
         // Don't retry if already retried maximum times
         config._retryCount = config._retryCount || 0;
-        return config._retryCount < 3;
+        return config._retryCount < this._remoteDisconnectMaxRetries;
     }
 
     /**
-     * Retry a failed request with exponential backoff
+     * Retry a failed request with exponential backoff, reconnecting the
+     * session before replay. Mirrors tm1py's _handle_remote_disconnect,
+     * which calls _manage_http_adapter() + connect() prior to retrying
+     * so a dropped session is re-established rather than replayed dead.
      */
     private async retryRequest(config: any): Promise<any> {
         config._retryCount = config._retryCount || 0;
         config._retryCount++;
 
-        const retryDelay = Math.pow(2, config._retryCount) * 1000; // Exponential backoff
+        const baseDelay = this._remoteDisconnectRetryDelay * Math.pow(2, config._retryCount - 1);
+        const retryDelay = Math.min(baseDelay, this._remoteDisconnectMaxDelay) * 1000;
         await new Promise(resolve => setTimeout(resolve, retryDelay));
+
+        // Re-establish session before replay. Clear sessionCookies first so
+        // connect() runs a full setupAuthentication (mirrors tm1py, whose
+        // connect() always re-runs _start_session / _set_session_id_cookie
+        // regardless of prior cookie state). Without this, a stale cookie
+        // from a server-invalidated session would be reused, the probe GET
+        // would 401, and the whole retry path would silently fail.
+        // Flip isConnected=false so the 401 re-auth branch cannot recurse
+        // through the probe.
+        this.sessionCookies.clear();
+        this.isConnected = false;
+        await this.connect();
+
+        // Drop stale Cookie/Authorization on the original config — the request
+        // interceptor rebuilds Cookie from sessionCookies on replay.
+        this.deleteHeaderCaseInsensitive(config.headers, 'Cookie');
+        this.deleteHeaderCaseInsensitive(config.headers, 'Authorization');
 
         return this.axiosInstance(config);
     }
@@ -643,7 +705,15 @@ export class RestService {
                 await this.setupAuthentication();
             }
 
-            await this.axiosInstance.get('/Configuration/ServerName');
+            // Mark probe non-idempotent so the response interceptor's retry
+            // branch skips it. Without this, a retry-triggered connect() whose
+            // probe also fails would spawn another connect(), recursively,
+            // bypassing remoteDisconnectMaxRetries (each probe has its own
+            // fresh _retryCount).
+            await this.axiosInstance.get(
+                '/Configuration/ServerName',
+                { _idempotent: false } as AxiosRequestConfig
+            );
 
             // Strip Authorization only if the session cookie is established; Bearer/API-key
             // modes that never issue a cookie must keep Authorization to stay authenticated
@@ -735,13 +805,6 @@ export class RestService {
     // Authentication helpers — mirror tm1py's _build_authorization_token*,
     // _generate_*_access_token, and _start_session flows
     // =========================================================================
-
-    /**
-     * Decode Base64-encoded password (tm1py parity: b64_decode_password).
-     */
-    private static b64DecodePassword(encoded: string): string {
-        return Buffer.from(encoded, 'base64').toString('utf-8');
-    }
 
     /**
      * Build an httpsAgent option that skips TLS verification when verify is false.
@@ -994,7 +1057,7 @@ export class RestService {
     private async setupAuthentication(): Promise<void> {
         const authMode = this.getAuthenticationMode();
         const password = this.config.decodeB64 && this.config.password
-            ? RestService.b64DecodePassword(this.config.password)
+            ? RestService.b64_decode_password(this.config.password)
             : this.config.password;
 
         switch (authMode) {
@@ -1273,55 +1336,71 @@ export class RestService {
     }
 
     /**
-     * Check if current user is admin
+     * Fetch the active user's group names as a CaseAndSpaceInsensitiveSet so
+     * membership tests are case- and whitespace-insensitive (mirrors tm1py).
+     * Concurrent callers (e.g. Promise.all([is_admin(), is_data_admin(), ...]))
+     * coalesce onto a single in-flight request.
+     */
+    private fetchActiveUserGroupNames(): Promise<CaseAndSpaceInsensitiveSet> {
+        if (this._activeUserGroupsPromise) return this._activeUserGroupsPromise;
+
+        const clear = () => { this._activeUserGroupsPromise = undefined; };
+        const fetch = this.get('/ActiveUser/Groups').then(
+            (response) => {
+                clear();
+                const set = new CaseAndSpaceInsensitiveSet();
+                const value = response.data?.value ?? [];
+                for (const group of value) {
+                    if (group?.Name) set.add(group.Name);
+                }
+                return set;
+            },
+            (err) => { clear(); throw err; }
+        );
+
+        this._activeUserGroupsPromise = fetch;
+        return fetch;
+    }
+
+    /**
+     * Check if current user is admin. Result is cached after the first
+     * computation, and pre-populated when the configured user is ADMIN.
      */
     public async is_admin(): Promise<boolean> {
-        try {
-            const response = await this.get('/ActiveUser/Groups');
-            const groups = response.data.value || [];
-            return groups.some((g: any) => g.Name === 'ADMIN');
-        } catch (error) {
-            return false;
-        }
+        if (this._isAdmin !== undefined) return this._isAdmin;
+        const groups = await this.fetchActiveUserGroupNames();
+        this._isAdmin = groups.has('ADMIN');
+        return this._isAdmin;
     }
 
     /**
-     * Check if current user is data admin
+     * Check if current user is data admin (member of Admin or DataAdmin).
      */
     public async is_data_admin(): Promise<boolean> {
-        try {
-            const response = await this.get('/ActiveUser/Groups');
-            const groups = response.data.value || [];
-            return groups.some((g: any) => g.Name === 'ADMIN' || g.Name === 'DataAdmin');
-        } catch (error) {
-            return false;
-        }
+        if (this._isDataAdmin !== undefined) return this._isDataAdmin;
+        const groups = await this.fetchActiveUserGroupNames();
+        this._isDataAdmin = groups.has('Admin') || groups.has('DataAdmin');
+        return this._isDataAdmin;
     }
 
     /**
-     * Check if current user is ops admin
+     * Check if current user is ops admin (member of Admin or OperationsAdmin).
      */
     public async is_ops_admin(): Promise<boolean> {
-        try {
-            const response = await this.get('/ActiveUser/Groups');
-            const groups = response.data.value || [];
-            return groups.some((g: any) => g.Name === 'ADMIN' || g.Name === 'OperationsAdmin');
-        } catch (error) {
-            return false;
-        }
+        if (this._isOpsAdmin !== undefined) return this._isOpsAdmin;
+        const groups = await this.fetchActiveUserGroupNames();
+        this._isOpsAdmin = groups.has('Admin') || groups.has('OperationsAdmin');
+        return this._isOpsAdmin;
     }
 
     /**
-     * Check if current user is security admin
+     * Check if current user is security admin (member of Admin or SecurityAdmin).
      */
     public async is_security_admin(): Promise<boolean> {
-        try {
-            const response = await this.get('/ActiveUser/Groups');
-            const groups = response.data.value || [];
-            return groups.some((g: any) => g.Name === 'ADMIN' || g.Name === 'SecurityAdmin');
-        } catch (error) {
-            return false;
-        }
+        if (this._isSecurityAdmin !== undefined) return this._isSecurityAdmin;
+        const groups = await this.fetchActiveUserGroupNames();
+        this._isSecurityAdmin = groups.has('Admin') || groups.has('SecurityAdmin');
+        return this._isSecurityAdmin;
     }
 
     /**
@@ -1353,6 +1432,44 @@ export class RestService {
         }
 
         return headers;
+    }
+
+    /**
+     * Insert `tm1.compact=v0` into the Accept header (after the
+     * `application/json` segment) and return the previous header value.
+     * Mirrors tm1py's add_compact_json_header.
+     */
+    public add_compact_json_header(): string {
+        const original = (this.axiosInstance.defaults.headers.common['Accept'] as string | undefined) ?? '';
+        const parts = original.split(';');
+        // Insertion point matters: must come immediately after `application/json`
+        parts.splice(1, 0, 'tm1.compact=v0');
+        this.axiosInstance.defaults.headers.common['Accept'] = parts.join(';');
+        return original;
+    }
+
+    /**
+     * Decode a Base64-encoded password to its UTF-8 plaintext form
+     * (mirrors tm1py's b64_decode_password).
+     */
+    public static b64_decode_password(encryptedPassword: string): string {
+        return Buffer.from(encryptedPassword, 'base64').toString('utf-8');
+    }
+
+    /**
+     * Coerce a boolean/number/string config value to a boolean. Strings
+     * are stripped of whitespace and lowercased before comparison with
+     * `'true'` (mirrors tm1py's translate_to_boolean).
+     */
+    public static translate_to_boolean(value: unknown): boolean {
+        if (typeof value === 'boolean') return value;
+        if (typeof value === 'number') return Boolean(value);
+        if (typeof value === 'string') {
+            return value.replace(/\s+/g, '').toLowerCase() === 'true';
+        }
+        throw new Error(
+            `Invalid argument: '${String(value)}'. Must be type 'boolean', 'number', or 'string'`
+        );
     }
 
     /**

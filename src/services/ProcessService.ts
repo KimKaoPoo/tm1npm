@@ -13,6 +13,26 @@ export interface CompileSyntaxError {
     Message: string;
 }
 
+interface ProcessExecuteBody {
+    Parameters?: Array<{ Name: string; Value: unknown }>;
+}
+
+interface ProcessExecuteSummary {
+    ProcessExecuteStatusCode: string;
+    ErrorLogFile?: { Filename?: string } | null;
+}
+
+interface ValidationError {
+    line: number;
+    message: string;
+    severity: string;
+}
+
+interface ValidationResult {
+    isValid: boolean;
+    errors: ValidationError[];
+}
+
 export class ProcessService extends ObjectService {
     /** Service to handle Object Updates for TI Processes
      * 
@@ -79,7 +99,7 @@ export class ProcessService extends ObjectService {
 
         const response = await this.rest.get(url);
         const responseAsDict = response.data;
-        return responseAsDict.value.map((p: any) => Process.fromDict(p));
+        return responseAsDict.value.map((p: Record<string, unknown>) => Process.fromDict(p));
     }
 
     public async getAllNames(skipControlProcesses: boolean = false): Promise<string[]> {
@@ -93,7 +113,7 @@ export class ProcessService extends ObjectService {
         const url = "/Processes?$select=Name" + (skipControlProcesses ? modelProcessFilter : "");
 
         const response = await this.rest.get(url);
-        const processes = response.data.value.map((process: any) => process.Name);
+        const processes = response.data.value.map((process: { Name: string }) => process.Name);
         return processes;
     }
 
@@ -174,8 +194,8 @@ export class ProcessService extends ObjectService {
          * :return: response
          */
         const url = formatUrl("/Processes('{}')/tm1.Execute", processName);
-        
-        const body: any = {};
+
+        const body: ProcessExecuteBody = {};
         if (parameters && Object.keys(parameters).length > 0) {
             body.Parameters = Object.entries(parameters).map(([name, value]) => ({
                 Name: name,
@@ -199,8 +219,8 @@ export class ProcessService extends ObjectService {
          * :return: response including execution details
          */
         const url = formatUrl("/Processes('{}')/tm1.ExecuteWithReturn?$expand=*", processName);
-        
-        const body: any = {};
+
+        const body: ProcessExecuteBody = {};
         if (parameters && Object.keys(parameters).length > 0) {
             body.Parameters = Object.entries(parameters).map(([name, value]) => ({
                 Name: name,
@@ -254,19 +274,21 @@ export class ProcessService extends ObjectService {
             // TODO: tm1py handles TM1 < v11 binary-wrapped responses via
             // build_response_from_binary_response. Add support if needed.
             return this._executeWithReturnParseResponse(response.data);
-        } catch (error: any) {
+        } catch (error) {
             // 404 means the async resource hasn't materialized yet — return null
-            // so the caller can retry. This differs from AsyncOperationService
-            // which treats 404 as terminal FAILED for locally-tracked operations.
-            const status = error?.status ?? error?.response?.status;
-            if (status === 404) {
+            // so the caller can retry. 202 means still running. Both are
+            // retryable, unlike AsyncOperationService which treats 404 as
+            // terminal FAILED for locally-tracked operations.
+            const err = error as { status?: number; response?: { status?: number } };
+            const status = err?.status ?? err?.response?.status;
+            if (status === 202 || status === 404) {
                 return null;
             }
             throw error;
         }
     }
 
-    private _executeWithReturnParseResponse(executionSummary: any): [boolean, string, string | null] {
+    private _executeWithReturnParseResponse(executionSummary: ProcessExecuteSummary): [boolean, string, string | null] {
         const success = executionSummary.ProcessExecuteStatusCode === 'CompletedSuccessfully';
         const status = executionSummary.ProcessExecuteStatusCode;
         const errorLogFile = executionSummary.ErrorLogFile?.Filename ?? null;
@@ -306,7 +328,7 @@ export class ProcessService extends ObjectService {
          */
         const url = formatUrl("/ProcessDebugContexts('{}')/Breakpoints", debugId);
         const response = await this.rest.get(url);
-        return response.data.value.map((bp: any) => ProcessDebugBreakpoint.fromDict(bp));
+        return response.data.value.map((bp: Record<string, unknown>) => ProcessDebugBreakpoint.fromDict(bp));
     }
 
     public async debugAddBreakpoint(
@@ -538,7 +560,7 @@ export class ProcessService extends ObjectService {
         }
 
         const response = await this.rest.get(url);
-        return response.data.value.map((log: any) => log.Filename);
+        return response.data.value.map((log: { Filename: string }) => log.Filename);
     }
 
     public async getErrorLogFilenames(
@@ -625,7 +647,7 @@ export class ProcessService extends ObjectService {
         }
 
         const response = await this.rest.get(url);
-        return response.data.value.map((process: any) => process.Name);
+        return response.data.value.map((process: { Name: string }) => process.Name);
     }
 
     public async updateOrCreate(process: Process): Promise<AxiosResponse> {
@@ -679,7 +701,7 @@ export class ProcessService extends ObjectService {
             processName
         );
 
-        const body: any = {};
+        const body: ProcessExecuteBody = {};
         if (parameters && Object.keys(parameters).length > 0) {
             body.Parameters = Object.entries(parameters).map(([name, value]) => ({
                 Name: name,
@@ -692,7 +714,9 @@ export class ProcessService extends ObjectService {
             config.timeout = timeout;
         }
 
-        const response = await this.rest.post(url, JSON.stringify(body), config);
+        // rest.post returns AxiosResponse | string (string only when caller
+        // opts into returnAsyncId). debugProcess never does, so narrow.
+        const response = (await this.rest.post(url, JSON.stringify(body), config)) as AxiosResponse;
         return response.data;
     }
 
@@ -891,8 +915,8 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * const deps = await processService.analyzeProcessDependencies('ImportData');
-     * console.log('Cubes used:', deps.cubes);
-     * console.log('Dimensions used:', deps.dimensions);
+     * // deps.cubes      => array of cube names referenced in the process
+     * // deps.dimensions => array of dimension names referenced in the process
      * ```
      */
     public async analyzeProcessDependencies(processName: string): Promise<any> {
@@ -960,17 +984,17 @@ export class ProcessService extends ObjectService {
      * Validate process syntax without executing it
      *
      * @param processName - Name of the process
-     * @returns Promise<{isValid: boolean, errors: any[]}> - Validation result
+     * @returns Promise<ValidationResult> - Validation result
      *
      * @example
      * ```typescript
      * const result = await processService.validateProcessSyntax('MyProcess');
      * if (!result.isValid) {
-     *     console.error('Errors:', result.errors);
+     *     // result.errors contains ValidationError[] entries
      * }
      * ```
      */
-    public async validateProcessSyntax(processName: string): Promise<{isValid: boolean, errors: any[]}> {
+    public async validateProcessSyntax(processName: string): Promise<ValidationResult> {
         try {
             const response = await this.compile(processName);
             if (response.status === 200) {
@@ -980,8 +1004,9 @@ export class ProcessService extends ObjectService {
                 isValid: false,
                 errors: [{ line: 0, message: response.statusText || 'Compilation failed', severity: 'Error' }]
             };
-        } catch (error: any) {
-            const errorMessage = error.response?.data?.error?.message || error.message || 'Validation failed';
+        } catch (error) {
+            const err = error as { response?: { data?: { error?: { message?: string } } }; message?: string };
+            const errorMessage = err.response?.data?.error?.message || err.message || 'Validation failed';
             return {
                 isValid: false,
                 errors: [{ line: 0, message: errorMessage, severity: 'Error' }]
@@ -998,7 +1023,7 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * const plan = await processService.getProcessExecutionPlan('ImportData');
-     * console.log('Estimated execution time:', plan.estimatedTime);
+     * // plan.estimatedTime => estimated execution time (ms)
      * ```
      */
     public async getProcessExecutionPlan(processName: string): Promise<any> {
@@ -1078,19 +1103,20 @@ export class ProcessService extends ObjectService {
 
         // Execute process asynchronously
         this.executeWithReturn(processName, parameters)
-            .then((result: any) => {
+            .then((result: unknown) => {
                 asyncOps.updateOperationStatus(
                     operationId,
                     OperationStatus.COMPLETED,
                     result
                 );
             })
-            .catch((error: any) => {
+            .catch((error: unknown) => {
+                const message = (error as { message?: string })?.message ?? String(error);
                 asyncOps.updateOperationStatus(
                     operationId,
                     OperationStatus.FAILED,
                     undefined,
-                    error.message || String(error)
+                    message
                 );
             });
 
@@ -1106,9 +1132,7 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * const status = await processService.pollProcessExecution(operationId);
-     * if (status === OperationStatus.COMPLETED) {
-     *     console.log('Process completed!');
-     * }
+     * // if (status === OperationStatus.COMPLETED) handle completion
      * ```
      */
     public async pollProcessExecution(operationId: string): Promise<OperationStatus> {
@@ -1129,7 +1153,7 @@ export class ProcessService extends ObjectService {
      * @example
      * ```typescript
      * await processService.cancelProcessExecution(operationId);
-     * console.log('Process execution cancelled');
+     * // cancellation is acknowledged once the promise resolves
      * ```
      */
     public async cancelProcessExecution(operationId: string): Promise<void> {

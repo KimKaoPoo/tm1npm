@@ -459,6 +459,10 @@ describe('ProcessService Tests', () => {
 
     describe('Process Async Polling', () => {
         test('pollExecuteWithReturn should return parsed result on success', async () => {
+            // retrieve_async_response returns an AxiosResponse; the execute summary
+            // lives in .data. Tests that mocked the raw body directly did not
+            // reflect production shape and silently passed against the untyped
+            // parser signature.
             (mockRestService as any).retrieve_async_response = jest.fn().mockResolvedValue({
                 status: 200,
                 data: {

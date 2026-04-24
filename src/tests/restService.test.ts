@@ -574,8 +574,22 @@ describe('RestService', () => {
                 await svc.connect();
 
                 expect(authSpy).not.toHaveBeenCalled();
-                expect(instance.get).toHaveBeenCalledWith('/Configuration/ServerName');
+                expect(instance.get).toHaveBeenCalledWith(
+                    '/Configuration/ServerName',
+                    expect.objectContaining({ _idempotent: false })
+                );
                 expect(svc.isLoggedIn()).toBe(true);
+            });
+
+            test('connect probe is marked non-idempotent so interceptor retry skips it', async () => {
+                const { svc, instance } = makeSvc({ sessionId: 'seed' });
+                instance.get.mockResolvedValue(createMockResponse({ value: 'Server1' }));
+
+                await svc.connect();
+
+                const probeConfig = instance.get.mock.calls[0][1];
+                expect(probeConfig).toBeDefined();
+                expect(probeConfig._idempotent).toBe(false);
             });
 
             test('connect calls setupAuthentication when no session cookie is seeded', async () => {
@@ -1638,6 +1652,272 @@ describe('RestService authentication flows', () => {
             await (svc as any)._generateCpdAccessToken({ username: 'u', password: 'p' });
             const callArgs = (axios.post as jest.Mock).mock.calls[0][2];
             expect(callArgs.httpsAgent).toBeDefined();
+        });
+    });
+
+    describe('issue #81 — admin checks, utility helpers, reconnect config', () => {
+        let svcMock: any;
+        let onError: ((error: any) => Promise<any>) | undefined;
+
+        const buildService = (extra: Record<string, any> = {}) => {
+            svcMock = Object.assign(jest.fn(), {
+                get: jest.fn(),
+                post: jest.fn(),
+                patch: jest.fn(),
+                put: jest.fn(),
+                delete: jest.fn(),
+                request: jest.fn(),
+                defaults: { headers: { common: {} as Record<string, string> } },
+                interceptors: {
+                    request: { use: jest.fn() },
+                    response: {
+                        use: jest.fn((_onFulfilled: any, onRejected: any) => {
+                            onError = onRejected;
+                            return 0;
+                        })
+                    }
+                }
+            });
+            mockedAxios.create.mockReturnValue(svcMock);
+
+            return new RestService({
+                baseUrl: 'http://localhost:8879/api/v1',
+                user: 'bob',
+                password: 'pw',
+                timeout: 60,
+                ...extra
+            });
+        };
+
+        test('caches is_admin and only calls /ActiveUser/Groups once', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'ADMIN' }] })
+            );
+
+            const first = await svc.is_admin();
+            const second = await svc.is_admin();
+
+            expect(first).toBe(true);
+            expect(second).toBe(true);
+            expect(svcMock.request).toHaveBeenCalledTimes(1);
+        });
+
+        test('is_admin returns false when ADMIN group not present', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'Users' }] })
+            );
+
+            expect(await svc.is_admin()).toBe(false);
+        });
+
+        test('is_admin matches ADMIN case-insensitively in returned group names', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'admin' }] })
+            );
+
+            expect(await svc.is_admin()).toBe(true);
+        });
+
+        test('pre-populates all admin flags when configured user is ADMIN (any casing)', async () => {
+            for (const user of ['ADMIN', 'admin', 'Ad Min']) {
+                const svc = buildService({ user });
+
+                expect(await svc.is_admin()).toBe(true);
+                expect(await svc.is_data_admin()).toBe(true);
+                expect(await svc.is_security_admin()).toBe(true);
+                expect(await svc.is_ops_admin()).toBe(true);
+                expect(svcMock.request).not.toHaveBeenCalled();
+            }
+        });
+
+        test('is_data_admin matches Admin or DataAdmin case+space insensitively', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'Data Admin' }] })
+            );
+
+            expect(await svc.is_data_admin()).toBe(true);
+        });
+
+        test('is_security_admin matches SecurityAdmin', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'securityadmin' }] })
+            );
+
+            expect(await svc.is_security_admin()).toBe(true);
+        });
+
+        test('is_ops_admin matches OperationsAdmin', async () => {
+            const svc = buildService();
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'Operations Admin' }] })
+            );
+
+            expect(await svc.is_ops_admin()).toBe(true);
+        });
+
+        test('admin checks propagate errors instead of swallowing them', async () => {
+            const svc = buildService();
+            svcMock.request.mockRejectedValue(new TM1RestException('boom', 500));
+
+            await expect(svc.is_admin()).rejects.toThrow('boom');
+        });
+
+        test('sync isAdmin/isDataAdmin/isSecurityAdmin/isOpsAdmin getters reflect cached state', async () => {
+            const svc = buildService();
+            // Before any is_*() call resolves, all sync getters return false.
+            expect(svc.isAdmin).toBe(false);
+            expect(svc.isDataAdmin).toBe(false);
+            expect(svc.isSecurityAdmin).toBe(false);
+            expect(svc.isOpsAdmin).toBe(false);
+
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'ADMIN' }] })
+            );
+            await svc.is_admin();
+            await svc.is_data_admin();
+            await svc.is_security_admin();
+            await svc.is_ops_admin();
+
+            expect(svc.isAdmin).toBe(true);
+            expect(svc.isDataAdmin).toBe(true);
+            expect(svc.isSecurityAdmin).toBe(true);
+            expect(svc.isOpsAdmin).toBe(true);
+        });
+
+        test('concurrent is_*_admin() calls coalesce onto a single /ActiveUser/Groups request', async () => {
+            const svc = buildService();
+            // Non-ADMIN user so pre-populated fast-path does not apply.
+            svcMock.request.mockResolvedValue(
+                createMockResponse({ value: [{ Name: 'Users' }] })
+            );
+
+            const [a, b, c, d] = await Promise.all([
+                svc.is_admin(),
+                svc.is_data_admin(),
+                svc.is_security_admin(),
+                svc.is_ops_admin()
+            ]);
+
+            expect([a, b, c, d]).toEqual([false, false, false, false]);
+            expect(svcMock.request).toHaveBeenCalledTimes(1);
+        });
+
+        test('failed in-flight fetch does not poison subsequent calls', async () => {
+            const svc = buildService();
+            svcMock.request.mockRejectedValueOnce(new TM1RestException('boom', 500));
+            await expect(svc.is_admin()).rejects.toThrow('boom');
+
+            // In-flight promise cleared on rejection; next call hits a fresh request.
+            svcMock.request.mockResolvedValueOnce(
+                createMockResponse({ value: [{ Name: 'ADMIN' }] })
+            );
+            expect(await svc.is_admin()).toBe(true);
+        });
+
+        test('b64_decode_password roundtrips Base64 to UTF-8', () => {
+            const secret = 'p@ssw0rd_äß';
+            const encoded = Buffer.from(secret, 'utf-8').toString('base64');
+
+            expect(RestService.b64_decode_password(encoded)).toBe(secret);
+        });
+
+        test('translate_to_boolean handles booleans, numbers, and strings', () => {
+            expect(RestService.translate_to_boolean(true)).toBe(true);
+            expect(RestService.translate_to_boolean(false)).toBe(false);
+            expect(RestService.translate_to_boolean(1)).toBe(true);
+            expect(RestService.translate_to_boolean(0)).toBe(false);
+            expect(RestService.translate_to_boolean('True')).toBe(true);
+            expect(RestService.translate_to_boolean('  TRUE  ')).toBe(true);
+            expect(RestService.translate_to_boolean('false')).toBe(false);
+            expect(RestService.translate_to_boolean('no')).toBe(false);
+        });
+
+        test('translate_to_boolean throws on invalid types', () => {
+            expect(() => RestService.translate_to_boolean(null)).toThrow(/Invalid argument/);
+            expect(() => RestService.translate_to_boolean(undefined)).toThrow(/Invalid argument/);
+            expect(() => RestService.translate_to_boolean({})).toThrow(/Invalid argument/);
+        });
+
+        test('add_compact_json_header inserts tm1.compact=v0 at position 1 and returns original', () => {
+            const svc = buildService();
+            const accept = 'application/json;odata.metadata=none,text/plain';
+            svcMock.defaults.headers.common['Accept'] = accept;
+
+            const original = svc.add_compact_json_header();
+
+            expect(original).toBe(accept);
+            expect(svcMock.defaults.headers.common['Accept']).toBe(
+                'application/json;tm1.compact=v0;odata.metadata=none,text/plain'
+            );
+        });
+
+        test('skips 401 reauth when reConnectOnSessionTimeout is false', async () => {
+            const svc = buildService({ reConnectOnSessionTimeout: false });
+            (svc as any).isConnected = true;
+            const reAuthSpy = jest.spyOn(svc, 'reAuthenticate');
+
+            const error401: any = {
+                response: { status: 401, statusText: 'Unauthorized', data: {} },
+                config: { _idempotent: true }
+            };
+
+            await expect(onError!(error401)).rejects.toBeInstanceOf(TM1RestException);
+            expect(reAuthSpy).not.toHaveBeenCalled();
+        });
+
+        test('skips connection-error retry when reConnectOnRemoteDisconnect is false', async () => {
+            const svc = buildService({ reConnectOnRemoteDisconnect: false });
+            (svc as any).isConnected = true;
+
+            const networkError: any = { code: 'ECONNRESET', message: 'reset', config: { _idempotent: true } };
+
+            await expect(onError!(networkError)).rejects.toBeInstanceOf(TM1RestException);
+            expect(svcMock).not.toHaveBeenCalled();
+        });
+
+        test('respects remoteDisconnectMaxRetries: stops retrying once cap reached', async () => {
+            const svc = buildService({ remoteDisconnectMaxRetries: 1 });
+            (svc as any).isConnected = true;
+
+            // canRetryRequest is gated on the per-request _retryCount; pre-seed to the cap
+            // so the next retry attempt is rejected and the error propagates as TM1RestException.
+            const requestConfig: any = { _idempotent: true, _retryCount: 1 };
+            const networkError: any = { code: 'ECONNRESET', message: 'reset', config: requestConfig };
+
+            await expect(onError!(networkError)).rejects.toBeInstanceOf(TM1RestException);
+            expect(svcMock).not.toHaveBeenCalled();
+        });
+
+        test('retryRequest clears sessionCookies so connect() re-runs setupAuthentication', async () => {
+            // Mirrors tm1py's _handle_remote_disconnect → connect() flow where
+            // connect() always re-runs auth regardless of any prior cookie
+            // state. Without clearing, connect()'s getSessionCookieValue check
+            // would skip setupAuthentication and reuse a stale cookie.
+            const svc = buildService({ remoteDisconnectMaxRetries: 1, remoteDisconnectRetryDelay: 0 });
+            (svc as any).isConnected = true;
+            (svc as any).sessionCookies.set('TM1SessionId', 'stale-cookie');
+
+            const authSpy = jest.fn().mockResolvedValue(undefined);
+            (svc as any).setupAuthentication = authSpy;
+
+            // Probe GET inside connect() succeeds; replayed request succeeds too.
+            svcMock.mockResolvedValue({ status: 200, data: {} });
+            svcMock.get.mockResolvedValue({ status: 200, data: { value: 'Server1' } });
+
+            const requestConfig: any = { _idempotent: true, headers: { Cookie: 'stale-cookie' } };
+            const networkError: any = { code: 'ECONNRESET', message: 'reset', config: requestConfig };
+
+            await onError!(networkError);
+
+            // sessionCookies cleared before connect() so setupAuthentication runs.
+            expect(authSpy).toHaveBeenCalledTimes(1);
+            // Stale Cookie header on replayed config was stripped.
+            expect(requestConfig.headers.Cookie).toBeUndefined();
         });
     });
 });
