@@ -572,3 +572,72 @@ describe('ElementAttribute.equals', () => {
         expect(a.equals(b)).toBe(false);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #70 (Subset.ts): AnonymousSubset.fromDict URL parsing
+// ---------------------------------------------------------------------------
+
+describe('AnonymousSubset.fromDict — Hierarchy@odata.bind parsing (#70)', () => {
+    test('parses dimension and hierarchy separately when names match', () => {
+        const sub = AnonymousSubset.fromDict({
+            'Hierarchy@odata.bind': "Dimensions('Region')/Hierarchies('Region')",
+            Elements: [{ Name: 'North' }]
+        });
+        expect(sub.dimensionName).toBe('Region');
+        expect(sub.hierarchyName).toBe('Region');
+    });
+
+    test('parses non-default hierarchy name (the bug from #70)', () => {
+        const sub = AnonymousSubset.fromDict({
+            'Hierarchy@odata.bind': "Dimensions('Region')/Hierarchies('Region_Alt')",
+            Expression: '{[Region].[Region_Alt].Members}'
+        });
+        expect(sub.dimensionName).toBe('Region');
+        expect(sub.hierarchyName).toBe('Region_Alt');
+    });
+
+    test('parses Hierarchy entity form correctly', () => {
+        const sub = AnonymousSubset.fromDict({
+            Hierarchy: { Name: 'Region_Alt', Dimension: { Name: 'Region' } },
+            Elements: [{ Name: 'North' }]
+        });
+        expect(sub.dimensionName).toBe('Region');
+        expect(sub.hierarchyName).toBe('Region_Alt');
+    });
+
+    test('throws for malformed URL missing Hierarchies segment', () => {
+        expect(() => AnonymousSubset.fromDict({
+            'Hierarchy@odata.bind': "Dimensions('Region')"
+        })).toThrow(/Unexpected value for 'Hierarchy@odata.bind'/);
+    });
+
+    test('throws when neither Hierarchy nor Hierarchy@odata.bind present', () => {
+        expect(() => AnonymousSubset.fromDict({})).toThrow(/must contain 'Hierarchy'/);
+    });
+
+    test('round-trip: fromDict preserves alt hierarchy through bodyAsDict', () => {
+        const sub = AnonymousSubset.fromDict({
+            'Hierarchy@odata.bind': "Dimensions('Region')/Hierarchies('Region_Alt')",
+            Elements: [{ Name: 'North' }]
+        });
+        const body = sub.bodyAsDict;
+        expect(body['Hierarchy@odata.bind']).toContain("Dimensions('Region')");
+        expect(body['Hierarchy@odata.bind']).toContain("Hierarchies('Region_Alt')");
+    });
+});
+
+describe('ViewAxisSelection.fromDict — anonymous subset with non-default hierarchy (#70)', () => {
+    test('preserves non-default hierarchy through ViewAxisSelection path', () => {
+        const dict = {
+            Subset: {
+                'Hierarchy@odata.bind': "Dimensions('Region')/Hierarchies('Region_Alt')",
+                Elements: [{ Name: 'North' }]
+            }
+        };
+        const sel = ViewAxisSelection.fromDict(dict);
+        expect(sel.dimensionName).toBe('Region');
+        const anon = sel.subset as AnonymousSubset;
+        expect(anon.dimensionName).toBe('Region');
+        expect(anon.hierarchyName).toBe('Region_Alt');
+    });
+});

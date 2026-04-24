@@ -1,5 +1,5 @@
 import { TM1Object } from './TM1Object';
-import { formatUrl, readObjectNameFromUrl } from '../utils/Utils';
+import { formatUrl, parseODataBindUrl } from '../utils/Utils';
 
 export class Subset extends TM1Object {
     /** Abstraction of the TM1 Subset (dynamic and static)
@@ -239,15 +239,16 @@ export class AnonymousSubset extends Subset {
             hierarchyName = subsetAsDict["Hierarchy"]["Name"];
         } else if ("Hierarchy@odata.bind" in subsetAsDict) {
             const hierarchyOdata = subsetAsDict["Hierarchy@odata.bind"];
+            const segments = parseODataBindUrl(hierarchyOdata);
 
-            dimensionName = readObjectNameFromUrl(hierarchyOdata);
-            hierarchyName = readObjectNameFromUrl(hierarchyOdata);
-
-            if (!dimensionName || !hierarchyName) {
+            if (segments.length < 2 || !segments[0] || !segments[1]) {
                 throw new Error(
                     `Unexpected value for 'Hierarchy@odata.bind' property in subset dict: '${hierarchyOdata}'`
                 );
             }
+
+            dimensionName = segments[0];
+            hierarchyName = segments[1];
         } else {
             throw new Error("Subset dict must contain 'Hierarchy' or 'Hierarchy@odata.bind' as key");
         }
