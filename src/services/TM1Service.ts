@@ -8,6 +8,19 @@ import { BulkService } from './BulkService';
 import { AsyncOperationService } from './AsyncOperationService';
 import { PowerBiService } from './PowerBiService';
 import { ApplicationService } from './ApplicationService';
+import { AnnotationService } from './AnnotationService';
+import { ChoreService } from './ChoreService';
+import { GitService } from './GitService';
+import { SandboxService } from './SandboxService';
+import { JobService } from './JobService';
+import { UserService } from './UserService';
+import { ThreadService } from './ThreadService';
+import { TransactionLogService } from './TransactionLogService';
+import { MessageLogService } from './MessageLogService';
+import { ConfigurationService } from './ConfigurationService';
+import { AuditLogService } from './AuditLogService';
+import { LoggerService } from './LoggerService';
+import { User } from '../objects/User';
 import {
     CubeService,
     ElementService,
@@ -26,6 +39,20 @@ export class TM1Service {
     private _server?: ServerService;
     private _monitoring?: MonitoringService;
 
+    private _annotations?: AnnotationService;
+    private _chores?: ChoreService;
+    private _git?: GitService;
+    private _applications?: ApplicationService;
+    private _sandboxes?: SandboxService;
+    private _jobs?: JobService;
+    private _users?: UserService;
+    private _threads?: ThreadService;
+    private _transactionLogs?: TransactionLogService;
+    private _messageLogs?: MessageLogService;
+    private _configuration?: ConfigurationService;
+    private _auditLogs?: AuditLogService;
+    private _loggers?: LoggerService;
+
     public dimensions: DimensionService;
     public hierarchies: HierarchyService;
     public subsets: SubsetService;
@@ -42,7 +69,6 @@ export class TM1Service {
     public bulk: BulkService;
     public asyncOperations: AsyncOperationService;
     public powerbi: PowerBiService;
-    public applications: ApplicationService;
 
     constructor(config: RestServiceConfig) {
         this._tm1Rest = new RestService(config);
@@ -69,7 +95,6 @@ export class TM1Service {
         this.debugger = new DebuggerService(this._tm1Rest);
         this.bulk = new BulkService(this._tm1Rest, this.cells, this.views);
         this.powerbi = new PowerBiService(this._tm1Rest);
-        this.applications = new ApplicationService(this._tm1Rest);
     }
 
     public async connect(): Promise<void> {
@@ -98,9 +123,99 @@ export class TM1Service {
         return this._monitoring;
     }
 
-    public async whoami(): Promise<string> {
-        const user = await this.security.getCurrentUser();
-        return user.name;
+    public get annotations(): AnnotationService {
+        if (!this._annotations) {
+            this._annotations = new AnnotationService(this._tm1Rest);
+        }
+        return this._annotations;
+    }
+
+    public get chores(): ChoreService {
+        if (!this._chores) {
+            this._chores = new ChoreService(this._tm1Rest);
+        }
+        return this._chores;
+    }
+
+    public get git(): GitService {
+        if (!this._git) {
+            this._git = new GitService(this._tm1Rest);
+        }
+        return this._git;
+    }
+
+    public get applications(): ApplicationService {
+        if (!this._applications) {
+            this._applications = new ApplicationService(this._tm1Rest);
+        }
+        return this._applications;
+    }
+
+    public get sandboxes(): SandboxService {
+        if (!this._sandboxes) {
+            this._sandboxes = new SandboxService(this._tm1Rest);
+        }
+        return this._sandboxes;
+    }
+
+    public get jobs(): JobService {
+        if (!this._jobs) {
+            this._jobs = new JobService(this._tm1Rest);
+        }
+        return this._jobs;
+    }
+
+    public get users(): UserService {
+        if (!this._users) {
+            this._users = new UserService(this._tm1Rest);
+        }
+        return this._users;
+    }
+
+    public get threads(): ThreadService {
+        if (!this._threads) {
+            this._threads = new ThreadService(this._tm1Rest);
+        }
+        return this._threads;
+    }
+
+    public get transactionLogs(): TransactionLogService {
+        if (!this._transactionLogs) {
+            this._transactionLogs = new TransactionLogService(this._tm1Rest);
+        }
+        return this._transactionLogs;
+    }
+
+    public get messageLogs(): MessageLogService {
+        if (!this._messageLogs) {
+            this._messageLogs = new MessageLogService(this._tm1Rest);
+        }
+        return this._messageLogs;
+    }
+
+    public get configuration(): ConfigurationService {
+        if (!this._configuration) {
+            this._configuration = new ConfigurationService(this._tm1Rest);
+        }
+        return this._configuration;
+    }
+
+    public get auditLogs(): AuditLogService {
+        if (!this._auditLogs) {
+            this._auditLogs = new AuditLogService(this._tm1Rest);
+        }
+        return this._auditLogs;
+    }
+
+    public get loggers(): LoggerService {
+        if (!this._loggers) {
+            this._loggers = new LoggerService(this._tm1Rest);
+        }
+        return this._loggers;
+    }
+
+    public async whoami(): Promise<User> {
+        return await this.security.getCurrentUser();
     }
 
     public async getMetadata(): Promise<any> {
@@ -108,9 +223,12 @@ export class TM1Service {
         return response.data;
     }
 
+    public get version(): string | undefined {
+        return this._tm1Rest.version;
+    }
+
     public async getVersion(): Promise<string> {
-        const response = await this._tm1Rest.get('/Configuration/ProductVersion');
-        return response.data.value;
+        return await this._tm1Rest.getVersion();
     }
 
     public get connection(): RestService {
@@ -133,9 +251,13 @@ export class TM1Service {
         return this._tm1Rest.isLoggedIn();
     }
 
-    public async reAuthenticate(): Promise<void> {
+    public async reConnect(): Promise<void> {
         await this._tm1Rest.disconnect();
         await this._tm1Rest.connect();
+    }
+
+    public async reAuthenticate(): Promise<void> {
+        await this.reConnect();
     }
 
     // For use with try-with pattern in async contexts

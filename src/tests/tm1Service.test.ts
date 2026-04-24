@@ -6,6 +6,7 @@
 
 import { TM1Service } from '../services/TM1Service';
 import { RestService, RestServiceConfig } from '../services/RestService';
+import { User, UserType } from '../objects/User';
 
 // Mock all service dependencies
 jest.mock('../services/RestService');
@@ -22,6 +23,19 @@ jest.mock('../services/FileService');
 jest.mock('../services/SessionService');
 jest.mock('../services/ServerService');
 jest.mock('../services/MonitoringService');
+jest.mock('../services/AnnotationService');
+jest.mock('../services/ChoreService');
+jest.mock('../services/GitService');
+jest.mock('../services/ApplicationService');
+jest.mock('../services/SandboxService');
+jest.mock('../services/JobService');
+jest.mock('../services/UserService');
+jest.mock('../services/ThreadService');
+jest.mock('../services/TransactionLogService');
+jest.mock('../services/MessageLogService');
+jest.mock('../services/ConfigurationService');
+jest.mock('../services/AuditLogService');
+jest.mock('../services/LoggerService');
 
 describe('TM1Service', () => {
     let tm1Service: TM1Service;
@@ -61,6 +75,8 @@ describe('TM1Service', () => {
             setSandbox: jest.fn(),
             getSandbox: jest.fn().mockReturnValue('test-sandbox'),
             isLoggedIn: jest.fn().mockReturnValue(true),
+            getVersion: jest.fn().mockResolvedValue('12.0.0'),
+            version: undefined,
         } as any;
 
         // Mock RestService constructor
@@ -145,16 +161,18 @@ describe('TM1Service', () => {
     });
 
     describe('User and Authentication', () => {
-        test('should get current user with whoami', async () => {
-            // Mock security service getCurrentUser method
+        test('should get current user as User object with whoami', async () => {
+            const expectedUser = new User('test-user', ['ADMIN'], 'Test User', undefined, UserType.Admin, true);
             const mockSecurityService = {
-                getCurrentUser: jest.fn().mockResolvedValue({ name: 'test-user' })
+                getCurrentUser: jest.fn().mockResolvedValue(expectedUser)
             };
             (tm1Service.security as any) = mockSecurityService;
 
             const result = await tm1Service.whoami();
-            
-            expect(result).toBe('test-user');
+
+            expect(result).toBeInstanceOf(User);
+            expect(result.name).toBe('test-user');
+            expect(result).toBe(expectedUser);
             expect(mockSecurityService.getCurrentUser).toHaveBeenCalledTimes(1);
         });
 
@@ -191,13 +209,13 @@ describe('TM1Service', () => {
             expect(mockRestService.get).toHaveBeenCalledWith('/$metadata');
         });
 
-        test('should get TM1 version', async () => {
-            mockRestService.get.mockResolvedValueOnce(mockResponse({ value: '12.0.0' }));
+        test('should get TM1 version via cached RestService.getVersion', async () => {
+            mockRestService.getVersion.mockResolvedValueOnce('12.0.0');
 
             const result = await tm1Service.getVersion();
-            
+
             expect(result).toBe('12.0.0');
-            expect(mockRestService.get).toHaveBeenCalledWith('/Configuration/ProductVersion');
+            expect(mockRestService.getVersion).toHaveBeenCalledTimes(1);
         });
 
         test('should handle metadata retrieval errors', async () => {
@@ -209,7 +227,7 @@ describe('TM1Service', () => {
 
         test('should handle version retrieval errors', async () => {
             const versionError = new Error('Version not available');
-            mockRestService.get.mockRejectedValueOnce(versionError);
+            mockRestService.getVersion.mockRejectedValueOnce(versionError);
 
             await expect(tm1Service.getVersion()).rejects.toThrow('Version not available');
         });
@@ -356,6 +374,85 @@ describe('TM1Service', () => {
 
             expect(server1).toBe(server2);
             expect(monitoring1).toBe(monitoring2);
+        });
+    });
+
+    describe('Lazy Services (Issue #82)', () => {
+        const lazyServiceNames: Array<keyof TM1Service> = [
+            'annotations',
+            'chores',
+            'git',
+            'applications',
+            'sandboxes',
+            'jobs',
+            'users',
+            'threads',
+            'transactionLogs',
+            'messageLogs',
+            'configuration',
+            'auditLogs',
+            'loggers',
+        ];
+
+        test.each(lazyServiceNames)('should lazy-initialize %s service', (serviceName) => {
+            const instance = tm1Service[serviceName];
+            expect(instance).toBeDefined();
+        });
+
+        test.each(lazyServiceNames)('should cache %s service instance across accesses', (serviceName) => {
+            const first = tm1Service[serviceName];
+            const second = tm1Service[serviceName];
+            expect(second).toBe(first);
+        });
+    });
+
+    describe('Version Getter (Issue #82)', () => {
+        test('should expose cached version via sync getter', () => {
+            Object.defineProperty(mockRestService, 'version', {
+                get: () => '11.8.0',
+                configurable: true,
+            });
+
+            expect(tm1Service.version).toBe('11.8.0');
+        });
+
+        test('should return undefined when version has not been fetched yet', () => {
+            Object.defineProperty(mockRestService, 'version', {
+                get: () => undefined,
+                configurable: true,
+            });
+
+            expect(tm1Service.version).toBeUndefined();
+        });
+    });
+
+    describe('reConnect (Issue #82)', () => {
+        test('should disconnect then connect', async () => {
+            await tm1Service.reConnect();
+
+            expect(mockRestService.disconnect).toHaveBeenCalledTimes(1);
+            expect(mockRestService.connect).toHaveBeenCalledTimes(1);
+
+            const disconnectOrder = mockRestService.disconnect.mock.invocationCallOrder[0];
+            const connectOrder = mockRestService.connect.mock.invocationCallOrder[0];
+            expect(disconnectOrder).toBeLessThan(connectOrder);
+        });
+
+        test('should not call connect when disconnect fails', async () => {
+            const disconnectError = new Error('Disconnect failed');
+            mockRestService.disconnect.mockRejectedValueOnce(disconnectError);
+
+            await expect(tm1Service.reConnect()).rejects.toThrow('Disconnect failed');
+            expect(mockRestService.connect).not.toHaveBeenCalled();
+        });
+
+        test('should reject when connect fails after successful disconnect', async () => {
+            mockRestService.disconnect.mockResolvedValueOnce(void 0);
+            mockRestService.connect.mockRejectedValueOnce(new Error('Connect failed'));
+
+            await expect(tm1Service.reConnect()).rejects.toThrow('Connect failed');
+            expect(mockRestService.disconnect).toHaveBeenCalledTimes(1);
+            expect(mockRestService.connect).toHaveBeenCalledTimes(1);
         });
     });
 });
