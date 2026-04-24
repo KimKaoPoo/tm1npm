@@ -241,7 +241,7 @@ export class AnonymousSubset extends Subset {
             const hierarchyOdata = subsetAsDict["Hierarchy@odata.bind"];
             const segments = parseODataBindUrl(hierarchyOdata);
 
-            if (segments.length < 2 || !segments[0] || !segments[1]) {
+            if (segments.length < 2) {
                 throw new Error(
                     `Unexpected value for 'Hierarchy@odata.bind' property in subset dict: '${hierarchyOdata}'`
                 );
