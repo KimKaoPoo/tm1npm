@@ -240,14 +240,28 @@ export class AnonymousSubset extends Subset {
         } else if ("Hierarchy@odata.bind" in subsetAsDict) {
             const hierarchyOdata = subsetAsDict["Hierarchy@odata.bind"];
 
-            dimensionName = readObjectNameFromUrl(hierarchyOdata);
-            hierarchyName = readObjectNameFromUrl(hierarchyOdata);
+            // tm1py parity (TM1py/Objects/Subset.py): two read_object_name_from_url
+            // calls with these exact regex patterns. Both return match.group(1) (the
+            // first capture group), so both names resolve to the dimension. This
+            // mirrors tm1py's behavior — including the latent bug where a non-default
+            // hierarchy name in the URL is dropped. Do NOT "fix" without tm1py.
+            const dimResult = readObjectNameFromUrl(
+                hierarchyOdata,
+                /^Dimensions\('(.*?)'\)\/Hierarchies\('(.+?)'\)/
+            );
+            const hierResult = readObjectNameFromUrl(
+                hierarchyOdata,
+                /^Dimensions\('(.+?)'\)\/Hierarchies\('(.*?)'\)/
+            );
 
-            if (!dimensionName || !hierarchyName) {
+            if (!dimResult || !hierResult) {
                 throw new Error(
                     `Unexpected value for 'Hierarchy@odata.bind' property in subset dict: '${hierarchyOdata}'`
                 );
             }
+
+            dimensionName = dimResult;
+            hierarchyName = hierResult;
         } else {
             throw new Error("Subset dict must contain 'Hierarchy' or 'Hierarchy@odata.bind' as key");
         }
