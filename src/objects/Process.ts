@@ -15,7 +15,7 @@ export class Process extends TM1Object {
     public static readonly MAX_STATEMENTS_POST_11_8_015 = 100_000;
 
     private _name: string;
-    private _hasSecurityAccess: boolean;
+    private _hasSecurityAccess: boolean | undefined;
     private _uiData: string;
     private _parameters: any[];
     private _variables: any[];
@@ -28,7 +28,7 @@ export class Process extends TM1Object {
     private _datasourceAsciiDecimalSeparator: string;
     private _datasourceAsciiDelimiterChar: string;
     private _datasourceAsciiDelimiterType: string;
-    private _datasourceAsciiHeaderRecords: number;
+    private _datasourceAsciiHeaderRecords: number | string;
     private _datasourceAsciiQuoteCharacter: string;
     private _datasourceAsciiThousandSeparator: string;
     private _datasourceDataSourceNameForClient: string;
@@ -36,7 +36,7 @@ export class Process extends TM1Object {
     private _datasourcePassword: string;
     private _datasourceUserName: string;
     private _datasourceQuery: string;
-    private _datasourceUsesUnicode: boolean;
+    private _datasourceUsesUnicode: boolean | string;
     private _datasourceView: string;
     private _datasourceSubset: string;
     private _datasourceJsonRootPointer: string;
@@ -60,7 +60,7 @@ export class Process extends TM1Object {
 
     constructor(
         name: string,
-        hasSecurityAccess: boolean = false,
+        hasSecurityAccess: boolean | undefined = false,
         uiData: string = "CubeAction=1511\fDataAction=1503\fCubeLogChanges=0\f",
         parameters?: Iterable<any>,
         variables?: Iterable<any>,
@@ -73,7 +73,7 @@ export class Process extends TM1Object {
         datasourceAsciiDecimalSeparator: string = '.',
         datasourceAsciiDelimiterChar: string = ';',
         datasourceAsciiDelimiterType: string = 'Character',
-        datasourceAsciiHeaderRecords: number = 1,
+        datasourceAsciiHeaderRecords: number | string = 1,
         datasourceAsciiQuoteCharacter: string = '',
         datasourceAsciiThousandSeparator: string = ',',
         datasourceDataSourceNameForClient: string = '',
@@ -81,7 +81,7 @@ export class Process extends TM1Object {
         datasourcePassword: string = '',
         datasourceUserName: string = '',
         datasourceQuery: string = '',
-        datasourceUsesUnicode: boolean = true,
+        datasourceUsesUnicode: boolean | string = true,
         datasourceView: string = '',
         datasourceSubset: string = '',
         datasourceJsonRootPointer: string = '',
@@ -123,11 +123,18 @@ export class Process extends TM1Object {
         this._uiData = uiData;
         this._parameters = parameters ? Array.from(parameters) : [];
         this._variables = variables ? Array.from(variables) : [];
-        this._variablesUiData = variablesUiData ? Array.from(variablesUiData) : [];
-        this._prologProcedure = prologProcedure;
-        this._metadataProcedure = metadataProcedure;
-        this._dataProcedure = dataProcedure;
-        this._epilogProcedure = epilogProcedure;
+        if (variablesUiData) {
+            // Handle encoding issue in variable_ui_data for async requests
+            this._variablesUiData = Array.from(variablesUiData).map((entry: any) =>
+                typeof entry === 'string' ? entry.replace('€', '\f') : entry
+            );
+        } else {
+            this._variablesUiData = [];
+        }
+        this._prologProcedure = Process.addGeneratedStringToCode(prologProcedure);
+        this._metadataProcedure = Process.addGeneratedStringToCode(metadataProcedure);
+        this._dataProcedure = Process.addGeneratedStringToCode(dataProcedure);
+        this._epilogProcedure = Process.addGeneratedStringToCode(epilogProcedure);
         this._datasourceType = datasourceType;
         this._datasourceAsciiDecimalSeparator = datasourceAsciiDecimalSeparator;
         this._datasourceAsciiDelimiterChar = datasourceAsciiDelimiterChar;
@@ -155,11 +162,11 @@ export class Process extends TM1Object {
         this._name = value;
     }
 
-    public get hasSecurityAccess(): boolean {
+    public get hasSecurityAccess(): boolean | undefined {
         return this._hasSecurityAccess;
     }
 
-    public set hasSecurityAccess(value: boolean) {
+    public set hasSecurityAccess(value: boolean | undefined) {
         this._hasSecurityAccess = value;
     }
 
@@ -241,35 +248,108 @@ export class Process extends TM1Object {
          * :param process_as_dict: process as dict
          * :return: process, an instance of this class
          */
+        const ds = processAsDict['DataSource'] ?? {};
         return new Process(
-            processAsDict.Name,
-            processAsDict.HasSecurityAccess || false,
-            processAsDict.UIData || "CubeAction=1511\fDataAction=1503\fCubeLogChanges=0\f",
-            processAsDict.Parameters || [],
-            processAsDict.Variables || [],
-            processAsDict.VariablesUIData || [],
-            processAsDict.PrologProcedure || '',
-            processAsDict.MetadataProcedure || '',
-            processAsDict.DataProcedure || '',
-            processAsDict.EpilogProcedure || '',
-            processAsDict.DataSource?.Type || 'None',
-            processAsDict.DataSource?.AsciiDecimalSeparator || '.',
-            processAsDict.DataSource?.AsciiDelimiterChar || ';',
-            processAsDict.DataSource?.AsciiDelimiterType || 'Character',
-            processAsDict.DataSource?.AsciiHeaderRecords || 1,
-            processAsDict.DataSource?.AsciiQuoteCharacter || '',
-            processAsDict.DataSource?.AsciiThousandSeparator || ',',
-            processAsDict.DataSource?.DataSourceNameForClient || '',
-            processAsDict.DataSource?.DataSourceNameForServer || '',
-            processAsDict.DataSource?.Password || '',
-            processAsDict.DataSource?.UserName || '',
-            processAsDict.DataSource?.Query || '',
-            processAsDict.DataSource?.UsesUnicode !== false,
-            processAsDict.DataSource?.View || '',
-            processAsDict.DataSource?.Subset || '',
-            processAsDict.DataSource?.JsonRootPointer || '',
-            processAsDict.DataSource?.JsonVariableMapping || ''
+            processAsDict['Name'],
+            processAsDict['HasSecurityAccess'],
+            processAsDict['UIData'] ?? '',
+            processAsDict['Parameters'],
+            processAsDict['Variables'],
+            processAsDict['VariablesUIData'] ?? '',
+            processAsDict['PrologProcedure'],
+            processAsDict['MetadataProcedure'],
+            processAsDict['DataProcedure'],
+            processAsDict['EpilogProcedure'],
+            ds['Type'] ?? '',
+            ds['asciiDecimalSeparator'] ?? '',
+            ds['asciiDelimiterChar'] ?? '',
+            ds['asciiDelimiterType'] ?? '',
+            ds['asciiHeaderRecords'] ?? '',
+            ds['asciiQuoteCharacter'] ?? '',
+            ds['asciiThousandSeparator'] ?? '',
+            ds['dataSourceNameForClient'] ?? '',
+            ds['dataSourceNameForServer'] ?? '',
+            ds['password'] ?? '',
+            ds['userName'] ?? '',
+            ds['query'] ?? '',
+            ds['usesUnicode'] ?? '',
+            ds['view'] ?? '',
+            ds['subset'] ?? '',
+            ds['jsonRootPointer'] ?? '',
+            ds['jsonVariableMapping'] ?? ''
         );
+    }
+
+    public addVariable(name: string, variableType: string): void {
+        // variable consists of actual variable and UI-Information ('ignore','other', etc.)
+        // 1. handle Variable info
+        const variable = {
+            Name: name,
+            Type: variableType,
+            Position: this._variables.length + 1,
+            StartByte: 0,
+            EndByte: 0,
+        };
+        this._variables.push(variable);
+        // 2. handle UI info
+        const varType = variableType === 'Numeric' ? 33 : 32;
+        // '\f' !
+        const variableUiData = 'VarType=' + varType + '\f' + 'ColType=' + 827 + '\f';
+        /*
+         * mapping VariableUIData:
+         *     VarType 33 -> Numeric
+         *     VarType 32 -> String
+         *     ColType 827 -> Other
+         */
+        this._variablesUiData.push(variableUiData);
+    }
+
+    public removeVariable(name: string): void {
+        for (const variable of this._variables.slice()) {
+            if (variable['Name'] === name) {
+                const vuid = this._variablesUiData[this._variables.indexOf(variable)];
+                const vuidIdx = this._variablesUiData.indexOf(vuid);
+                if (vuidIdx !== -1) {
+                    this._variablesUiData.splice(vuidIdx, 1);
+                }
+                const varIdx = this._variables.indexOf(variable);
+                if (varIdx !== -1) {
+                    this._variables.splice(varIdx, 1);
+                }
+            }
+        }
+    }
+
+    public addParameter(
+        name: string,
+        prompt: string,
+        value: string | number,
+        parameterType?: string
+    ): void {
+        if (!parameterType) {
+            parameterType = typeof value === 'string' ? 'String' : 'Numeric';
+        }
+        const parameter = { Name: name, Prompt: prompt, Value: value, Type: parameterType };
+        this._parameters.push(parameter);
+    }
+
+    public removeParameter(name: string): void {
+        for (const parameter of this._parameters.slice()) {
+            if (parameter['Name'] === name) {
+                const idx = this._parameters.indexOf(parameter);
+                if (idx !== -1) {
+                    this._parameters.splice(idx, 1);
+                }
+            }
+        }
+    }
+
+    public dropParameterTypes(): void {
+        for (let p = 0; p < this._parameters.length; p++) {
+            if ('Type' in this._parameters[p]) {
+                delete this._parameters[p]['Type'];
+            }
+        }
     }
 
     public get body(): string {
@@ -281,40 +361,76 @@ export class Process extends TM1Object {
     }
 
     private constructBody(): any {
-        const body: any = {
+        // general parameters — key order matches tm1py _construct_body_as_dict
+        const bodyAsDict: any = {
             Name: this._name,
-            HasSecurityAccess: this._hasSecurityAccess,
-            UIData: this._uiData,
-            Parameters: this._parameters,
-            Variables: this._variables,
-            VariablesUIData: this._variablesUiData,
             PrologProcedure: this._prologProcedure,
             MetadataProcedure: this._metadataProcedure,
             DataProcedure: this._dataProcedure,
-            EpilogProcedure: this._epilogProcedure
+            EpilogProcedure: this._epilogProcedure,
+            HasSecurityAccess: this._hasSecurityAccess,
+            UIData: this._uiData,
+            DataSource: {},
+            Parameters: this._parameters,
+            Variables: this._variables,
+            VariablesUIData: this._variablesUiData,
         };
 
-        // Add DataSource information
-        body.DataSource = {
-            Type: this._datasourceType,
-            AsciiDecimalSeparator: this._datasourceAsciiDecimalSeparator,
-            AsciiDelimiterChar: this._datasourceAsciiDelimiterChar,
-            AsciiDelimiterType: this._datasourceAsciiDelimiterType,
-            AsciiHeaderRecords: this._datasourceAsciiHeaderRecords,
-            AsciiQuoteCharacter: this._datasourceAsciiQuoteCharacter,
-            AsciiThousandSeparator: this._datasourceAsciiThousandSeparator,
-            DataSourceNameForClient: this._datasourceDataSourceNameForClient,
-            DataSourceNameForServer: this._datasourceDataSourceNameForServer,
-            Password: this._datasourcePassword,
-            UserName: this._datasourceUserName,
-            Query: this._datasourceQuery,
-            UsesUnicode: this._datasourceUsesUnicode,
-            View: this._datasourceView,
-            Subset: this._datasourceSubset,
-            JsonRootPointer: this._datasourceJsonRootPointer,
-            JsonVariableMapping: this._datasourceJsonVariableMapping
-        };
+        // specific parameters (depending on datasource type)
+        if (this._datasourceType === 'ASCII') {
+            bodyAsDict['DataSource'] = {
+                Type: this._datasourceType,
+                asciiDecimalSeparator: this._datasourceAsciiDecimalSeparator,
+                asciiDelimiterChar: this._datasourceAsciiDelimiterChar,
+                asciiDelimiterType: this._datasourceAsciiDelimiterType,
+                asciiHeaderRecords: this._datasourceAsciiHeaderRecords,
+                asciiQuoteCharacter: this._datasourceAsciiQuoteCharacter,
+                asciiThousandSeparator: this._datasourceAsciiThousandSeparator,
+                dataSourceNameForClient: this._datasourceDataSourceNameForClient,
+                dataSourceNameForServer: this._datasourceDataSourceNameForServer,
+            };
+            if (this._datasourceAsciiDelimiterType === 'FixedWidth') {
+                delete bodyAsDict['DataSource']['asciiDelimiterChar'];
+            }
+        } else if (this._datasourceType === 'None') {
+            bodyAsDict['DataSource'] = { Type: 'None' };
+        } else if (this._datasourceType === 'ODBC') {
+            bodyAsDict['DataSource'] = {
+                Type: this._datasourceType,
+                dataSourceNameForClient: this._datasourceDataSourceNameForClient,
+                dataSourceNameForServer: this._datasourceDataSourceNameForServer,
+                userName: this._datasourceUserName,
+                password: this._datasourcePassword,
+                query: this._datasourceQuery,
+                usesUnicode: this._datasourceUsesUnicode,
+            };
+        } else if (this._datasourceType === 'TM1CubeView') {
+            bodyAsDict['DataSource'] = {
+                Type: this._datasourceType,
+                // Note: tm1py uses _datasource_data_source_name_for_server for BOTH client and server
+                dataSourceNameForClient: this._datasourceDataSourceNameForServer,
+                dataSourceNameForServer: this._datasourceDataSourceNameForServer,
+                view: this._datasourceView,
+            };
+        } else if (this._datasourceType === 'TM1DimensionSubset') {
+            bodyAsDict['DataSource'] = {
+                Type: this._datasourceType,
+                // Note: tm1py uses _datasource_data_source_name_for_server for BOTH client and server
+                dataSourceNameForClient: this._datasourceDataSourceNameForServer,
+                dataSourceNameForServer: this._datasourceDataSourceNameForServer,
+                subset: this._datasourceSubset,
+            };
+        } else if (this._datasourceType === 'JSON') {
+            bodyAsDict['DataSource'] = {
+                Type: this._datasourceType,
+                // Note: tm1py uses _datasource_data_source_name_for_server for BOTH client and server
+                dataSourceNameForClient: this._datasourceDataSourceNameForServer,
+                dataSourceNameForServer: this._datasourceDataSourceNameForServer,
+                jsonRootPointer: this._datasourceJsonRootPointer,
+                jsonVariableMapping: this._datasourceJsonVariableMapping,
+            };
+        }
 
-        return body;
+        return bodyAsDict;
     }
 }

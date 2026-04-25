@@ -370,7 +370,9 @@ describe('DebuggerService and Enhanced Process Debugging (Issue #13)', () => {
                 expect(plan.hasVariables).toBe(true);
                 expect(plan.variableCount).toBe(1);
                 expect(plan.procedures.hasPrologProcedure).toBe(true);
-                expect(plan.estimatedComplexity).toBe('Medium');
+                // addGeneratedStringToCode prepends ~73 chars to each procedure tab,
+                // so actual total exceeds 2000 → 'High'
+                expect(plan.estimatedComplexity).toBe('High');
             });
         });
     });
