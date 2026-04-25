@@ -269,9 +269,11 @@ describe('Object Model - Improved Coverage', () => {
             const dimensions = ['Time', 'Account'];
             const cube = new Cube('TestCube', dimensions);
             const body = JSON.parse(cube.body);
-            
+
             expect(body.Name).toBe('TestCube');
-            expect(body.Dimensions).toHaveLength(2);
+            expect(body['Dimensions@odata.bind']).toHaveLength(2);
+            expect(body['Dimensions@odata.bind'][0]).toBe("Dimensions('Time')");
+            expect(body['Dimensions@odata.bind'][1]).toBe("Dimensions('Account')");
         });
 
         test('should create cube from dictionary', () => {

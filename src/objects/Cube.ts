@@ -113,7 +113,7 @@ export class Cube extends TM1Object {
     private constructBody(): any {
         const body: any = {
             Name: this._name,
-            Dimensions: this._dimensions.map(dim => ({ Name: dim }))
+            "Dimensions@odata.bind": this._dimensions.map(dim => `Dimensions('${dim}')`)
         };
 
         if (this._rules) {
