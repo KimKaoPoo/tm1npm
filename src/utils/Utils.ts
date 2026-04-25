@@ -358,6 +358,10 @@ export function verifyVersion(actualVersion: string, requiredVersion: string): b
     return true; // Equal versions
 }
 
+// Overloads preserve the narrow `string` return for the existing no-pattern form
+// (published npm API — widening to `string | null` would break downstream consumers).
+export function readObjectNameFromUrl(url: string): string;
+export function readObjectNameFromUrl(url: string, pattern: string | RegExp): string | null;
 export function readObjectNameFromUrl(url: string, pattern?: string | RegExp): string | null {
     // tm1py parity: when `pattern` is provided, behave like
     // `re.match(pattern, url)` + `unquote(match.group(1))` — anchored at start,
@@ -368,7 +372,13 @@ export function readObjectNameFromUrl(url: string, pattern?: string | RegExp): s
             : pattern;
         const m = url.match(re);
         if (!m || m[1] === undefined) return null;
-        return decodeURIComponent(m[1]);
+        try {
+            return decodeURIComponent(m[1]);
+        } catch {
+            // tm1py parity: urllib.parse.unquote is permissive on malformed %XX
+            // (returns the original string). decodeURIComponent throws — fall back.
+            return m[1];
+        }
     }
     // Backward-compat: extract first ('name') segment, return '' on no match
     const match = url.match(/\('([^']+)'\)/);

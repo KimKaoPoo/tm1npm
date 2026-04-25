@@ -10,6 +10,7 @@ import { MDXView } from '../objects/MDXView';
 import { Hierarchy } from '../objects/Hierarchy';
 import { Element, ElementType } from '../objects/Element';
 import { ElementAttribute, ElementAttributeType } from '../objects/ElementAttribute';
+import { readObjectNameFromUrl } from '../utils/Utils';
 
 // ---------------------------------------------------------------------------
 // Bug 1 & 2 (Axis.ts): ViewAxisSelection.fromDict and ViewTitleSelection.fromDict
@@ -656,5 +657,44 @@ describe('ViewAxisSelection.fromDict — anonymous subset with non-default hiera
         const anon = sel.subset as AnonymousSubset;
         expect(anon.dimensionName).toBe('Region');
         expect(anon.hierarchyName).toBe('Region');
+    });
+});
+
+describe('readObjectNameFromUrl — tm1py parity (#70)', () => {
+    test('with pattern: URL-decodes percent-encoded names (mirrors urllib.parse.unquote)', () => {
+        const result = readObjectNameFromUrl(
+            "Dimensions('My%20Dim')/Hierarchies('H')",
+            /^Dimensions\('(.+?)'\)/
+        );
+        expect(result).toBe('My Dim');
+    });
+
+    test('with pattern: passes through malformed %XX (urllib.unquote permissive parity)', () => {
+        // Python: urllib.parse.unquote('Bad%ZZName') === 'Bad%ZZName'
+        // JS decodeURIComponent throws on malformed %XX — we catch and pass through.
+        const result = readObjectNameFromUrl(
+            "Dimensions('Bad%ZZName')/Hierarchies('H')",
+            /^Dimensions\('(.+?)'\)/
+        );
+        expect(result).toBe('Bad%ZZName');
+    });
+
+    test('with pattern: returns null on no match (mirrors re.match returning None)', () => {
+        const result = readObjectNameFromUrl(
+            "Foo('A')/Bar('B')",
+            /^Dimensions\('(.+?)'\)/
+        );
+        expect(result).toBeNull();
+    });
+
+    test('without pattern: preserves existing string return type (no API break)', () => {
+        // Type-level guarantee via overload — runtime check that result is still a string.
+        const result: string = readObjectNameFromUrl("Dimensions('Region')");
+        expect(result).toBe('Region');
+    });
+
+    test('without pattern: returns empty string on no match (backward compat)', () => {
+        const result: string = readObjectNameFromUrl('');
+        expect(result).toBe('');
     });
 });
