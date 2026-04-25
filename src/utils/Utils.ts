@@ -358,8 +358,19 @@ export function verifyVersion(actualVersion: string, requiredVersion: string): b
     return true; // Equal versions
 }
 
-export function readObjectNameFromUrl(url: string): string {
-    // Extract object name from URL like "/Dimensions('DimName')" -> "DimName"
+export function readObjectNameFromUrl(url: string, pattern?: string | RegExp): string | null {
+    // tm1py parity: when `pattern` is provided, behave like
+    // `re.match(pattern, url)` + `unquote(match.group(1))` — anchored at start,
+    // URL-decodes the first capture group, returns null on no match.
+    if (pattern !== undefined) {
+        const re = typeof pattern === 'string'
+            ? new RegExp(pattern.startsWith('^') ? pattern : '^' + pattern)
+            : pattern;
+        const m = url.match(re);
+        if (!m || m[1] === undefined) return null;
+        return decodeURIComponent(m[1]);
+    }
+    // Backward-compat: extract first ('name') segment, return '' on no match
     const match = url.match(/\('([^']+)'\)/);
     return match ? match[1] : '';
 }
