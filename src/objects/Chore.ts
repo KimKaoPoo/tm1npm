@@ -148,11 +148,11 @@ export class Chore extends TM1Object {
         return body;
     }
 
-    public reschedule(frequency: ChoreFrequency, startTime?: ChoreStartTime): void {
-        /** Reschedule the chore
+    public setFrequency(frequency: ChoreFrequency, startTime?: ChoreStartTime): void {
+        /** Replace the chore frequency (and optionally start time)
          *
          * :param frequency: new ChoreFrequency
-         * :param start_time: new ChoreStartTime (optional)
+         * :param startTime: new ChoreStartTime (optional)
          */
         this._frequency = frequency;
         if (startTime) {
@@ -197,22 +197,15 @@ export class Chore extends TM1Object {
         return { [this._name]: processNames };
     }
 
-    public rescheduleByTime(days: number = 0, hours: number = 0, minutes: number = 0, seconds: number = 0): void {
-        /** Programmatically reschedule a chore by adding time to current start time
+    public reschedule(days: number = 0, hours: number = 0, minutes: number = 0, seconds: number = 0): void {
+        /** Reschedule the chore by adding time to the current start time.
+         *
          * :param days: Days to add
          * :param hours: Hours to add
          * :param minutes: Minutes to add
          * :param seconds: Seconds to add
          */
-        if (this._startTime.datetime) {
-            const newDateTime = new Date(this._startTime.datetime);
-            newDateTime.setDate(newDateTime.getDate() + days);
-            newDateTime.setHours(newDateTime.getHours() + hours);
-            newDateTime.setMinutes(newDateTime.getMinutes() + minutes);
-            newDateTime.setSeconds(newDateTime.getSeconds() + seconds);
-
-            this._startTime = new ChoreStartTime(newDateTime, this._startTime.tz);
-        }
+        this._startTime.add(days, hours, minutes, seconds);
     }
 
     public static fromJson(choreAsJson: string): Chore {
