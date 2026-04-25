@@ -126,7 +126,7 @@ export class Process extends TM1Object {
         if (variablesUiData) {
             // Handle encoding issue in variable_ui_data for async requests
             this._variablesUiData = Array.from(variablesUiData).map((entry: any) =>
-                typeof entry === 'string' ? entry.replace('€', '\f') : entry
+                typeof entry === 'string' ? entry.replace(/€/g, '\f') : entry
             );
         } else {
             this._variablesUiData = [];

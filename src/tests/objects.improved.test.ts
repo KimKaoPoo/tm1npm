@@ -248,10 +248,30 @@ describe('Object Model - Improved Coverage', () => {
     describe('Process Object', () => {
         test('should create basic process', () => {
             const process = new Process('TestProcess');
-            
+
             expect(process.name).toBe('TestProcess');
             expect(process.hasSecurityAccess).toBe(false);
             // Process automatically adds generated statements to procedures
+        });
+
+        test('replaces ALL € with \\f in variablesUiData entries (parity with Python str.replace)', () => {
+            // tm1py: each entry passes through entry.replace("€", "\f"), which is
+            // replace-all in Python. JS String.replace(stringPattern, ...) replaces
+            // only the first occurrence — must use a global regex for parity.
+            const entry = 'A€B€C€D';
+            const process = new Process(
+                'TestProcess',
+                false,
+                '',
+                [],
+                [],
+                [entry, 'no-euro-here', '€€€']
+            );
+            expect(process.variablesUiData).toEqual([
+                'A\fB\fC\fD',
+                'no-euro-here',
+                '\f\f\f',
+            ]);
         });
     });
 
