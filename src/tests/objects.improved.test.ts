@@ -95,7 +95,7 @@ describe('Object Model - Improved Coverage', () => {
             const hierarchy = new Hierarchy('TestHierarchy', 'TestDimension', elements);
             
             expect(hierarchy.elements).toHaveLength(2);
-            expect(hierarchy.elementNames).toEqual(['element1', 'element2']);
+            expect(hierarchy.elementNames).toEqual(['Element1', 'Element2']);
         });
 
         test('should get hierarchy body', () => {

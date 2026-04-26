@@ -1,7 +1,7 @@
 import { TM1Object } from './TM1Object';
 import { Element, ElementType } from './Element';
 import { ElementAttribute } from './ElementAttribute';
-import { lowerAndDropSpaces } from '../utils/Utils';
+import { lowerAndDropSpaces, caseAndSpaceInsensitiveEquals } from '../utils/Utils';
 
 export class Hierarchy extends TM1Object {
     private _name: string;
@@ -29,7 +29,7 @@ export class Hierarchy extends TM1Object {
 
         if (elements) {
             for (const elem of elements) {
-                this._elements.set(elem.name.toLowerCase(), elem);
+                this._elements.set(lowerAndDropSpaces(elem.name), elem);
             }
         }
 
@@ -98,7 +98,7 @@ export class Hierarchy extends TM1Object {
     }
 
     public get elementNames(): string[] {
-        return Array.from(this._elements.keys());
+        return Array.from(this._elements.values()).map(e => e.name);
     }
 
     public get elementAttributes(): ElementAttribute[] {
@@ -172,19 +172,19 @@ export class Hierarchy extends TM1Object {
     }
 
     public addElement(element: Element): void {
-        this._elements.set(element.name.toLowerCase(), element);
+        this._elements.set(lowerAndDropSpaces(element.name), element);
     }
 
     public removeElement(elementName: string): boolean {
-        return this._elements.delete(elementName.toLowerCase());
+        return this._elements.delete(lowerAndDropSpaces(elementName));
     }
 
     public getElement(elementName: string): Element | undefined {
-        return this._elements.get(elementName.toLowerCase());
+        return this._elements.get(lowerAndDropSpaces(elementName));
     }
 
     public hasElement(elementName: string): boolean {
-        return this._elements.has(elementName.toLowerCase());
+        return this._elements.has(lowerAndDropSpaces(elementName));
     }
 
     public addEdge(parentName: string, componentName: string, weight: number = 1): void {
@@ -216,7 +216,7 @@ export class Hierarchy extends TM1Object {
 
     public removeElementAttribute(attributeName: string): boolean {
         const index = this._elementAttributes.findIndex(ea =>
-            ea.name.toLowerCase() === attributeName.toLowerCase());
+            caseAndSpaceInsensitiveEquals(ea.name, attributeName));
 
         if (index !== -1) {
             this._elementAttributes.splice(index, 1);
@@ -227,12 +227,12 @@ export class Hierarchy extends TM1Object {
 
     public getElementAttribute(attributeName: string): ElementAttribute | undefined {
         return this._elementAttributes.find(ea =>
-            ea.name.toLowerCase() === attributeName.toLowerCase());
+            caseAndSpaceInsensitiveEquals(ea.name, attributeName));
     }
 
     public hasElementAttribute(attributeName: string): boolean {
         return this._elementAttributes.some(ea =>
-            ea.name.toLowerCase() === attributeName.toLowerCase());
+            caseAndSpaceInsensitiveEquals(ea.name, attributeName));
     }
 
     public getAncestors(elementName: string, recursive: boolean = false): string[] {
@@ -337,7 +337,7 @@ export class Hierarchy extends TM1Object {
             const element = this._elements.get(oldKey)!;
             element.name = newName;
             this._elements.delete(oldKey);
-            this._elements.set(newName.toLowerCase(), element);
+            this._elements.set(lowerAndDropSpaces(newName), element);
         }
 
         // Rebuild edges replacing all occurrences of oldName
