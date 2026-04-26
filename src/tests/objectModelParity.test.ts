@@ -535,7 +535,7 @@ describe('MDXView.dynamicProperties', () => {
         expect(view.cube).toBe('FromDict');
     });
 
-    test('fromDict throws when no cubeName and no Cube field (matches tm1py KeyError)', () => {
+    test('fromDict throws when no cubeName and no Cube field', () => {
         const dict = { Name: 'V', MDX: 'SELECT ...' };
         expect(() => MDXView.fromDict(dict)).toThrow();
     });
