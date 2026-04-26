@@ -13,6 +13,7 @@ import { ElementAttribute, ElementAttributeType } from '../objects/ElementAttrib
 import { Chore } from '../objects/Chore';
 import { ChoreFrequency } from '../objects/ChoreFrequency';
 import { ChoreStartTime } from '../objects/ChoreStartTime';
+import { readObjectNameFromUrl } from '../utils/Utils';
 
 // ---------------------------------------------------------------------------
 // Bug 1 & 2 (Axis.ts): ViewAxisSelection.fromDict and ViewTitleSelection.fromDict
@@ -694,5 +695,130 @@ describe('Chore.setFrequency (tm1npm-only helper, Issue #73)', () => {
         chore.setFrequency(newFreq, newStart);
         expect(chore.frequency).toBe(newFreq);
         expect(chore.startTime).toBe(newStart);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #70 (Subset.ts): AnonymousSubset.fromDict URL parsing
+//
+// These tests lock in tm1py's literal behavior — INCLUDING the latent bug
+// where read_object_name_from_url always returns match.group(1), causing both
+// segments to resolve to the dimension name. Do NOT "fix" these tests to
+// reflect more "correct" behavior — see CLAUDE.md "Strict tm1py Parity".
+// ---------------------------------------------------------------------------
+
+describe('AnonymousSubset.fromDict — Hierarchy@odata.bind parsing (#70)', () => {
+    test('parses dimension and hierarchy when names match', () => {
+        const sub = AnonymousSubset.fromDict({
+            'Hierarchy@odata.bind': "Dimensions('Region')/Hierarchies('Region')",
+            Elements: [{ Name: 'North' }]
+        });
+        expect(sub.dimensionName).toBe('Region');
+        expect(sub.hierarchyName).toBe('Region');
+    });
+
+    test('non-default hierarchy resolves to dimension name (tm1py bug parity)', () => {
+        // tm1py's read_object_name_from_url returns match.group(1) twice, both
+        // capturing the dimension. Hierarchy name in the URL is silently lost.
+        const sub = AnonymousSubset.fromDict({
+            'Hierarchy@odata.bind': "Dimensions('Region')/Hierarchies('Region_Alt')",
+            Expression: '{[Region].[Region_Alt].Members}'
+        });
+        expect(sub.dimensionName).toBe('Region');
+        expect(sub.hierarchyName).toBe('Region');
+    });
+
+    test('parses Hierarchy entity form correctly', () => {
+        const sub = AnonymousSubset.fromDict({
+            Hierarchy: { Name: 'Region_Alt', Dimension: { Name: 'Region' } },
+            Elements: [{ Name: 'North' }]
+        });
+        expect(sub.dimensionName).toBe('Region');
+        expect(sub.hierarchyName).toBe('Region_Alt');
+    });
+
+    test('throws for URL missing Hierarchies segment', () => {
+        expect(() => AnonymousSubset.fromDict({
+            'Hierarchy@odata.bind': "Dimensions('Region')"
+        })).toThrow(/Unexpected value for 'Hierarchy@odata.bind'/);
+    });
+
+    test('throws for non-Dimensions/Hierarchies URL shape (tm1py shape validation)', () => {
+        // tm1py's regex anchors on Dimensions(...)/Hierarchies(...) — other shapes fail.
+        expect(() => AnonymousSubset.fromDict({
+            'Hierarchy@odata.bind': "Foo('A')/Bar('B')"
+        })).toThrow(/Unexpected value for 'Hierarchy@odata.bind'/);
+    });
+
+    test('throws when neither Hierarchy nor Hierarchy@odata.bind present', () => {
+        expect(() => AnonymousSubset.fromDict({})).toThrow(/must contain 'Hierarchy'/);
+    });
+
+    test('round-trip: alt hierarchy in URL is dropped via tm1py-equivalent parsing', () => {
+        // Input has Hierarchies('Region_Alt') but tm1py's parsing collapses both
+        // to the dimension name, so bodyAsDict reflects Hierarchies('Region').
+        const sub = AnonymousSubset.fromDict({
+            'Hierarchy@odata.bind': "Dimensions('Region')/Hierarchies('Region_Alt')",
+            Elements: [{ Name: 'North' }]
+        });
+        const body = sub.bodyAsDict;
+        expect(body['Hierarchy@odata.bind']).toBe(
+            "Dimensions('Region')/Hierarchies('Region')"
+        );
+    });
+});
+
+describe('ViewAxisSelection.fromDict — anonymous subset with non-default hierarchy (#70)', () => {
+    test('hierarchy in URL collapses to dimension name (tm1py bug parity)', () => {
+        const dict = {
+            Subset: {
+                'Hierarchy@odata.bind': "Dimensions('Region')/Hierarchies('Region_Alt')",
+                Elements: [{ Name: 'North' }]
+            }
+        };
+        const sel = ViewAxisSelection.fromDict(dict);
+        expect(sel.dimensionName).toBe('Region');
+        const anon = sel.subset as AnonymousSubset;
+        expect(anon.dimensionName).toBe('Region');
+        expect(anon.hierarchyName).toBe('Region');
+    });
+});
+
+describe('readObjectNameFromUrl — tm1py parity (#70)', () => {
+    test('with pattern: URL-decodes percent-encoded names (mirrors urllib.parse.unquote)', () => {
+        const result = readObjectNameFromUrl(
+            "Dimensions('My%20Dim')/Hierarchies('H')",
+            /^Dimensions\('(.+?)'\)/
+        );
+        expect(result).toBe('My Dim');
+    });
+
+    test('with pattern: passes through malformed %XX (urllib.unquote permissive parity)', () => {
+        // Python: urllib.parse.unquote('Bad%ZZName') === 'Bad%ZZName'
+        // JS decodeURIComponent throws on malformed %XX — we catch and pass through.
+        const result = readObjectNameFromUrl(
+            "Dimensions('Bad%ZZName')/Hierarchies('H')",
+            /^Dimensions\('(.+?)'\)/
+        );
+        expect(result).toBe('Bad%ZZName');
+    });
+
+    test('with pattern: returns null on no match (mirrors re.match returning None)', () => {
+        const result = readObjectNameFromUrl(
+            "Foo('A')/Bar('B')",
+            /^Dimensions\('(.+?)'\)/
+        );
+        expect(result).toBeNull();
+    });
+
+    test('without pattern: preserves existing string return type (no API break)', () => {
+        // Type-level guarantee via overload — runtime check that result is still a string.
+        const result: string = readObjectNameFromUrl("Dimensions('Region')");
+        expect(result).toBe('Region');
+    });
+
+    test('without pattern: returns empty string on no match (backward compat)', () => {
+        const result: string = readObjectNameFromUrl('');
+        expect(result).toBe('');
     });
 });

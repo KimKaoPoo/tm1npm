@@ -358,8 +358,29 @@ export function verifyVersion(actualVersion: string, requiredVersion: string): b
     return true; // Equal versions
 }
 
-export function readObjectNameFromUrl(url: string): string {
-    // Extract object name from URL like "/Dimensions('DimName')" -> "DimName"
+// Overloads preserve the narrow `string` return for the existing no-pattern form
+// (published npm API — widening to `string | null` would break downstream consumers).
+export function readObjectNameFromUrl(url: string): string;
+export function readObjectNameFromUrl(url: string, pattern: string | RegExp): string | null;
+export function readObjectNameFromUrl(url: string, pattern?: string | RegExp): string | null {
+    // tm1py parity: when `pattern` is provided, behave like
+    // `re.match(pattern, url)` + `unquote(match.group(1))` — anchored at start,
+    // URL-decodes the first capture group, returns null on no match.
+    if (pattern !== undefined) {
+        const re = typeof pattern === 'string'
+            ? new RegExp(pattern.startsWith('^') ? pattern : '^' + pattern)
+            : pattern;
+        const m = url.match(re);
+        if (!m || m[1] === undefined) return null;
+        try {
+            return decodeURIComponent(m[1]);
+        } catch {
+            // tm1py parity: urllib.parse.unquote is permissive on malformed %XX
+            // (returns the original string). decodeURIComponent throws — fall back.
+            return m[1];
+        }
+    }
+    // Backward-compat: extract first ('name') segment, return '' on no match
     const match = url.match(/\('([^']+)'\)/);
     return match ? match[1] : '';
 }
