@@ -10,6 +10,9 @@ import { MDXView } from '../objects/MDXView';
 import { Hierarchy } from '../objects/Hierarchy';
 import { Element, ElementType } from '../objects/Element';
 import { ElementAttribute, ElementAttributeType } from '../objects/ElementAttribute';
+import { Chore } from '../objects/Chore';
+import { ChoreFrequency } from '../objects/ChoreFrequency';
+import { ChoreStartTime } from '../objects/ChoreStartTime';
 import { readObjectNameFromUrl } from '../utils/Utils';
 
 // ---------------------------------------------------------------------------
@@ -571,6 +574,127 @@ describe('ElementAttribute.equals', () => {
         const a = new ElementAttribute('Revenue', ElementAttributeType.NUMERIC);
         const b = new Element('Revenue', 'Numeric');
         expect(a.equals(b)).toBe(false);
+    });
+});
+
+describe('ChoreStartTime.add (Issue #73)', () => {
+    const buildStartTime = () =>
+        new ChoreStartTime(2020, 1, 1, 0, 0, 0);
+
+    test('adds positive days hours minutes seconds to start time', () => {
+        const st = buildStartTime();
+        st.add(1, 2, 3, 4);
+        expect(st.datetime.getFullYear()).toBe(2020);
+        expect(st.datetime.getMonth()).toBe(0);
+        expect(st.datetime.getDate()).toBe(2);
+        expect(st.datetime.getHours()).toBe(2);
+        expect(st.datetime.getMinutes()).toBe(3);
+        expect(st.datetime.getSeconds()).toBe(4);
+    });
+
+    test('default arguments are all zero (no mutation)', () => {
+        const st = buildStartTime();
+        const originalMs = st.datetime.getTime();
+        st.add();
+        expect(st.datetime.getTime()).toBe(originalMs);
+    });
+
+    test('negative values subtract time', () => {
+        const st = new ChoreStartTime(2020, 1, 2, 0, 0, 0);
+        st.add(-1, 0, 0, 0);
+        expect(st.datetime.getFullYear()).toBe(2020);
+        expect(st.datetime.getMonth()).toBe(0);
+        expect(st.datetime.getDate()).toBe(1);
+    });
+
+    test('hours overflow into days (parity with Python timedelta normalization)', () => {
+        const st = buildStartTime();
+        st.add(0, 25, 0, 0);
+        expect(st.datetime.getDate()).toBe(2);
+        expect(st.datetime.getHours()).toBe(1);
+    });
+
+    test('seconds overflow into minutes', () => {
+        const st = buildStartTime();
+        st.add(0, 0, 0, 75);
+        expect(st.datetime.getMinutes()).toBe(1);
+        expect(st.datetime.getSeconds()).toBe(15);
+    });
+});
+
+describe('Chore.reschedule (Issue #73)', () => {
+    const buildChore = () =>
+        new Chore(
+            'TestChore',
+            new ChoreStartTime(2020, 1, 1, 0, 0, 0),
+            false,
+            true,
+            Chore.SINGLE_COMMIT,
+            new ChoreFrequency(0, 0, 0, 0),
+            []
+        );
+
+    test('reschedule(days, hours, minutes, seconds) mutates start time and leaves frequency unchanged', () => {
+        const chore = buildChore();
+        const originalFrequency = chore.frequency;
+        chore.reschedule(1, 2, 3, 4);
+        expect(chore.startTime.datetime.getDate()).toBe(2);
+        expect(chore.startTime.datetime.getHours()).toBe(2);
+        expect(chore.startTime.datetime.getMinutes()).toBe(3);
+        expect(chore.startTime.datetime.getSeconds()).toBe(4);
+        expect(chore.frequency).toBe(originalFrequency);
+    });
+
+    test('reschedule defaults all components to 0 (no-op)', () => {
+        const chore = buildChore();
+        const originalMs = chore.startTime.datetime.getTime();
+        chore.reschedule();
+        expect(chore.startTime.datetime.getTime()).toBe(originalMs);
+    });
+
+    test('reschedule with negative values subtracts from start time', () => {
+        const chore = new Chore(
+            'TestChore',
+            new ChoreStartTime(2020, 1, 2, 0, 0, 0),
+            false,
+            true,
+            Chore.SINGLE_COMMIT,
+            new ChoreFrequency(0, 0, 0, 0),
+            []
+        );
+        chore.reschedule(-1, 0, 0, 0);
+        expect(chore.startTime.datetime.getDate()).toBe(1);
+    });
+});
+
+describe('Chore.setFrequency (tm1npm-only helper, Issue #73)', () => {
+    const buildChore = () =>
+        new Chore(
+            'TestChore',
+            new ChoreStartTime(2020, 1, 1, 0, 0, 0),
+            false,
+            true,
+            Chore.SINGLE_COMMIT,
+            new ChoreFrequency(1, 2, 3, 4),
+            []
+        );
+
+    test('replaces frequency without changing start time when startTime omitted', () => {
+        const chore = buildChore();
+        const originalStartMs = chore.startTime.datetime.getTime();
+        const newFreq = new ChoreFrequency(5, 6, 7, 8);
+        chore.setFrequency(newFreq);
+        expect(chore.frequency).toBe(newFreq);
+        expect(chore.startTime.datetime.getTime()).toBe(originalStartMs);
+    });
+
+    test('replaces both frequency and start time when startTime provided', () => {
+        const chore = buildChore();
+        const newFreq = new ChoreFrequency(5, 6, 7, 8);
+        const newStart = new ChoreStartTime(2025, 6, 15, 12, 0, 0);
+        chore.setFrequency(newFreq, newStart);
+        expect(chore.frequency).toBe(newFreq);
+        expect(chore.startTime).toBe(newStart);
     });
 });
 
