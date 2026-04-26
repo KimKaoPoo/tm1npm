@@ -269,9 +269,21 @@ describe('Object Model - Improved Coverage', () => {
             const dimensions = ['Time', 'Account'];
             const cube = new Cube('TestCube', dimensions);
             const body = JSON.parse(cube.body);
-            
+
             expect(body.Name).toBe('TestCube');
-            expect(body.Dimensions).toHaveLength(2);
+            expect(body['Dimensions@odata.bind']).toHaveLength(2);
+            expect(body['Dimensions@odata.bind'][0]).toBe("Dimensions('Time')");
+            expect(body['Dimensions@odata.bind'][1]).toBe("Dimensions('Account')");
+        });
+
+        test('should escape special characters in dimension names (parity with tm1py format_url)', () => {
+            const cube = new Cube('TestCube', ["O'Brien", '50%', 'A#B', 'X?Y', 'M&N']);
+            const body = JSON.parse(cube.body);
+            expect(body['Dimensions@odata.bind'][0]).toBe("Dimensions('O''Brien')");
+            expect(body['Dimensions@odata.bind'][1]).toBe("Dimensions('50%25')");
+            expect(body['Dimensions@odata.bind'][2]).toBe("Dimensions('A%23B')");
+            expect(body['Dimensions@odata.bind'][3]).toBe("Dimensions('X%3FY')");
+            expect(body['Dimensions@odata.bind'][4]).toBe("Dimensions('M%26N')");
         });
 
         test('should create cube from dictionary', () => {

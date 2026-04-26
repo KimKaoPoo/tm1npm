@@ -120,6 +120,15 @@ export function escapeODataValue(str: string): string {
     return str.replace(/'/g, "''");
 }
 
+export function buildUrlFriendlyObjectName(objectName: string): string {
+    return objectName
+        .replace(/'/g, "''")
+        .replace(/%/g, "%25")
+        .replace(/#/g, "%23")
+        .replace(/\?/g, "%3F")
+        .replace(/&/g, "%26");
+}
+
 export function formatUrl(template: string, ...args: string[]): string {
     let url = template;
     for (const arg of args) {
@@ -438,6 +447,7 @@ export const Utils = {
     CaseAndSpaceInsensitiveSet,
     caseAndSpaceInsensitiveEquals,
     lowerAndDropSpaces,
+    buildUrlFriendlyObjectName,
     formatUrl,
     extractCellsetCells,
     buildMdxFromAxes,

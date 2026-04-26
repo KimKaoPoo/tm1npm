@@ -1,5 +1,6 @@
 import { TM1Object } from './TM1Object';
 import { Rules } from './Rules';
+import { buildUrlFriendlyObjectName } from '../utils/Utils';
 
 export class Cube extends TM1Object {
     /** Abstraction of a TM1 Cube
@@ -113,7 +114,7 @@ export class Cube extends TM1Object {
     private constructBody(): any {
         const body: any = {
             Name: this._name,
-            Dimensions: this._dimensions.map(dim => ({ Name: dim }))
+            "Dimensions@odata.bind": this._dimensions.map(dim => `Dimensions('${buildUrlFriendlyObjectName(dim)}')`)
         };
 
         if (this._rules) {
