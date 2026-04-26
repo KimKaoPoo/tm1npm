@@ -505,31 +505,93 @@ describe('MDXView.dynamicProperties', () => {
         expect(view.dynamicProperties).toEqual(props);
     });
 
-    test('fromDict parses Properties key', () => {
+    test('fromDict treats top-level non-excluded keys as dynamicProperties', () => {
         const dict = {
+            Cube: { Name: 'C' },
             Name: 'V',
             MDX: 'SELECT ...',
-            Properties: { Aliases: ['Default'] }
+            Aliases: ['Default'],
+            Meta: { foo: 1 },
         };
-        const view = MDXView.fromDict(dict, 'Cube');
-        expect(view.dynamicProperties).toEqual({ Aliases: ['Default'] });
+        const view = MDXView.fromDict(dict);
+        expect(view.dynamicProperties).toEqual({ Aliases: ['Default'], Meta: { foo: 1 } });
     });
 
-    test('fromDict handles missing Properties gracefully', () => {
-        const view = MDXView.fromDict({ Name: 'V', MDX: 'SELECT ...' }, 'Cube');
+    test('fromDict yields empty dynamicProperties when only excluded keys present', () => {
+        const dict = { Cube: { Name: 'C' }, Name: 'V', MDX: 'SELECT ...' };
+        const view = MDXView.fromDict(dict);
         expect(view.dynamicProperties).toEqual({});
     });
 
-    test('body includes Properties when dynamicProperties is non-empty', () => {
-        const view = new MDXView('Cube', 'View', 'SELECT ...', { ContextSets: [] });
-        const body = JSON.parse(view.body);
-        expect(body.Properties).toEqual({ ContextSets: [] });
+    test('fromDict prefers explicit cubeName over dict.Cube.Name', () => {
+        const dict = { Cube: { Name: 'FromDict' }, Name: 'V', MDX: 'SELECT ...' };
+        const view = MDXView.fromDict(dict, 'Explicit');
+        expect(view.cube).toBe('Explicit');
     });
 
-    test('body omits Properties when dynamicProperties is empty', () => {
+    test('fromDict falls back to dict.Cube.Name when cubeName is not provided', () => {
+        const dict = { Cube: { Name: 'FromDict' }, Name: 'V', MDX: 'SELECT ...' };
+        const view = MDXView.fromDict(dict);
+        expect(view.cube).toBe('FromDict');
+    });
+
+    test('fromDict throws when no cubeName and no Cube field (matches tm1py KeyError)', () => {
+        const dict = { Name: 'V', MDX: 'SELECT ...' };
+        expect(() => MDXView.fromDict(dict)).toThrow();
+    });
+
+    test('fromDict preserves a top-level Properties key as dynamicProperties.Properties', () => {
+        const dict = {
+            Cube: { Name: 'C' },
+            Name: 'V',
+            MDX: 'SELECT ...',
+            Properties: { Aliases: ['Default'] },
+        };
+        const view = MDXView.fromDict(dict);
+        expect(view.dynamicProperties).toEqual({ Properties: { Aliases: ['Default'] } });
+    });
+
+    test.each([
+        '@odata.type',
+        '@odata.context',
+        '@odata.etag',
+        'Name',
+        'MDX',
+        'Cube',
+        'Attributes',
+        'LocalizedAttributes',
+    ])('fromDict filters excluded key %s', (excludedKey) => {
+        const dict: Record<string, any> = {
+            Cube: { Name: 'C' },
+            Name: 'V',
+            MDX: 'SELECT ...',
+            Foo: 1,
+        };
+        dict[excludedKey] = 'should-be-stripped';
+        const view = MDXView.fromDict(dict, 'Cube');
+        expect(view.dynamicProperties).not.toHaveProperty(excludedKey);
+        expect(view.dynamicProperties).toEqual({ Foo: 1 });
+    });
+
+    test('body merges dynamicProperties as top-level keys', () => {
+        const view = new MDXView('Cube', 'View', 'SELECT ...', { ContextSets: [], Meta: 1 });
+        const body = JSON.parse(view.body);
+        expect(body.ContextSets).toEqual([]);
+        expect(body.Meta).toBe(1);
+        expect(body.Properties).toBeUndefined();
+    });
+
+    test('body strips excluded keys from dynamicProperties before serializing', () => {
+        const view = new MDXView('Cube', 'View', 'SELECT ...', { Name: 'IgnoreMe', Foo: 'bar' });
+        const body = JSON.parse(view.body);
+        expect(body.Name).toBe('View');
+        expect(body.Foo).toBe('bar');
+    });
+
+    test('body omits dynamicProperties keys when empty', () => {
         const view = new MDXView('Cube', 'View', 'SELECT ...');
         const body = JSON.parse(view.body);
-        expect(body).not.toHaveProperty('Properties');
+        expect(Object.keys(body).sort()).toEqual(['@odata.type', 'MDX', 'Name'].sort());
     });
 
     test('dynamicProperties round-trips through body and fromDict', () => {

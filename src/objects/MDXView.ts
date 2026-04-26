@@ -7,6 +7,27 @@ export class MDXView extends View {
      *     IMPORTANT. MDXViews can't be seen through the old TM1 clients (Archict, Perspectives). They do exist though!
      */
 
+    private static readonly _DYNAMIC_PROPERTIES_EXCLUDED_KEYS: ReadonlySet<string> = new Set([
+        '@odata.type',
+        '@odata.context',
+        '@odata.etag',
+        'Name',
+        'MDX',
+        'Cube',
+        'Attributes',
+        'LocalizedAttributes',
+    ]);
+
+    private static _filterDynamicProperties(properties: Record<string, any>): Record<string, any> {
+        const out: Record<string, any> = {};
+        for (const key of Object.keys(properties)) {
+            if (!MDXView._DYNAMIC_PROPERTIES_EXCLUDED_KEYS.has(key)) {
+                out[key] = properties[key];
+            }
+        }
+        return out;
+    }
+
     private _mdx: string;
     private _dynamicProperties: Record<string, any>;
 
@@ -85,21 +106,20 @@ export class MDXView extends View {
 
     public static fromDict(viewAsDict: any, cubeName?: string): MDXView {
         return new MDXView(
-            viewAsDict.Cube?.Name || cubeName!,
+            cubeName ? cubeName : viewAsDict.Cube.Name,
             viewAsDict.Name,
             viewAsDict.MDX,
-            viewAsDict.Properties || {}
+            MDXView._filterDynamicProperties(viewAsDict),
         );
     }
 
     private constructBody(): string {
-        const mdxViewAsDict: any = {};
-        mdxViewAsDict['@odata.type'] = 'ibm.tm1.api.v1.MDXView';
-        mdxViewAsDict['Name'] = this._name;
-        mdxViewAsDict['MDX'] = this._mdx;
-        if (Object.keys(this._dynamicProperties).length > 0) {
-            mdxViewAsDict['Properties'] = this._dynamicProperties;
-        }
+        const mdxViewAsDict: Record<string, any> = {
+            '@odata.type': 'ibm.tm1.api.v1.MDXView',
+            Name: this._name,
+            MDX: this._mdx,
+            ...MDXView._filterDynamicProperties(this._dynamicProperties),
+        };
         return JSON.stringify(mdxViewAsDict);
     }
 }
