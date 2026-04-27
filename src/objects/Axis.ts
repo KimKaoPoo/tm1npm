@@ -102,6 +102,10 @@ export class ViewTitleSelection {
         return this._subset;
     }
 
+    public set subset(value: Subset | AnonymousSubset) {
+        this._subset = value;
+    }
+
     public get dimensionName(): string {
         return this._dimensionName;
     }

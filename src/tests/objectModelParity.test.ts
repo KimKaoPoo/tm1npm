@@ -288,6 +288,139 @@ describe('NativeView.fromDict', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #75: NativeView fromDict, remove methods, substituteTitle parity
+// ---------------------------------------------------------------------------
+
+describe('NativeView.fromDict — title validation (issue #75)', () => {
+    test("throws when title dict lacks both 'Selected' and 'Selected@odata.bind'", () => {
+        const dict = {
+            Name: 'V',
+            SuppressEmptyColumns: false,
+            SuppressEmptyRows: false,
+            FormatString: '0.#',
+            Titles: [
+                {
+                    'Subset@odata.bind': "Dimensions('Region')/Hierarchies('Region')/Subsets('All')"
+                }
+            ],
+            Columns: [],
+            Rows: []
+        };
+        expect(() => NativeView.fromDict(dict, 'Cube')).toThrow(
+            "View Title dict must contain 'Selected' or 'Selected@odata.bind' as key"
+        );
+    });
+});
+
+describe('NativeView.fromDict — cubeName from @odata.context (issue #75)', () => {
+    test('extracts cubeName from @odata.context when not provided', () => {
+        const dict = {
+            '@odata.context': "../$metadata#Cubes('SalesCube')/Views/$entity",
+            Name: 'V',
+            SuppressEmptyColumns: false,
+            SuppressEmptyRows: false,
+            FormatString: '0.#',
+            Titles: [],
+            Columns: [],
+            Rows: []
+        };
+        const view = NativeView.fromDict(dict);
+        expect(view.cube).toBe('SalesCube');
+    });
+
+    test('prefers explicit cubeName over @odata.context', () => {
+        const dict = {
+            '@odata.context': "../$metadata#Cubes('WrongCube')/Views/$entity",
+            Name: 'V',
+            SuppressEmptyColumns: false,
+            SuppressEmptyRows: false,
+            FormatString: '0.#',
+            Titles: [],
+            Columns: [],
+            Rows: []
+        };
+        const view = NativeView.fromDict(dict, 'CorrectCube');
+        expect(view.cube).toBe('CorrectCube');
+    });
+});
+
+describe('NativeView.removeColumn / removeRow / removeTitle — remove ALL matches (issue #75)', () => {
+    test('removeColumn removes all matching columns', () => {
+        const view = new NativeView('Cube', 'View');
+        view.addColumn(new ViewAxisSelection('Region', new AnonymousSubset('Region', 'Region', undefined, ['North'])));
+        view.addColumn(new ViewAxisSelection('Region', new AnonymousSubset('Region', 'Region', undefined, ['South'])));
+        view.addColumn(new ViewAxisSelection('Month', new AnonymousSubset('Month', 'Month', undefined, ['Jan'])));
+        view.removeColumn('Region');
+        expect(view.columns).toHaveLength(1);
+        expect(view.columns[0].dimensionName).toBe('Month');
+    });
+
+    test('removeRow removes all matching rows', () => {
+        const view = new NativeView('Cube', 'View');
+        view.addRow(new ViewAxisSelection('Region', new AnonymousSubset('Region', 'Region', undefined, ['North'])));
+        view.addRow(new ViewAxisSelection('Region', new AnonymousSubset('Region', 'Region', undefined, ['South'])));
+        view.addRow(new ViewAxisSelection('Month', new AnonymousSubset('Month', 'Month', undefined, ['Jan'])));
+        view.removeRow('Region');
+        expect(view.rows).toHaveLength(1);
+        expect(view.rows[0].dimensionName).toBe('Month');
+    });
+
+    test('removeTitle removes all matching titles', () => {
+        const view = new NativeView('Cube', 'View');
+        const sub = new AnonymousSubset('Region', 'Region', undefined, ['North']);
+        view.addTitle(new ViewTitleSelection('Region', sub, 'North'));
+        view.addTitle(new ViewTitleSelection('Region', sub, 'South'));
+        view.addTitle(new ViewTitleSelection('Month', new AnonymousSubset('Month', 'Month', undefined, ['Jan']), 'Jan'));
+        view.removeTitle('Region');
+        expect(view.titles).toHaveLength(1);
+        expect(view.titles[0].dimensionName).toBe('Month');
+    });
+
+    test('removeColumn is case and space insensitive', () => {
+        const view = new NativeView('Cube', 'View');
+        view.addColumn(new ViewAxisSelection('Region', new AnonymousSubset('Region', 'Region', undefined, ['North'])));
+        view.removeColumn(' region ');
+        expect(view.columns).toHaveLength(0);
+    });
+});
+
+describe('NativeView.substituteTitle — replaces subset and selected (issue #75)', () => {
+    test('replaces subset with AnonymousSubset(dim, dim, [element]) and updates selected', () => {
+        const view = new NativeView('Cube', 'View');
+        view.addTitle(new ViewTitleSelection(
+            'Region',
+            new AnonymousSubset('Region', 'Region', undefined, ['North', 'South']),
+            'North'
+        ));
+        view.substituteTitle('Region', 'South');
+        expect(view.titles[0].selected).toBe('South');
+        const newSubset = view.titles[0].subset as AnonymousSubset;
+        expect(newSubset).toBeInstanceOf(AnonymousSubset);
+        expect(newSubset.elements).toEqual(['South']);
+    });
+
+    test('new subset uses caller-provided dimension as both dimension and hierarchy', () => {
+        const view = new NativeView('Cube', 'View');
+        view.addTitle(new ViewTitleSelection(
+            'Region',
+            new AnonymousSubset('Region', 'AltHierarchy', undefined, ['North']),
+            'North'
+        ));
+        view.substituteTitle('Region', 'South');
+        const newSubset = view.titles[0].subset as AnonymousSubset;
+        expect(newSubset.dimensionName).toBe('Region');
+        expect(newSubset.hierarchyName).toBe('Region');
+    });
+
+    test("throws \"Dimension '...' not found in titles\" when dimension missing", () => {
+        const view = new NativeView('Cube', 'View');
+        expect(() => view.substituteTitle('NonExistent', 'Value')).toThrow(
+            "Dimension 'NonExistent' not found in titles"
+        );
+    });
+});
+
+// ---------------------------------------------------------------------------
 // Bug 4 & 5 (Hierarchy.ts): Edge key type + traversal methods
 // ---------------------------------------------------------------------------
 
