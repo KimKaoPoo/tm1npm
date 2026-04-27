@@ -163,86 +163,70 @@ export class NativeView extends View {
         this._rows.push(row);
     }
 
-    public removeTitle(dimensionName: string): boolean {
-        const index = this._titles.findIndex(t =>
-            caseAndSpaceInsensitiveEquals(t.dimensionName, dimensionName));
-        if (index !== -1) {
-            this._titles.splice(index, 1);
-            return true;
-        }
-        return false;
+    public removeTitle(dimensionName: string): void {
+        this._titles = this._titles.filter(
+            t => !caseAndSpaceInsensitiveEquals(t.dimensionName, dimensionName));
     }
 
-    public removeColumn(dimensionName: string): boolean {
-        const index = this._columns.findIndex(c =>
-            caseAndSpaceInsensitiveEquals(c.subset.dimensionName, dimensionName));
-        if (index !== -1) {
-            this._columns.splice(index, 1);
-            return true;
-        }
-        return false;
+    public removeColumn(dimensionName: string): void {
+        this._columns = this._columns.filter(
+            c => !caseAndSpaceInsensitiveEquals(c.dimensionName, dimensionName));
     }
 
-    public removeRow(dimensionName: string): boolean {
-        const index = this._rows.findIndex(r =>
-            caseAndSpaceInsensitiveEquals(r.subset.dimensionName, dimensionName));
-        if (index !== -1) {
-            this._rows.splice(index, 1);
-            return true;
-        }
-        return false;
+    public removeRow(dimensionName: string): void {
+        this._rows = this._rows.filter(
+            r => !caseAndSpaceInsensitiveEquals(r.dimensionName, dimensionName));
     }
 
     public substituteTitle(dimension: string, element: string): void {
-        /** Substitute the title element for a given dimension
-         *
-         * :param dimension: str, name of dimension
-         * :param element: str, name of element
-         */
         for (const title of this._titles) {
             if (caseAndSpaceInsensitiveEquals(title.dimensionName, dimension)) {
+                title.subset = new AnonymousSubset(dimension, dimension, undefined, [element]);
                 title.selected = element;
                 return;
             }
         }
-        throw new Error(`No title with dimension: '${dimension}'`);
+        throw new Error(`Dimension '${dimension}' not found in titles`);
     }
 
-    public static fromJSON(viewAsJson: string, cubeName: string): NativeView {
+    public static fromJSON(viewAsJson: string, cubeName?: string): NativeView {
         const viewAsDict = JSON.parse(viewAsJson);
         return NativeView.fromDict(viewAsDict, cubeName);
     }
 
-    public static fromDict(viewAsDict: any, cubeName: string): NativeView {
+    public static fromDict(viewAsDict: any, cubeName?: string): NativeView {
+        let resolvedCube = cubeName;
+        if (!resolvedCube) {
+            const ctx: string = viewAsDict["@odata.context"];
+            resolvedCube = ctx.substring(20, ctx.indexOf("')/"));
+        }
+
         const view = new NativeView(
-            cubeName,
+            resolvedCube,
             viewAsDict.Name,
             viewAsDict.SuppressEmptyColumns || false,
             viewAsDict.SuppressEmptyRows || false,
             viewAsDict.FormatString || "0.#########"
         );
 
-        // Parse titles
         if (viewAsDict.Titles) {
             for (const titleDict of viewAsDict.Titles) {
-                const title = ViewTitleSelection.fromDict(titleDict);
-                view.addTitle(title);
+                if (!('Selected' in titleDict) && !('Selected@odata.bind' in titleDict)) {
+                    throw new Error("View Title dict must contain 'Selected' or 'Selected@odata.bind' as key");
+                }
+                view.addTitle(ViewTitleSelection.fromDict(titleDict));
             }
         }
 
-        // Parse columns
         if (viewAsDict.Columns) {
             for (const columnDict of viewAsDict.Columns) {
-                const column = ViewAxisSelection.fromDict(columnDict);
-                view.addColumn(column);
+                view.addColumn(ViewAxisSelection.fromDict(columnDict));
             }
         }
 
-        // Parse rows
         if (viewAsDict.Rows) {
             for (const rowDict of viewAsDict.Rows) {
-                const row = ViewAxisSelection.fromDict(rowDict);
-                view.addRow(row);
+                view.addRow(ViewAxisSelection.fromDict(rowDict));
             }
         }
 
