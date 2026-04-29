@@ -128,15 +128,20 @@ export class CellService {
     }
 
     private static _parseUniqueElementName(uniqueName: string): [string, string, string] {
-        const matches = uniqueName.match(/^\[([^\]]+)\]\.\[([^\]]+)\]\.\[([^\]]+)\]$/);
-        if (matches) {
-            return [matches[1], matches[2], matches[3]];
+        // Mirror tm1py's substring-based parser exactly (Utils.py:821-844). Non-throwing,
+        // returns 3 strings even for malformed input. Element-name segment unescapes ']]' → ']'.
+        const firstSep = uniqueName.indexOf('].[');
+        const lastSep = uniqueName.lastIndexOf('].[');
+        const dimension = uniqueName.slice(1, firstSep);
+        const elementRaw = uniqueName.slice(lastSep + 3, -1);
+        const element = elementRaw.replace(/\]\]/g, ']');
+        // count occurrences of "]." separator
+        const sepCount = uniqueName.split('].[').length - 1;
+        if (sepCount === 1) {
+            return [dimension, dimension, element];
         }
-        const twoPart = uniqueName.match(/^\[([^\]]+)\]\.\[([^\]]+)\]$/);
-        if (twoPart) {
-            return [twoPart[1], twoPart[1], twoPart[2]];
-        }
-        throw new Error(`Invalid element unique name: '${uniqueName}'`);
+        const hierarchy = uniqueName.slice(firstSep + 3, lastSep);
+        return [dimension, hierarchy, element];
     }
 
     private static _parseCsvLine(line: string, separator: string): string[] {
@@ -488,7 +493,8 @@ export class CellService {
         try {
             const process = new Process('');
             process.prologProcedure = enableSandbox;
-            process.epilogProcedure = `ViewZeroOut('${escapeODataValue(cubeName)}','${escapeODataValue(viewName)}');`;
+            // Mirror tm1py's f-string interpolation exactly — no quote escaping in TI body.
+            process.epilogProcedure = `ViewZeroOut('${cubeName}','${viewName}');`;
 
             const url = '/ExecuteProcessWithReturn?$expand=*';
             const payload = { Process: process.bodyAsDict };
@@ -681,13 +687,20 @@ export class CellService {
      * Write data asynchronously by chunking and dispatching to writeThroughBlob
      * (parity with tm1py.write_async, which uses ThreadPoolExecutor + write(use_blob=True)).
      *
-     * Aggregates per-chunk failures into a TM1Exception describing how many chunks failed
-     * (tm1py raises TM1pyWritePartialFailureException; that exception type is not yet ported).
+     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
+     * - Only options honored by the underlying writeThroughBlob (sandbox_name, increment,
+     *   deactivate/reactivate_transaction_log, use_blob, use_changeset) flow through. tm1py's
+     *   `dimensions`, `precision`, `measure_dimension_elements`, `skip_non_updateable`, and
+     *   transaction-log toggles are not yet wired through writeThroughBlob and are deliberately
+     *   omitted from this signature so misuse is caught at compile time.
+     * - Per-chunk failures aggregate into a TM1Exception with chunk count (tm1py raises a
+     *   structured TM1pyWritePartialFailureException; that exception type is not yet ported).
      */
     public async writeAsync(
         cubeName: string,
         cellsetAsDict: CellsetDict,
-        options: WriteOptions & { slice_size?: number; max_workers?: number; dimensions?: string[] } = {}
+        options: Pick<WriteOptions, 'sandbox_name' | 'increment' | 'deactivate_transaction_log' | 'reactivate_transaction_log' | 'use_changeset'>
+            & { slice_size?: number; max_workers?: number } = {}
     ): Promise<string | undefined> {
         const sliceSize = options.slice_size ?? 250_000;
         const maxWorkers = options.max_workers ?? 8;
@@ -970,30 +983,18 @@ export class CellService {
      * Execute view via cellset extraction (parity with tm1py.execute_view_async).
      * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
      *
-     * tm1py achieves async by parallel-chunked cellset extraction (extract_cellset_async).
-     * That parallelization helper is not yet ported, so this delegates to a serial extract.
-     *
      * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
-     * - max_workers / async_axis accepted for API parity but no parallelization performed.
-     * - The following options are accepted but currently dropped: cell_properties, top, skip,
-     *   skip_contexts, skip_zeros, skip_consolidated_cells, skip_rule_derived_cells,
-     *   skip_cell_properties, element_unique_names.
+     * - tm1py uses extract_cellset_async with parallel-chunked retrieval. Not yet ported;
+     *   this delegates to a serial extractCellset.
+     * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
+     *   not yet wired through extractCellset and are deliberately omitted from this signature
+     *   so misuse is a compile-time error.
      * - Tuple-key element order follows axis order, not cube dimension order.
      */
     public async execute_view_async(
         cubeName: string,
         viewName: string,
-        options: MDXViewOptions & {
-            cell_properties?: string[];
-            top?: number;
-            skip_contexts?: boolean;
-            skip?: number;
-            skip_consolidated_cells?: boolean;
-            skip_rule_derived_cells?: boolean;
-            skip_cell_properties?: boolean;
-            max_workers?: number;
-            async_axis?: number;
-        } = {}
+        options: { private?: boolean; sandbox_name?: string } = {}
     ): Promise<Map<string, any>> {
         const cellsetId = await this.createCellsetFromView(
             cubeName,
@@ -1863,6 +1864,12 @@ END;
     /**
      * Execute MDX and return element-value dictionary (parity with tm1py.execute_mdx_elements_value_dict).
      * Delegates to executeMdxCsv and parses CSV with header skip + quoted-field support.
+     *
+     * Parity divergence: tm1py forwards `element_separator` as both the CSV delimiter and the
+     * key-join separator (so the underlying TM1 CSV is regenerated with that delimiter). tm1npm's
+     * underlying executeMdxCsv does not yet accept a custom delimiter, so we parse the comma-
+     * delimited CSV that TM1 returns and only use `elementSeparator` as the key-join separator.
+     * Output dict keys/values still match tm1py for the default `'|'` separator.
      */
     public async executeMdxElementsValueDict(
         mdx: string,
@@ -1882,7 +1889,7 @@ END;
         const result: { [key: string]: any } = {};
         // Skip header (matches tm1py's `next(reader, None)`).
         for (let i = 1; i < lines.length; i++) {
-            const fields = CellService._parseCsvLine(lines[i], elementSeparator);
+            const fields = CellService._parseCsvLine(lines[i], ',');
             if (fields.length < 2) continue;
             const key = fields.slice(0, -1).join(elementSeparator);
             result[key] = fields[fields.length - 1];
@@ -2054,8 +2061,10 @@ END;
         for (const [key, expr] of Object.entries(dimensionExpressions)) {
             const actual = normToActual.get(lowerAndDropSpaces(key));
             if (actual) {
-                const wrapped = expr.trim().startsWith('{') ? expr : `{${expr}}`;
-                exprByDim[actual] = wrapped;
+                // Mirror tm1py's wrap_in_curly_braces (Utils.py:1693): independent open/close checks.
+                const open = expr.startsWith('{') ? '' : '{';
+                const close = expr.endsWith('}') ? '' : '}';
+                exprByDim[actual] = `${open}${expr}${close}`;
             }
         }
         for (const dim of dimensionNames) {
@@ -2181,34 +2190,18 @@ END;
      * Execute MDX via cellset extraction (parity with tm1py.execute_mdx_async).
      * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
      *
-     * tm1py achieves async by parallel-chunked cellset extraction (extract_cellset_async).
-     * That parallelization helper is not yet ported, so this delegates to a serial extract.
-     *
      * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
-     * - max_workers / async_axis accepted for API parity but no parallelization performed.
-     * - The following options are accepted but currently dropped: cell_properties, top, skip,
-     *   skip_contexts, skip_zeros, skip_consolidated_cells, skip_rule_derived_cells,
-     *   skip_cell_properties, use_compact_json, skip_sandbox_dimension, element_unique_names.
+     * - tm1py uses extract_cellset_async with parallel-chunked retrieval. That helper is not
+     *   yet ported; this implementation delegates to a serial extractCellset.
+     * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
+     *   not yet wired through extractCellset. To prevent silent option-drop, those parameters
+     *   are deliberately omitted from this signature so misuse is a compile-time error rather
+     *   than a runtime no-op. Add them back when the underlying extractor supports them.
      * - Tuple-key element order follows axis order, not cube dimension order.
      */
     public async executeMdxAsync(
         mdx: string,
-        options: {
-            cell_properties?: string[];
-            top?: number;
-            skip_contexts?: boolean;
-            skip?: number;
-            skip_zeros?: boolean;
-            skip_consolidated_cells?: boolean;
-            skip_rule_derived_cells?: boolean;
-            sandbox_name?: string;
-            element_unique_names?: boolean;
-            skip_cell_properties?: boolean;
-            use_compact_json?: boolean;
-            skip_sandbox_dimension?: boolean;
-            max_workers?: number;
-            async_axis?: number;
-        } = {}
+        options: { sandbox_name?: string } = {}
     ): Promise<Map<string, any>> {
         const cellsetId = await this.createCellset(mdx, options.sandbox_name);
         try {

@@ -164,8 +164,8 @@ describe('Enhanced CellService Tests', () => {
     });
 
     describe('Enhanced Data Reading Functions', () => {
-        test('executeMdxElementsValueDict parses CSV from executeMdxCsv into a dict', async () => {
-            const csv = 'Region|Value\nLondon|100\nParis|200\nBerlin|150\n';
+        test('executeMdxElementsValueDict parses comma-CSV into a dict joined by user separator', async () => {
+            const csv = 'Region,Value\nLondon,100\nParis,200\nBerlin,150\n';
             jest.spyOn(cellService, 'executeMdxCsv').mockResolvedValue(csv);
 
             const result = await cellService.executeMdxElementsValueDict(
@@ -175,13 +175,25 @@ describe('Enhanced CellService Tests', () => {
             expect(result).toEqual({ London: '100', Paris: '200', Berlin: '150' });
         });
 
-        test('executeMdxElementsValueDict honors quoted CSV fields with embedded separators', async () => {
-            const csv = 'Region|Value\n"Lon|don"|100\nParis|"5|0"\n';
+        test('executeMdxElementsValueDict joins multi-dim keys with the user-supplied separator', async () => {
+            const csv = 'Region,Year,Value\nLondon,2024,100\nParis,2024,200\n';
+            jest.spyOn(cellService, 'executeMdxCsv').mockResolvedValue(csv);
+
+            const result = await cellService.executeMdxElementsValueDict(
+                'SELECT 1 ON 0 FROM [c]',
+                '|',
+            );
+
+            expect(result).toEqual({ 'London|2024': '100', 'Paris|2024': '200' });
+        });
+
+        test('executeMdxElementsValueDict honors quoted CSV fields with embedded commas', async () => {
+            const csv = 'Region,Value\n"Lon,don",100\nParis,"5,0"\n';
             jest.spyOn(cellService, 'executeMdxCsv').mockResolvedValue(csv);
 
             const result = await cellService.executeMdxElementsValueDict('SELECT 1 ON 0 FROM [c]');
 
-            expect(result).toEqual({ 'Lon|don': '100', Paris: '5|0' });
+            expect(result).toEqual({ 'Lon,don': '100', Paris: '5,0' });
         });
     });
 
