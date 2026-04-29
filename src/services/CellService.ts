@@ -184,11 +184,12 @@ export class CellService {
         const result = new Map<string, any>();
         if (!cellset?.Cells || !cellset?.Axes) return result;
         const cardinalities: number[] = cellset.Axes.map((a: any) => a.Cardinality ?? 0);
-        // Prefer UniqueName (matches tm1py default element_unique_names=True);
-        // fall back to Name for cellsets that omit UniqueName.
+        // Prefer Element.UniqueName, then top-level UniqueName, then Name —
+        // matches tm1py's extract_unique_names_from_members fallback order
+        // (Utils.py: m["Element"]["UniqueName"] if Element else m["UniqueName"]).
         const tuplesByAxis: string[][][] = cellset.Axes.map((axis: any) =>
             (axis.Tuples || []).map((t: any) =>
-                (t.Members || []).map((m: any) => m.UniqueName ?? m.Element?.UniqueName ?? m.Name)
+                (t.Members || []).map((m: any) => m.Element?.UniqueName ?? m.UniqueName ?? m.Name)
             )
         );
         // Cells are row-major: ordinal index decomposes as (ord % cardA0, ord/cardA0 % cardA1, ...);
