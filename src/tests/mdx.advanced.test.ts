@@ -184,50 +184,46 @@ describe('Advanced MDX and Calculation Tests', () => {
     describe('Complex Calculation Scenarios', () => {
         test('should handle multi-dimensional aggregations', async () => {
             const cellService = new CellService(mockRestService);
-            
-            // Mock bulk cell operations for aggregation testing
-            mockRestService.patch.mockResolvedValue(createMockResponse({}));
-            
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['D1', 'D2', 'D3']);
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+
             const aggregationScenarios = [
                 {
                     name: 'Revenue by Product and Time',
                     cells: {
-                        'Electronics:2023:Q1': 500000,
-                        'Electronics:2023:Q2': 550000,
-                        'Electronics:2023:Q3': 520000,
-                        'Clothing:2023:Q1': 300000,
-                        'Clothing:2023:Q2': 320000,
-                        'Clothing:2023:Q3': 310000
-                    }
+                        'Electronics,2023,Q1': 500000,
+                        'Electronics,2023,Q2': 550000,
+                        'Electronics,2023,Q3': 520000,
+                        'Clothing,2023,Q1': 300000,
+                        'Clothing,2023,Q2': 320000,
+                        'Clothing,2023,Q3': 310000,
+                    },
                 },
                 {
                     name: 'Cost Center Allocations',
                     cells: {
-                        'IT:Salaries:Jan': 120000,
-                        'IT:Equipment:Jan': 25000,
-                        'IT:Training:Jan': 15000,
-                        'HR:Salaries:Jan': 95000,
-                        'HR:Equipment:Jan': 8000,
-                        'HR:Training:Jan': 12000
-                    }
-                }
+                        'IT,Salaries,Jan': 120000,
+                        'IT,Equipment,Jan': 25000,
+                        'IT,Training,Jan': 15000,
+                        'HR,Salaries,Jan': 95000,
+                        'HR,Equipment,Jan': 8000,
+                        'HR,Training,Jan': 12000,
+                    },
+                },
             ];
 
             for (const scenario of aggregationScenarios) {
                 await cellService.writeValues('TestCube', scenario.cells);
-                
-                // Validate the operation completed
-                expect(mockRestService.patch).toHaveBeenCalled();
-                
-                console.log(`✅ Multi-dimensional aggregation processed: ${scenario.name}`);
+                expect(mockRestService.post).toHaveBeenCalled();
             }
         });
 
         test('should handle complex allocation algorithms', async () => {
             const cellService = new CellService(mockRestService);
-            
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['CostCenter']);
+
             mockRestService.get.mockResolvedValue(createMockResponse({ value: 1000000 })); // Total to allocate
-            mockRestService.patch.mockResolvedValue(createMockResponse({}));
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
             
             // Simulate cost allocation based on multiple drivers
             const allocationDrivers = [
@@ -377,23 +373,22 @@ describe('Advanced MDX and Calculation Tests', () => {
 
         test('should handle batch cell operations efficiently', async () => {
             const cellService = new CellService(mockRestService);
-            
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['D1', 'D2', 'D3']);
+
             // Create batch update with 1000 cells
             const batchCells: { [key: string]: number } = {};
             for (let i = 0; i < 1000; i++) {
-                batchCells[`Element${i}:Product${i % 10}:Time${i % 12}`] = Math.random() * 10000;
+                batchCells[`Element${i},Product${i % 10},Time${i % 12}`] = Math.random() * 10000;
             }
 
-            mockRestService.patch.mockResolvedValue(createMockResponse({}));
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
 
             const startTime = Date.now();
             await cellService.writeValues('BatchCube', batchCells);
             const endTime = Date.now();
-            
-            expect(mockRestService.patch).toHaveBeenCalledTimes(1); // Should be a single batch call
-            expect(endTime - startTime).toBeLessThan(2000); // Should complete in under 2 seconds
-            
-            console.log(`✅ Batch cell operation (1000 cells) completed in ${endTime - startTime}ms`);
+
+            expect(mockRestService.post).toHaveBeenCalledTimes(1); // Should be a single batch call
+            expect(endTime - startTime).toBeLessThan(2000);
         });
     });
 

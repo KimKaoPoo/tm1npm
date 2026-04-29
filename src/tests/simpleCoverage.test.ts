@@ -72,21 +72,16 @@ describe('Simple Coverage Tests', () => {
             expect(mockRest.post).toHaveBeenCalled();
         });
 
-        test('CellService executeMdxAsync should work', async () => {
-            const mockRest = {
-                post: jest.fn().mockResolvedValue({
-                    data: { ID: 'mdx-test-id' },
-                    status: 200,
-                    statusText: 'OK',
-                    headers: {},
-                    config: {}
-                })
-            } as any;
+        test('CellService executeMdxAsync returns Map<string, any>', async () => {
+            const mockRest = {} as any;
 
             const cellService = new CellService(mockRest);
-            
+            jest.spyOn(cellService, 'createCellset').mockResolvedValue('CSID-1');
+            jest.spyOn(cellService, 'extractCellset').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
+
             const result = await cellService.executeMdxAsync('SELECT * FROM [TestCube]');
-            expect(result).toBe('mdx-test-id');
+            expect(result instanceof Map).toBe(true);
         });
     });
 
@@ -253,31 +248,20 @@ describe('Simple Coverage Tests', () => {
 
     describe('Promise and Async Coverage', () => {
         test('should handle promise chains', async () => {
-            const mockRest = {
-                post: jest.fn()
-                    .mockResolvedValueOnce({
-                        data: { ID: 'step1' },
-                        status: 200,
-                        statusText: 'OK',
-                        headers: {},
-                        config: {}
-                    })
-                    .mockResolvedValueOnce({
-                        data: { ID: 'step2' },
-                        status: 200,
-                        statusText: 'OK',
-                        headers: {},
-                        config: {}
-                    })
-            } as any;
+            const mockRest = {} as any;
 
             const cellService = new CellService(mockRest);
-            
+            jest.spyOn(cellService, 'createCellset')
+                .mockResolvedValueOnce('CSID-1')
+                .mockResolvedValueOnce('CSID-2');
+            jest.spyOn(cellService, 'extractCellset').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
+
             const result1 = await cellService.executeMdxAsync('SELECT * FROM [Cube1]');
             const result2 = await cellService.executeMdxAsync('SELECT * FROM [Cube2]');
-            
-            expect(result1).toBe('step1');
-            expect(result2).toBe('step2');
+
+            expect(result1 instanceof Map).toBe(true);
+            expect(result2 instanceof Map).toBe(true);
         });
     });
 });
