@@ -220,7 +220,7 @@ describe('Enhanced CellService Tests', () => {
                 'sb1'
             );
 
-            expect(mockRestService.post.mock.calls[0][0]).toBe("/Cellsets('CSID1')/tm1.Update?$sandbox=sb1");
+            expect(mockRestService.post.mock.calls[0][0]).toBe("/Cellsets('CSID1')/tm1.Update?!sandbox=sb1");
             const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
             expect(body.Value).toBe('RP100');
             expect(body['ReferenceCube@odata.bind']).toBe("Cubes('SalesCube')");
@@ -394,12 +394,12 @@ describe('Enhanced CellService Tests', () => {
             console.log('✅ extractCellsetCsv special characters test passed');
         });
 
-        test('execute_view_async creates cellset from view, extracts, and returns Map', async () => {
+        test('execute_view_async creates cellset from view, extracts, and returns Map keyed by UniqueName', async () => {
             jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
             jest.spyOn(cellService, 'extractCellset').mockResolvedValue({
                 Axes: [{
                     Cardinality: 1,
-                    Tuples: [{ Members: [{ Name: 'London' }] }],
+                    Tuples: [{ Members: [{ Name: 'London', UniqueName: '[Region].[Region].[London]' }] }],
                 }],
                 Cells: [{ Value: 100 }],
             });
@@ -408,7 +408,8 @@ describe('Enhanced CellService Tests', () => {
             const result = await cellService.execute_view_async('SalesCube', 'TestView');
 
             expect(result instanceof Map).toBe(true);
-            expect(result.get('London')).toBe(100);
+            // Matches tm1py default element_unique_names=True
+            expect(result.get('[Region].[Region].[London]')).toBe(100);
             expect(deleteSpy).toHaveBeenCalledWith('CSID-V', undefined);
         });
 

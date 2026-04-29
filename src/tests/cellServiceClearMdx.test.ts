@@ -80,6 +80,8 @@ describe('CellService.clear / clearWithMdx (issue #69 parity)', () => {
         expect(mdx).toContain('{[Region].[Australia]}');
         expect(mdx).toContain('{TM1FILTERBYLEVEL({TM1SUBSETALL([Year])},0)}');
         expect(mdx).toContain('{TM1FILTERBYLEVEL({TM1SUBSETALL([Product])},0)}');
+        // Guard against accidental double-wrapping such as {{[Region].[Australia]}}
+        expect(mdx).not.toMatch(/\{\{[^}]*\}\}/);
     });
 
     test('clear is case-and-space-insensitive when matching expression keys to dimension names', async () => {

@@ -184,11 +184,16 @@ export class CellService {
         const result = new Map<string, any>();
         if (!cellset?.Cells || !cellset?.Axes) return result;
         const cardinalities: number[] = cellset.Axes.map((a: any) => a.Cardinality ?? 0);
+        // Prefer UniqueName (matches tm1py default element_unique_names=True);
+        // fall back to Name for cellsets that omit UniqueName.
         const tuplesByAxis: string[][][] = cellset.Axes.map((axis: any) =>
-            (axis.Tuples || []).map((t: any) => (t.Members || []).map((m: any) => m.Name))
+            (axis.Tuples || []).map((t: any) =>
+                (t.Members || []).map((m: any) => m.UniqueName ?? m.Element?.UniqueName ?? m.Name)
+            )
         );
         // Cells are row-major: ordinal index decomposes as (ord % cardA0, ord/cardA0 % cardA1, ...);
-        // tuple key is members joined high-axis-first to match tm1py's CaseAndSpaceInsensitiveTuplesDict ordering.
+        // tuple key joins members axis-by-axis; tm1py reorders by cube dimensions, which is a
+        // documented parity gap (see IMPLEMENTATION_PLAN.md).
         cellset.Cells.forEach((cell: any, ordinal: number) => {
             const idxByAxis: number[] = [];
             let n = ordinal;
@@ -962,11 +967,17 @@ export class CellService {
      */
     /**
      * Execute view via cellset extraction (parity with tm1py.execute_view_async).
-     * Returns a Map keyed by comma-joined element names.
+     * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
      *
      * tm1py achieves async by parallel-chunked cellset extraction (extract_cellset_async).
      * That parallelization helper is not yet ported, so this delegates to a serial extract.
-     * Output dict shape is identical; max_workers/async_axis are accepted for API parity.
+     *
+     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
+     * - max_workers / async_axis accepted for API parity but no parallelization performed.
+     * - The following options are accepted but currently dropped: cell_properties, top, skip,
+     *   skip_contexts, skip_zeros, skip_consolidated_cells, skip_rule_derived_cells,
+     *   skip_cell_properties, element_unique_names.
+     * - Tuple-key element order follows axis order, not cube dimension order.
      */
     public async execute_view_async(
         cubeName: string,
@@ -1930,7 +1941,7 @@ END;
                 'ReferenceCube@odata.bind': formatUrl("Cubes('{}')", targetCube),
             };
             let url = formatUrl("/Cellsets('{}')/tm1.Update", cellsetId);
-            if (sandboxName) url += `?$sandbox=${encodeURIComponent(sandboxName)}`;
+            if (sandboxName) url += `?!sandbox=${encodeURIComponent(sandboxName)}`;
             await this.rest.post(url, JSON.stringify(payload));
         } finally {
             await this._safeDeleteCellset(cellsetId, sandboxName);
@@ -2167,11 +2178,17 @@ END;
 
     /**
      * Execute MDX via cellset extraction (parity with tm1py.execute_mdx_async).
-     * Returns a Map keyed by comma-joined element names.
+     * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
      *
      * tm1py achieves async by parallel-chunked cellset extraction (extract_cellset_async).
      * That parallelization helper is not yet ported, so this delegates to a serial extract.
-     * Output dict shape is identical; max_workers/async_axis are accepted for API parity.
+     *
+     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
+     * - max_workers / async_axis accepted for API parity but no parallelization performed.
+     * - The following options are accepted but currently dropped: cell_properties, top, skip,
+     *   skip_contexts, skip_zeros, skip_consolidated_cells, skip_rule_derived_cells,
+     *   skip_cell_properties, use_compact_json, skip_sandbox_dimension, element_unique_names.
+     * - Tuple-key element order follows axis order, not cube dimension order.
      */
     public async executeMdxAsync(
         mdx: string,
