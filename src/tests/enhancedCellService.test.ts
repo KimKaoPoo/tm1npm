@@ -408,7 +408,7 @@ describe('Enhanced CellService Tests', () => {
 
         test('execute_view_async creates cellset from view, extracts, and returns Map keyed by UniqueName', async () => {
             jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
-            jest.spyOn(cellService, 'extractCellset').mockResolvedValue({
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({
                 Axes: [{
                     Cardinality: 1,
                     Hierarchies: [{ Dimension: { Name: 'Region' }, Name: 'Region' }],
@@ -430,7 +430,7 @@ describe('Enhanced CellService Tests', () => {
         test('execute_view_async reorders tuple parts by cube dimension order (parity with tm1py.sort_coordinates)', async () => {
             jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
             // Axis 0 = Region; Axis 1 = Time. Cube dimensions = [Time, Region] — keys must come out as Time,Region.
-            jest.spyOn(cellService, 'extractCellset').mockResolvedValue({
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({
                 Axes: [
                     {
                         Cardinality: 1,
@@ -455,7 +455,7 @@ describe('Enhanced CellService Tests', () => {
 
         test('execute_view_async respects private/sandbox options', async () => {
             const createSpy = jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
-            jest.spyOn(cellService, 'extractCellset').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
             jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue([]);
             jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
 
@@ -465,6 +465,51 @@ describe('Enhanced CellService Tests', () => {
             });
 
             expect(createSpy).toHaveBeenCalledWith('SalesCube', 'TestView', true, 'TestSandbox');
+        });
+
+        test('execute_view_async prefers Element.UniqueName when Member only carries Element shape', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            // Real TM1 cellset shape with $expand=Members($expand=Element($select=UniqueName)):
+            // Member has no top-level UniqueName, only Element.UniqueName.
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({
+                Axes: [{
+                    Cardinality: 1,
+                    Hierarchies: [{ Dimension: { Name: 'Region' } }],
+                    Tuples: [{ Members: [{ Name: 'London', Element: { UniqueName: '[Region].[Region].[London]' } }] }],
+                }],
+                Cells: [{ Value: 100 }],
+            });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Region']);
+            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
+
+            const result = await cellService.execute_view_async('SalesCube', 'TestView');
+
+            expect(result.get('[Region].[Region].[London]')).toBe(100);
+        });
+    });
+
+    describe('TM1Service-constructed CellService', () => {
+        test('writeAsync does not throw "ProcessService is required" when called via TM1Service constructor (regression for issue #69)', async () => {
+            // Reproduces the path TM1Service uses: pass ProcessService into CellService.
+            // Without this dependency the new writeAsync (which delegates to writeThroughBlob,
+            // which requires ProcessService) would throw at runtime.
+            const tm1RestMock: any = {
+                post: jest.fn().mockResolvedValue(createMockResponse({})),
+                get: jest.fn().mockResolvedValue(createMockResponse({ Dimensions: [] })),
+                delete: jest.fn().mockResolvedValue(createMockResponse({})),
+                patch: jest.fn().mockResolvedValue(createMockResponse({})),
+                put: jest.fn().mockResolvedValue(createMockResponse({})),
+            };
+            const processServiceLike = new (require('../services/ProcessService').ProcessService)(tm1RestMock);
+            const viewServiceLike = new (require('../services/ViewService').ViewService)(tm1RestMock);
+            const cs = new CellService(tm1RestMock, processServiceLike, viewServiceLike);
+
+            // Spy on writeThroughBlob to confirm writeAsync routes there without throwing.
+            const blobSpy = jest.spyOn(cs, 'writeThroughBlob').mockResolvedValue(undefined);
+
+            await cs.writeAsync('SalesCube', { 'a,b,c': 1 }, { slice_size: 1, max_workers: 1 });
+
+            expect(blobSpy).toHaveBeenCalledTimes(1);
         });
     });
 });

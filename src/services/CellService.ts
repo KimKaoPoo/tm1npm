@@ -185,6 +185,26 @@ export class CellService {
         try { await this.deleteCellset(cellsetId, sandboxName); } catch (_) { /* best-effort cleanup */ }
     }
 
+    /**
+     * Fetch a cellset with the expand/select shape required by _cellsetToTupleDict —
+     * notably Members.UniqueName and Hierarchies.Dimension.Name. Mirrors the elem/member
+     * properties that tm1py's extract_cellset_raw requests for element_unique_names=True.
+     */
+    private async _extractCellsetForTupleDict(cellsetId: string, sandboxName?: string): Promise<any> {
+        const expand =
+            'Cells,' +
+            'Axes($expand=' +
+                'Tuples($expand=Members($select=Name,UniqueName;$expand=Element($select=UniqueName))),' +
+                'Hierarchies($select=Name;$expand=Dimension($select=Name))' +
+            ')';
+        const params = new URLSearchParams();
+        params.append('$expand', expand);
+        if (sandboxName) params.append('$sandbox', sandboxName);
+        const url = `/Cellsets('${cellsetId}')?${params.toString()}`;
+        const response = await this.rest.get(url);
+        return response.data;
+    }
+
     private static _cellsetToTupleDict(cellset: any, cubeDimensions?: readonly string[]): Map<string, any> {
         const result = new Map<string, any>();
         if (!cellset?.Cells || !cellset?.Axes) return result;
@@ -1026,7 +1046,7 @@ export class CellService {
             options.sandbox_name
         );
         try {
-            const cellset = await this.extractCellset(cellsetId, true, options.sandbox_name);
+            const cellset = await this._extractCellsetForTupleDict(cellsetId, options.sandbox_name);
             const cubeDims = await this.getDimensionNamesForWriting(cubeName);
             return CellService._cellsetToTupleDict(cellset, cubeDims);
         } finally {
@@ -1964,13 +1984,18 @@ END;
             const targetCube = referenceCube || cube;
             const refBindings = referenceUniqueElementNames.map(unique => {
                 const [dim, hier, elem] = CellService._parseUniqueElementName(unique);
-                return formatUrl("Dimensions('{}')/Hierarchies('{}')/Elements('{}')", dim, hier, elem);
+                return formatUrl(
+                    "Dimensions('{}')/Hierarchies('{}')/Elements('{}')",
+                    escapeODataValue(dim),
+                    escapeODataValue(hier),
+                    escapeODataValue(elem),
+                );
             });
             const payload = {
                 BeginOrdinal: 0,
                 Value: 'RP' + String(value),
                 'ReferenceCell@odata.bind': refBindings,
-                'ReferenceCube@odata.bind': formatUrl("Cubes('{}')", targetCube),
+                'ReferenceCube@odata.bind': formatUrl("Cubes('{}')", escapeODataValue(targetCube)),
             };
             let url = formatUrl("/Cellsets('{}')/tm1.Update", cellsetId);
             if (sandboxName) url += `?!sandbox=${encodeURIComponent(sandboxName)}`;
@@ -2047,7 +2072,12 @@ END;
         const updates = Object.entries(cellsetAsDict).map(([tupleKey, value]) => ({
             Cells: [{
                 'Tuple@odata.bind': tupleKey.split(',').map((elem, i) =>
-                    formatUrl("Dimensions('{}')/Hierarchies('{}')/Elements('{}')", dims[i], dims[i], elem)
+                    formatUrl(
+                        "Dimensions('{}')/Hierarchies('{}')/Elements('{}')",
+                        escapeODataValue(dims[i]),
+                        escapeODataValue(dims[i]),
+                        escapeODataValue(elem),
+                    )
                 ),
             }],
             Value: value || '',
@@ -2230,7 +2260,7 @@ END;
     ): Promise<Map<string, any>> {
         const cellsetId = await this.createCellset(mdx, options.sandbox_name);
         try {
-            const cellset = await this.extractCellset(cellsetId, true, options.sandbox_name);
+            const cellset = await this._extractCellsetForTupleDict(cellsetId, options.sandbox_name);
             const cubeDims = options.cubeName
                 ? await this.getDimensionNamesForWriting(options.cubeName)
                 : undefined;

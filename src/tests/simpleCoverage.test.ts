@@ -77,7 +77,7 @@ describe('Simple Coverage Tests', () => {
 
             const cellService = new CellService(mockRest);
             jest.spyOn(cellService, 'createCellset').mockResolvedValue('CSID-1');
-            jest.spyOn(cellService, 'extractCellset').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
             jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
 
             const result = await cellService.executeMdxAsync('SELECT * FROM [TestCube]');
@@ -254,7 +254,7 @@ describe('Simple Coverage Tests', () => {
             jest.spyOn(cellService, 'createCellset')
                 .mockResolvedValueOnce('CSID-1')
                 .mockResolvedValueOnce('CSID-2');
-            jest.spyOn(cellService, 'extractCellset').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
             jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
 
             const result1 = await cellService.executeMdxAsync('SELECT * FROM [Cube1]');
