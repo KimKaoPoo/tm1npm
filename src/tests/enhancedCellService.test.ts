@@ -467,6 +467,30 @@ describe('Enhanced CellService Tests', () => {
             expect(createSpy).toHaveBeenCalledWith('SalesCube', 'TestView', true, 'TestSandbox');
         });
 
+        test('cellset cleanup suppresses 404 only (parity with tm1py @tidy_cellset)', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue([]);
+            const notFound: any = new Error('not found');
+            notFound.statusCode = 404;
+            jest.spyOn(cellService, 'deleteCellset').mockRejectedValueOnce(notFound);
+
+            // 404 during cleanup must not propagate
+            await expect(cellService.execute_view_async('SalesCube', 'V')).resolves.toBeInstanceOf(Map);
+        });
+
+        test('cellset cleanup re-raises non-404 errors (parity with tm1py @tidy_cellset)', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue([]);
+            const serverError: any = new Error('server error');
+            serverError.statusCode = 500;
+            jest.spyOn(cellService, 'deleteCellset').mockRejectedValueOnce(serverError);
+
+            await expect(cellService.execute_view_async('SalesCube', 'V'))
+                .rejects.toThrow('server error');
+        });
+
         test('execute_view_async prefers Element.UniqueName when Member only carries Element shape', async () => {
             jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
             // Real TM1 cellset shape with $expand=Members($expand=Element($select=UniqueName)):

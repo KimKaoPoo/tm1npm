@@ -182,7 +182,14 @@ export class CellService {
     }
 
     private async _safeDeleteCellset(cellsetId: string, sandboxName?: string): Promise<void> {
-        try { await this.deleteCellset(cellsetId, sandboxName); } catch (_) { /* best-effort cleanup */ }
+        // Mirror tm1py's @tidy_cellset (CellService.py:80-99): suppress 404 (already gone),
+        // re-raise every other status so server-side errors during cleanup are visible.
+        try {
+            await this.deleteCellset(cellsetId, sandboxName);
+        } catch (err: any) {
+            const status = err?.statusCode ?? err?.status ?? err?.response?.status;
+            if (status !== 404) throw err;
+        }
     }
 
     /**
@@ -199,7 +206,9 @@ export class CellService {
             ')';
         const params = new URLSearchParams();
         params.append('$expand', expand);
-        if (sandboxName) params.append('$sandbox', sandboxName);
+        // Cellset endpoints use TM1's write-side !sandbox= form (parity with tm1py's
+        // add_url_parameters("!sandbox", ...) at CellService.py:5064-5073).
+        if (sandboxName) params.append('!sandbox', sandboxName);
         const url = `/Cellsets('${cellsetId}')?${params.toString()}`;
         const response = await this.rest.get(url);
         return response.data;
@@ -1919,13 +1928,15 @@ END;
         mdx: string,
         elementSeparator: string = '|',
         sandboxName?: string,
-        options: { skipZeros?: boolean; skipConsolidatedCells?: boolean; skipRuleDerivedCells?: boolean } = {}
+        options: { skipZeros?: boolean } = {}
     ): Promise<{ [key: string]: any }> {
+        // skip_consolidated_cells / skip_rule_derived_cells are not yet wired through
+        // executeMdxCsv to TM1's URL params, so they are deliberately omitted from this
+        // signature (compile-time enforcement matches the pattern used by executeMdxAsync /
+        // execute_view_async). Add them back when executeMdxCsv accepts them.
         const csv = await this.executeMdxCsv(mdx, {
             sandbox_name: sandboxName,
             skip_zeros: options.skipZeros !== false,
-            skip_consolidated: options.skipConsolidatedCells,
-            skip_rule_derived: options.skipRuleDerivedCells,
         });
         if (!csv) return {};
         const lines = csv.split(/\r?\n/).filter(l => l.length > 0);
