@@ -185,7 +185,7 @@ export class CellService {
         try { await this.deleteCellset(cellsetId, sandboxName); } catch (_) { /* best-effort cleanup */ }
     }
 
-    private static _cellsetToTupleDict(cellset: any): Map<string, any> {
+    private static _cellsetToTupleDict(cellset: any, cubeDimensions?: readonly string[]): Map<string, any> {
         const result = new Map<string, any>();
         if (!cellset?.Cells || !cellset?.Axes) return result;
         const cardinalities: number[] = cellset.Axes.map((a: any) => a.Cardinality ?? 0);
@@ -197,9 +197,17 @@ export class CellService {
                 (t.Members || []).map((m: any) => m.Element?.UniqueName ?? m.UniqueName ?? m.Name)
             )
         );
-        // Cells are row-major: ordinal index decomposes as (ord % cardA0, ord/cardA0 % cardA1, ...);
-        // tuple key joins members axis-by-axis; tm1py reorders by cube dimensions, which is a
-        // documented parity gap (see IMPLEMENTATION_PLAN.md).
+        // Per-axis dimension names — used to reorder tuple parts to match the cube's natural
+        // dimension order (parity with tm1py's sort_coordinates / Cube.dimensions order).
+        const axisDimNames: string[][] = cellset.Axes.map((axis: any) => {
+            const hier = axis.Hierarchies || [];
+            return hier.map((h: any) => h?.Dimension?.Name ?? h?.Name ?? '');
+        });
+        const dimToCubeIdx = new Map<string, number>();
+        if (cubeDimensions) {
+            cubeDimensions.forEach((dim, i) => dimToCubeIdx.set(lowerAndDropSpaces(dim), i));
+        }
+        // Cells are row-major: ordinal index decomposes as (ord % cardA0, ord/cardA0 % cardA1, ...).
         cellset.Cells.forEach((cell: any, ordinal: number) => {
             const idxByAxis: number[] = [];
             let n = ordinal;
@@ -208,12 +216,24 @@ export class CellService {
                 idxByAxis.push(n % card);
                 n = Math.floor(n / card);
             }
-            const parts: string[] = [];
+            // Collect (dimensionName, memberUniqueName) pairs across all axes.
+            const partsWithDim: Array<{ dim: string; member: string }> = [];
             for (let a = idxByAxis.length - 1; a >= 0; a--) {
                 const tuple = tuplesByAxis[a]?.[idxByAxis[a]] || [];
-                for (const member of tuple) parts.push(member);
+                const dims = axisDimNames[a] || [];
+                tuple.forEach((member: string, i: number) => {
+                    partsWithDim.push({ dim: dims[i] ?? '', member });
+                });
             }
-            result.set(parts.join(','), cell.Value);
+            // If the caller supplied cube dimensions, sort by that order; else preserve axis order.
+            if (cubeDimensions) {
+                partsWithDim.sort((x, y) => {
+                    const xi = dimToCubeIdx.get(lowerAndDropSpaces(x.dim)) ?? Number.MAX_SAFE_INTEGER;
+                    const yi = dimToCubeIdx.get(lowerAndDropSpaces(y.dim)) ?? Number.MAX_SAFE_INTEGER;
+                    return xi - yi;
+                });
+            }
+            result.set(partsWithDim.map(p => p.member).join(','), cell.Value);
         });
         return result;
     }
@@ -989,7 +1009,10 @@ export class CellService {
      * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
      *   not yet wired through extractCellset and are deliberately omitted from this signature
      *   so misuse is a compile-time error.
-     * - Tuple-key element order follows axis order, not cube dimension order.
+     * - Tuple-key parts are reordered by cube dimensions (parity with tm1py.sort_coordinates).
+     * - Calls createCellsetFromView, which is itself pre-existing on main and currently
+     *   targets a fabricated /tm1.CreateCellset endpoint (out of #69 scope; tracked
+     *   separately for a future fix to use /Cubes/{}/Views/{}/tm1.Execute per tm1py).
      */
     public async execute_view_async(
         cubeName: string,
@@ -1004,7 +1027,8 @@ export class CellService {
         );
         try {
             const cellset = await this.extractCellset(cellsetId, true, options.sandbox_name);
-            return CellService._cellsetToTupleDict(cellset);
+            const cubeDims = await this.getDimensionNamesForWriting(cubeName);
+            return CellService._cellsetToTupleDict(cellset, cubeDims);
         } finally {
             await this._safeDeleteCellset(cellsetId, options.sandbox_name);
         }
@@ -1933,7 +1957,7 @@ END;
         referenceUniqueElementNames: readonly string[],
         referenceCube?: string,
         sandboxName?: string
-    ): Promise<void> {
+    ): Promise<any> {
         const mdx = `SELECT { ${uniqueElementNames.join('}*{')} } ON 0 FROM [${cube}]`;
         const cellsetId = await this.createCellset(mdx, sandboxName);
         try {
@@ -1950,7 +1974,7 @@ END;
             };
             let url = formatUrl("/Cellsets('{}')/tm1.Update", cellsetId);
             if (sandboxName) url += `?!sandbox=${encodeURIComponent(sandboxName)}`;
-            await this.rest.post(url, JSON.stringify(payload));
+            return await this.rest.post(url, JSON.stringify(payload));
         } finally {
             await this._safeDeleteCellset(cellsetId, sandboxName);
         }
@@ -2197,16 +2221,20 @@ END;
      *   not yet wired through extractCellset. To prevent silent option-drop, those parameters
      *   are deliberately omitted from this signature so misuse is a compile-time error rather
      *   than a runtime no-op. Add them back when the underlying extractor supports them.
-     * - Tuple-key element order follows axis order, not cube dimension order.
+     * - Optional `cubeName` lets the caller request tm1py-compatible tuple-key ordering by
+     *   cube dimensions. When omitted, parts are joined in axis order (tm1py-divergent).
      */
     public async executeMdxAsync(
         mdx: string,
-        options: { sandbox_name?: string } = {}
+        options: { sandbox_name?: string; cubeName?: string } = {}
     ): Promise<Map<string, any>> {
         const cellsetId = await this.createCellset(mdx, options.sandbox_name);
         try {
             const cellset = await this.extractCellset(cellsetId, true, options.sandbox_name);
-            return CellService._cellsetToTupleDict(cellset);
+            const cubeDims = options.cubeName
+                ? await this.getDimensionNamesForWriting(options.cubeName)
+                : undefined;
+            return CellService._cellsetToTupleDict(cellset, cubeDims);
         } finally {
             await this._safeDeleteCellset(cellsetId, options.sandbox_name);
         }

@@ -411,10 +411,12 @@ describe('Enhanced CellService Tests', () => {
             jest.spyOn(cellService, 'extractCellset').mockResolvedValue({
                 Axes: [{
                     Cardinality: 1,
+                    Hierarchies: [{ Dimension: { Name: 'Region' }, Name: 'Region' }],
                     Tuples: [{ Members: [{ Name: 'London', UniqueName: '[Region].[Region].[London]' }] }],
                 }],
                 Cells: [{ Value: 100 }],
             });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Region']);
             const deleteSpy = jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
 
             const result = await cellService.execute_view_async('SalesCube', 'TestView');
@@ -425,9 +427,36 @@ describe('Enhanced CellService Tests', () => {
             expect(deleteSpy).toHaveBeenCalledWith('CSID-V', undefined);
         });
 
+        test('execute_view_async reorders tuple parts by cube dimension order (parity with tm1py.sort_coordinates)', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            // Axis 0 = Region; Axis 1 = Time. Cube dimensions = [Time, Region] — keys must come out as Time,Region.
+            jest.spyOn(cellService, 'extractCellset').mockResolvedValue({
+                Axes: [
+                    {
+                        Cardinality: 1,
+                        Hierarchies: [{ Dimension: { Name: 'Region' } }],
+                        Tuples: [{ Members: [{ UniqueName: '[Region].[Region].[USA]' }] }],
+                    },
+                    {
+                        Cardinality: 1,
+                        Hierarchies: [{ Dimension: { Name: 'Time' } }],
+                        Tuples: [{ Members: [{ UniqueName: '[Time].[Time].[2024]' }] }],
+                    },
+                ],
+                Cells: [{ Value: 42 }],
+            });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Time', 'Region']);
+            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
+
+            const result = await cellService.execute_view_async('SalesCube', 'TestView');
+
+            expect(result.get('[Time].[Time].[2024],[Region].[Region].[USA]')).toBe(42);
+        });
+
         test('execute_view_async respects private/sandbox options', async () => {
             const createSpy = jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
             jest.spyOn(cellService, 'extractCellset').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue([]);
             jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
 
             await cellService.execute_view_async('SalesCube', 'TestView', {
