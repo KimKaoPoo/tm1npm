@@ -102,6 +102,15 @@ describe('100% TM1py Parity Function Existence', () => {
         });
     });
 
+    describe('CellService - tm1py parity additions (issue #69)', () => {
+        test('parity helpers and string-set methods exist', () => {
+            expect(typeof cellService.sandboxExists).toBe('function');
+            expect(typeof cellService.generateEnableSandboxTi).toBe('function');
+            expect(typeof cellService.executeMdxRowsAndValuesStringSet).toBe('function');
+            expect(typeof cellService.executeViewRowsAndValuesStringSet).toBe('function');
+        });
+    });
+
     describe('HierarchyService - Balance Check (1 function)', () => {
         test('New HierarchyService function should exist', () => {
             expect(typeof hierarchyService.isBalanced).toBe('function');

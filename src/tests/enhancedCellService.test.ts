@@ -76,24 +76,35 @@ describe('Enhanced CellService Tests', () => {
             console.log('✅ writeDataframe test passed');
         });
 
-        test('writeAsync should return async operation ID', async () => {
-            const cellset = { '2024,Actual,London': 100 };
+        test('writeAsync chunks the cellset and delegates to writeThroughBlob', async () => {
+            const cellset = { '2024,Actual,London': 100, '2024,Actual,Paris': 200 };
 
-            mockRestService.patch.mockResolvedValue(createMockResponse(
-                { ID: 'async-123' }
-            ));
+            const writeThroughBlobSpy = jest
+                .spyOn(cellService, 'writeThroughBlob')
+                .mockResolvedValue(undefined);
 
-            const asyncId = await cellService.writeAsync('SalesCube', cellset);
+            const result = await cellService.writeAsync('SalesCube', cellset, { slice_size: 1, max_workers: 2 });
 
-            expect(asyncId).toBe('async-123');
-            expect(mockRestService.patch).toHaveBeenCalledWith(
-                "/Cubes('SalesCube')/tm1.UpdateAsync",
-                expect.objectContaining({
-                    Cells: expect.any(Array)
-                })
+            expect(result).toBeUndefined();
+            // Two entries with slice_size=1 → two chunks → two writeThroughBlob calls
+            expect(writeThroughBlobSpy).toHaveBeenCalledTimes(2);
+            expect(writeThroughBlobSpy).toHaveBeenCalledWith(
+                'SalesCube',
+                expect.any(Object),
+                expect.objectContaining({ use_blob: true })
             );
-            
-            console.log('✅ writeAsync test passed');
+        });
+
+        test('writeAsync aggregates per-chunk failures into a TM1Exception', async () => {
+            const cellset = { 'a,b,c': 1, 'd,e,f': 2 };
+
+            jest.spyOn(cellService, 'writeThroughBlob')
+                .mockRejectedValueOnce(new Error('chunk1 failed'))
+                .mockResolvedValueOnce(undefined);
+
+            await expect(
+                cellService.writeAsync('SalesCube', cellset, { slice_size: 1, max_workers: 2 })
+            ).rejects.toThrow(/writeAsync partial failure: 1\/2 chunks failed/);
         });
 
         test('writeThroughUnboundProcess should execute TI statements', async () => {
@@ -153,22 +164,36 @@ describe('Enhanced CellService Tests', () => {
     });
 
     describe('Enhanced Data Reading Functions', () => {
-        test('executeMdxElementsValueDict should return element-value dictionary', async () => {
-            const mockData = { 'London': 100, 'Paris': 200, 'Berlin': 150 };
-
-            mockRestService.post.mockResolvedValue(createMockResponse(mockData));
+        test('executeMdxElementsValueDict parses comma-CSV into a dict joined by user separator', async () => {
+            const csv = 'Region,Value\nLondon,100\nParis,200\nBerlin,150\n';
+            jest.spyOn(cellService, 'executeMdxCsv').mockResolvedValue(csv);
 
             const result = await cellService.executeMdxElementsValueDict(
                 'SELECT NON EMPTY {[Region].Members} ON 0 FROM [SalesCube]'
             );
 
-            expect(result).toEqual(mockData);
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                '/ExecuteMDXElementsValue',
-                { MDX: 'SELECT NON EMPTY {[Region].Members} ON 0 FROM [SalesCube]' }
+            expect(result).toEqual({ London: '100', Paris: '200', Berlin: '150' });
+        });
+
+        test('executeMdxElementsValueDict joins multi-dim keys with the user-supplied separator', async () => {
+            const csv = 'Region,Year,Value\nLondon,2024,100\nParis,2024,200\n';
+            jest.spyOn(cellService, 'executeMdxCsv').mockResolvedValue(csv);
+
+            const result = await cellService.executeMdxElementsValueDict(
+                'SELECT 1 ON 0 FROM [c]',
+                '|',
             );
-            
-            console.log('✅ executeMdxElementsValueDict test passed');
+
+            expect(result).toEqual({ 'London|2024': '100', 'Paris|2024': '200' });
+        });
+
+        test('executeMdxElementsValueDict honors quoted CSV fields with embedded commas', async () => {
+            const csv = 'Region,Value\n"Lon,don",100\nParis,"5,0"\n';
+            jest.spyOn(cellService, 'executeMdxCsv').mockResolvedValue(csv);
+
+            const result = await cellService.executeMdxElementsValueDict('SELECT 1 ON 0 FROM [c]');
+
+            expect(result).toEqual({ 'Lon,don': '100', Paris: '5,0' });
         });
     });
 
@@ -193,18 +218,27 @@ describe('Enhanced CellService Tests', () => {
             console.log('✅ clearWithDataframe test passed');
         });
 
-        test('relativeProportionalSpread should execute proportional spread', async () => {
-            const coordinates = ['2024', 'Actual', 'Total'];
-
+        test('relativeProportionalSpread builds RP cellset payload (parity with tm1py)', async () => {
+            jest.spyOn(cellService, 'createCellset').mockResolvedValue('CSID1');
+            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
             mockRestService.post.mockResolvedValue(createMockResponse({}));
 
-            await cellService.relativeProportionalSpread('SalesCube', coordinates, 1000);
-
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Cubes('SalesCube')/tm1.ProportionalSpread(coordinates=['2024','Actual','Total'],value=1000)"
+            await cellService.relativeProportionalSpread(
+                100,
+                'SalesCube',
+                ['[Region].[All]', '[Time].[2024]'],
+                ['[Region].[USA]'],
+                undefined,
+                'sb1'
             );
-            
-            console.log('✅ relativeProportionalSpread test passed');
+
+            expect(mockRestService.post.mock.calls[0][0]).toBe("/Cellsets('CSID1')/tm1.Update?!sandbox=sb1");
+            const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(body.Value).toBe('RP100');
+            expect(body['ReferenceCube@odata.bind']).toBe("Cubes('SalesCube')");
+            expect(body['ReferenceCell@odata.bind']).toEqual([
+                "Dimensions('Region')/Hierarchies('Region')/Elements('USA')",
+            ]);
         });
 
         test('clearSpread should execute clear spread', async () => {
@@ -265,28 +299,30 @@ describe('Enhanced CellService Tests', () => {
     });
 
     describe('New Critical Methods Tests', () => {
-        test('clear should clear cube data with sandbox support', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({}));
+        test('clear delegates to clearWithMdx with NON EMPTY column-axis MDX', async () => {
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Year', 'Region']);
+            const clearWithMdxSpy = jest.spyOn(cellService, 'clearWithMdx').mockResolvedValue(undefined);
 
-            await cellService.clear('SalesCube', 'TestSandbox');
+            await cellService.clear('SalesCube', { region: '{[Region].[Australia]}' }, 'TestSandbox');
 
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Cubes('SalesCube')/tm1.Clear?$sandbox=TestSandbox"
-            );
-
-            console.log('✅ clear test passed');
+            expect(clearWithMdxSpy).toHaveBeenCalledTimes(1);
+            const [, mdx, sandboxArg] = clearWithMdxSpy.mock.calls[0];
+            expect(sandboxArg).toBe('TestSandbox');
+            expect(mdx).toContain('NON EMPTY');
+            expect(mdx).toContain('FROM [SalesCube]');
+            expect(mdx).toContain('{[Region].[Australia]}');
+            expect(mdx).toContain('{TM1FILTERBYLEVEL({TM1SUBSETALL([Year])},0)}');
         });
 
-        test('clear should clear cube data without sandbox', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({}));
+        test('clear without dimensionExpressions defaults all dims', async () => {
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Year']);
+            const clearWithMdxSpy = jest.spyOn(cellService, 'clearWithMdx').mockResolvedValue(undefined);
 
             await cellService.clear('SalesCube');
 
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Cubes('SalesCube')/tm1.Clear"
-            );
-
-            console.log('✅ clear without sandbox test passed');
+            const [, mdx, sandboxArg] = clearWithMdxSpy.mock.calls[0];
+            expect(sandboxArg).toBeUndefined();
+            expect(mdx).toContain('{TM1FILTERBYLEVEL({TM1SUBSETALL([Year])},0)}');
         });
 
         test('extractCellsetCsv should extract cellset as CSV with headers', async () => {
@@ -370,56 +406,134 @@ describe('Enhanced CellService Tests', () => {
             console.log('✅ extractCellsetCsv special characters test passed');
         });
 
-        test('execute_view_async should execute view asynchronously', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({
-                ID: 'async-view-123'
-            }));
+        test('execute_view_async creates cellset from view, extracts, and returns Map keyed by UniqueName', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({
+                Axes: [{
+                    Cardinality: 1,
+                    Hierarchies: [{ Dimension: { Name: 'Region' }, Name: 'Region' }],
+                    Tuples: [{ Members: [{ Name: 'London', UniqueName: '[Region].[Region].[London]' }] }],
+                }],
+                Cells: [{ Value: 100 }],
+            });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Region']);
+            const deleteSpy = jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
 
-            const asyncId = await cellService.execute_view_async('SalesCube', 'TestView');
+            const result = await cellService.execute_view_async('SalesCube', 'TestView');
 
-            expect(asyncId).toBe('async-view-123');
-            expect(mockRestService.post).toHaveBeenCalledWith(
-                "/Cubes('SalesCube')/Views('TestView')/tm1.ExecuteAsync"
-            );
-
-            console.log('✅ execute_view_async test passed');
+            expect(result instanceof Map).toBe(true);
+            // Matches tm1py default element_unique_names=True
+            expect(result.get('[Region].[Region].[London]')).toBe(100);
+            expect(deleteSpy).toHaveBeenCalledWith('CSID-V', undefined);
         });
 
-        test('execute_view_async should support all options', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({
-                ID: 'async-view-456'
-            }));
+        test('execute_view_async reorders tuple parts by cube dimension order (parity with tm1py.sort_coordinates)', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            // Axis 0 = Region; Axis 1 = Time. Cube dimensions = [Time, Region] — keys must come out as Time,Region.
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({
+                Axes: [
+                    {
+                        Cardinality: 1,
+                        Hierarchies: [{ Dimension: { Name: 'Region' } }],
+                        Tuples: [{ Members: [{ UniqueName: '[Region].[Region].[USA]' }] }],
+                    },
+                    {
+                        Cardinality: 1,
+                        Hierarchies: [{ Dimension: { Name: 'Time' } }],
+                        Tuples: [{ Members: [{ UniqueName: '[Time].[Time].[2024]' }] }],
+                    },
+                ],
+                Cells: [{ Value: 42 }],
+            });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Time', 'Region']);
+            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
 
-            const options = {
+            const result = await cellService.execute_view_async('SalesCube', 'TestView');
+
+            expect(result.get('[Time].[Time].[2024],[Region].[Region].[USA]')).toBe(42);
+        });
+
+        test('execute_view_async respects private/sandbox options', async () => {
+            const createSpy = jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue([]);
+            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
+
+            await cellService.execute_view_async('SalesCube', 'TestView', {
                 private: true,
                 sandbox_name: 'TestSandbox',
-                element_unique_names: true,
-                skip_zeros: true,
-                skip_consolidated: true,
-                skip_rule_derived: true
-            };
+            });
 
-            const asyncId = await cellService.execute_view_async('SalesCube', 'TestView', options);
-
-            expect(asyncId).toBe('async-view-456');
-
-            const callUrl = mockRestService.post.mock.calls[0][0];
-            expect(callUrl).toContain('/tm1.ExecuteAsync');
-            expect(callUrl).toContain('private=true');
-            expect(callUrl).toContain('sandbox=TestSandbox');
-            expect(callUrl).toContain('element_unique_names=true');
-
-            console.log('✅ execute_view_async with options test passed');
+            expect(createSpy).toHaveBeenCalledWith('SalesCube', 'TestView', true, 'TestSandbox');
         });
 
-        test('execute_view_async should return generated ID if no ID in response', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({}));
+        test('cellset cleanup suppresses 404 only (parity with tm1py @tidy_cellset)', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue([]);
+            const notFound: any = new Error('not found');
+            notFound.statusCode = 404;
+            jest.spyOn(cellService, 'deleteCellset').mockRejectedValueOnce(notFound);
 
-            const asyncId = await cellService.execute_view_async('SalesCube', 'TestView');
+            // 404 during cleanup must not propagate
+            await expect(cellService.execute_view_async('SalesCube', 'V')).resolves.toBeInstanceOf(Map);
+        });
 
-            expect(asyncId).toMatch(/^view_async_/);
+        test('cellset cleanup re-raises non-404 errors (parity with tm1py @tidy_cellset)', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue([]);
+            const serverError: any = new Error('server error');
+            serverError.statusCode = 500;
+            jest.spyOn(cellService, 'deleteCellset').mockRejectedValueOnce(serverError);
 
-            console.log('✅ execute_view_async fallback ID test passed');
+            await expect(cellService.execute_view_async('SalesCube', 'V'))
+                .rejects.toThrow('server error');
+        });
+
+        test('execute_view_async prefers Element.UniqueName when Member only carries Element shape', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            // Real TM1 cellset shape with $expand=Members($expand=Element($select=UniqueName)):
+            // Member has no top-level UniqueName, only Element.UniqueName.
+            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({
+                Axes: [{
+                    Cardinality: 1,
+                    Hierarchies: [{ Dimension: { Name: 'Region' } }],
+                    Tuples: [{ Members: [{ Name: 'London', Element: { UniqueName: '[Region].[Region].[London]' } }] }],
+                }],
+                Cells: [{ Value: 100 }],
+            });
+            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Region']);
+            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
+
+            const result = await cellService.execute_view_async('SalesCube', 'TestView');
+
+            expect(result.get('[Region].[Region].[London]')).toBe(100);
+        });
+    });
+
+    describe('TM1Service-constructed CellService', () => {
+        test('writeAsync does not throw "ProcessService is required" when called via TM1Service constructor (regression for issue #69)', async () => {
+            // Reproduces the path TM1Service uses: pass ProcessService into CellService.
+            // Without this dependency the new writeAsync (which delegates to writeThroughBlob,
+            // which requires ProcessService) would throw at runtime.
+            const tm1RestMock: any = {
+                post: jest.fn().mockResolvedValue(createMockResponse({})),
+                get: jest.fn().mockResolvedValue(createMockResponse({ Dimensions: [] })),
+                delete: jest.fn().mockResolvedValue(createMockResponse({})),
+                patch: jest.fn().mockResolvedValue(createMockResponse({})),
+                put: jest.fn().mockResolvedValue(createMockResponse({})),
+            };
+            const processServiceLike = new (require('../services/ProcessService').ProcessService)(tm1RestMock);
+            const viewServiceLike = new (require('../services/ViewService').ViewService)(tm1RestMock);
+            const cs = new CellService(tm1RestMock, processServiceLike, viewServiceLike);
+
+            // Spy on writeThroughBlob to confirm writeAsync routes there without throwing.
+            const blobSpy = jest.spyOn(cs, 'writeThroughBlob').mockResolvedValue(undefined);
+
+            await cs.writeAsync('SalesCube', { 'a,b,c': 1 }, { slice_size: 1, max_workers: 1 });
+
+            expect(blobSpy).toHaveBeenCalledTimes(1);
         });
     });
 });

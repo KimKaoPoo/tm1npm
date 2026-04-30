@@ -8,9 +8,12 @@ import { v4 as uuidv4 } from 'uuid';
 import { RestService } from './RestService';
 import { ProcessService } from './ProcessService';
 import { ViewService } from './ViewService';
+import { SandboxService } from './SandboxService';
 import { OperationStatus, OperationType } from './AsyncOperationService';
+import { MDXView } from '../objects/MDXView';
+import { Process } from '../objects/Process';
 import { TM1Exception } from '../exceptions/TM1Exception';
-import { formatUrl, escapeODataValue } from '../utils/Utils';
+import { formatUrl, escapeODataValue, lowerAndDropSpaces } from '../utils/Utils';
 
 export interface CellsetDict {
     [coordinates: string]: string | number | boolean | null | undefined;
@@ -103,6 +106,165 @@ export class CellService {
         this.rest = rest;
         this.processService = processService;
         this.viewService = viewService;
+    }
+
+    public async sandboxExists(sandboxName: string): Promise<boolean> {
+        const sandboxService = new SandboxService(this.rest);
+        return await sandboxService.exists(sandboxName);
+    }
+
+    public async generateEnableSandboxTi(sandboxName?: string): Promise<string> {
+        if (sandboxName) {
+            if (!(await this.sandboxExists(sandboxName))) {
+                throw new Error(`Sandbox '${sandboxName}' does not exist`);
+            }
+            return `ServerActiveSandboxSet('${sandboxName}');SetUseActiveSandboxProperty(1);`;
+        }
+        return `ServerActiveSandboxSet('');SetUseActiveSandboxProperty(0);`;
+    }
+
+    private static _abbreviateMdx(mdx: string, maxLen: number = 100): string {
+        return mdx.length > maxLen ? mdx.slice(0, maxLen) + '...' : mdx;
+    }
+
+    private static _parseUniqueElementName(uniqueName: string): [string, string, string] {
+        // Mirror tm1py's substring-based parser exactly (Utils.py:821-844). Non-throwing,
+        // returns 3 strings even for malformed input. Element-name segment unescapes ']]' → ']'.
+        const firstSep = uniqueName.indexOf('].[');
+        const lastSep = uniqueName.lastIndexOf('].[');
+        const dimension = uniqueName.slice(1, firstSep);
+        const elementRaw = uniqueName.slice(lastSep + 3, -1);
+        const element = elementRaw.replace(/\]\]/g, ']');
+        // count occurrences of "]." separator
+        const sepCount = uniqueName.split('].[').length - 1;
+        if (sepCount === 1) {
+            return [dimension, dimension, element];
+        }
+        const hierarchy = uniqueName.slice(firstSep + 3, lastSep);
+        return [dimension, hierarchy, element];
+    }
+
+    private static _parseCsvLine(line: string, separator: string): string[] {
+        const fields: string[] = [];
+        let current = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+            const ch = line[i];
+            if (inQuotes) {
+                if (ch === '"' && line[i + 1] === '"') { current += '"'; i++; }
+                else if (ch === '"') { inQuotes = false; }
+                else { current += ch; }
+            } else {
+                if (ch === '"') inQuotes = true;
+                else if (ch === separator) { fields.push(current); current = ''; }
+                else { current += ch; }
+            }
+        }
+        fields.push(current);
+        return fields;
+    }
+
+    private static _extractStringSetFromRowsAndValues(
+        rowsAndValues: { rows: any[][]; values: any[] },
+        excludeEmptyCells: boolean
+    ): Set<string> {
+        const result = new Set<string>();
+        const seen = new Set<string>();
+        const add = (val: any) => {
+            if (typeof val !== 'string') return;
+            if (excludeEmptyCells && val === '') return;
+            const key = lowerAndDropSpaces(val);
+            if (!seen.has(key)) { seen.add(key); result.add(val); }
+        };
+        for (const row of rowsAndValues.rows) for (const elem of row) add(elem);
+        for (const v of rowsAndValues.values) add(v);
+        return result;
+    }
+
+    private async _safeDeleteCellset(cellsetId: string, sandboxName?: string): Promise<void> {
+        // Mirror tm1py's @tidy_cellset (CellService.py:80-99): suppress 404 (already gone),
+        // re-raise every other status so server-side errors during cleanup are visible.
+        try {
+            await this.deleteCellset(cellsetId, sandboxName);
+        } catch (err: any) {
+            const status = err?.statusCode ?? err?.status ?? err?.response?.status;
+            if (status !== 404) throw err;
+        }
+    }
+
+    /**
+     * Fetch a cellset with the expand/select shape required by _cellsetToTupleDict —
+     * notably Members.UniqueName and Hierarchies.Dimension.Name. Mirrors the elem/member
+     * properties that tm1py's extract_cellset_raw requests for element_unique_names=True.
+     */
+    private async _extractCellsetForTupleDict(cellsetId: string, sandboxName?: string): Promise<any> {
+        const expand =
+            'Cells,' +
+            'Axes($expand=' +
+                'Tuples($expand=Members($select=Name,UniqueName;$expand=Element($select=UniqueName))),' +
+                'Hierarchies($select=Name;$expand=Dimension($select=Name))' +
+            ')';
+        const params = new URLSearchParams();
+        params.append('$expand', expand);
+        // Cellset endpoints use TM1's write-side !sandbox= form (parity with tm1py's
+        // add_url_parameters("!sandbox", ...) at CellService.py:5064-5073).
+        if (sandboxName) params.append('!sandbox', sandboxName);
+        const url = `/Cellsets('${cellsetId}')?${params.toString()}`;
+        const response = await this.rest.get(url);
+        return response.data;
+    }
+
+    private static _cellsetToTupleDict(cellset: any, cubeDimensions?: readonly string[]): Map<string, any> {
+        const result = new Map<string, any>();
+        if (!cellset?.Cells || !cellset?.Axes) return result;
+        const cardinalities: number[] = cellset.Axes.map((a: any) => a.Cardinality ?? 0);
+        // Prefer Element.UniqueName, then top-level UniqueName, then Name —
+        // matches tm1py's extract_unique_names_from_members fallback order
+        // (Utils.py: m["Element"]["UniqueName"] if Element else m["UniqueName"]).
+        const tuplesByAxis: string[][][] = cellset.Axes.map((axis: any) =>
+            (axis.Tuples || []).map((t: any) =>
+                (t.Members || []).map((m: any) => m.Element?.UniqueName ?? m.UniqueName ?? m.Name)
+            )
+        );
+        // Per-axis dimension names — used to reorder tuple parts to match the cube's natural
+        // dimension order (parity with tm1py's sort_coordinates / Cube.dimensions order).
+        const axisDimNames: string[][] = cellset.Axes.map((axis: any) => {
+            const hier = axis.Hierarchies || [];
+            return hier.map((h: any) => h?.Dimension?.Name ?? h?.Name ?? '');
+        });
+        const dimToCubeIdx = new Map<string, number>();
+        if (cubeDimensions) {
+            cubeDimensions.forEach((dim, i) => dimToCubeIdx.set(lowerAndDropSpaces(dim), i));
+        }
+        // Cells are row-major: ordinal index decomposes as (ord % cardA0, ord/cardA0 % cardA1, ...).
+        cellset.Cells.forEach((cell: any, ordinal: number) => {
+            const idxByAxis: number[] = [];
+            let n = ordinal;
+            for (let a = 0; a < cardinalities.length; a++) {
+                const card = cardinalities[a] || 1;
+                idxByAxis.push(n % card);
+                n = Math.floor(n / card);
+            }
+            // Collect (dimensionName, memberUniqueName) pairs across all axes.
+            const partsWithDim: Array<{ dim: string; member: string }> = [];
+            for (let a = idxByAxis.length - 1; a >= 0; a--) {
+                const tuple = tuplesByAxis[a]?.[idxByAxis[a]] || [];
+                const dims = axisDimNames[a] || [];
+                tuple.forEach((member: string, i: number) => {
+                    partsWithDim.push({ dim: dims[i] ?? '', member });
+                });
+            }
+            // If the caller supplied cube dimensions, sort by that order; else preserve axis order.
+            if (cubeDimensions) {
+                partsWithDim.sort((x, y) => {
+                    const xi = dimToCubeIdx.get(lowerAndDropSpaces(x.dim)) ?? Number.MAX_SAFE_INTEGER;
+                    const yi = dimToCubeIdx.get(lowerAndDropSpaces(y.dim)) ?? Number.MAX_SAFE_INTEGER;
+                    return xi - yi;
+                });
+            }
+            result.set(partsWithDim.map(p => p.member).join(','), cell.Value);
+        });
+        return result;
     }
 
     /**
@@ -366,34 +528,36 @@ export class CellService {
     }
 
     /**
-     * Clear cube data with MDX filter
+     * Clear cube data with MDX filter.
+     * Reimplements via temporary MDXView + ViewZeroOut TI process (parity with tm1py.clear_with_mdx).
      */
-    public async clearWithMdx(cubeName: string, mdx: string, sandbox_name?: string): Promise<void> {
+    public async clearWithMdx(cubeName: string, mdx: string, sandboxName?: string): Promise<void> {
+        const viewService = this.viewService || new ViewService(this.rest);
+        const enableSandbox = await this.generateEnableSandboxTi(sandboxName);
+
         const viewName = `}TM1py${uuidv4()}`;
 
-        let viewUrl = formatUrl("/Cubes('{}')/Views", cubeName);
-        if (sandbox_name) {
-            viewUrl += `?$sandbox=${sandbox_name}`;
-        }
-        const viewBody = {
-            '@odata.type': 'ibm.tm1.api.v1.MDXView',
-            Name: viewName,
-            MDX: mdx
-        };
-        await this.rest.post(viewUrl, JSON.stringify(viewBody));
+        await viewService.create(new MDXView(cubeName, viewName, mdx), false);
 
         try {
-            let clearUrl = formatUrl("/Cubes('{}')/Views('{}')/tm1.ClearCellValues", cubeName, viewName);
-            if (sandbox_name) {
-                clearUrl += `?$sandbox=${sandbox_name}`;
+            const process = new Process('');
+            process.prologProcedure = enableSandbox;
+            // Mirror tm1py's f-string interpolation exactly — no quote escaping in TI body.
+            process.epilogProcedure = `ViewZeroOut('${cubeName}','${viewName}');`;
+
+            const url = '/ExecuteProcessWithReturn?$expand=*';
+            const payload = { Process: process.bodyAsDict };
+            const response = await this.rest.post(url, JSON.stringify(payload));
+            const status = (response as any)?.data?.ProcessExecuteStatusCode;
+            if (status !== 'CompletedSuccessfully') {
+                throw new TM1Exception(
+                    `Failed to clear cube: '${cubeName}' with mdx: '${CellService._abbreviateMdx(mdx, 100)}'`
+                );
             }
-            await this.rest.post(clearUrl);
         } finally {
-            try {
-                const deleteUrl = formatUrl("/Cubes('{}')/Views('{}')", cubeName, viewName);
-                await this.rest.delete(deleteUrl);
-            } catch (_) {
-                // Cleanup failure should not mask the original error
+            const exists = await viewService.exists(cubeName, viewName, false);
+            if (exists) {
+                await viewService.delete(cubeName, viewName, false);
             }
         }
     }
@@ -569,33 +733,47 @@ export class CellService {
     }
 
     /**
-     * Write data asynchronously
+     * Write data asynchronously by chunking and dispatching to writeThroughBlob
+     * (parity with tm1py.write_async, which uses ThreadPoolExecutor + write(use_blob=True)).
+     *
+     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
+     * - Only options honored by the underlying writeThroughBlob (sandbox_name, increment,
+     *   deactivate/reactivate_transaction_log, use_blob, use_changeset) flow through. tm1py's
+     *   `dimensions`, `precision`, `measure_dimension_elements`, `skip_non_updateable`, and
+     *   transaction-log toggles are not yet wired through writeThroughBlob and are deliberately
+     *   omitted from this signature so misuse is caught at compile time.
+     * - Per-chunk failures aggregate into a TM1Exception with chunk count (tm1py raises a
+     *   structured TM1pyWritePartialFailureException; that exception type is not yet ported).
      */
     public async writeAsync(
         cubeName: string,
         cellsetAsDict: CellsetDict,
-        dimensions?: string[],
-        options: WriteOptions = {}
-    ): Promise<string> {
-        const cells = Object.entries(cellsetAsDict).map(([coordinates, value]) => {
-            const elementArray = coordinates.split(',').map(s => s.trim());
-            return {
-                Coordinates: elementArray.map(element => ({ Name: element })),
-                Value: value
-            };
-        });
-
-        let url = `/Cubes('${cubeName}')/tm1.UpdateAsync`;
-        
-        if (options.sandbox_name) {
-            url += `?$sandbox=${options.sandbox_name}`;
+        options: Pick<WriteOptions, 'sandbox_name' | 'increment' | 'deactivate_transaction_log' | 'reactivate_transaction_log' | 'use_changeset'>
+            & { slice_size?: number; max_workers?: number } = {}
+    ): Promise<string | undefined> {
+        const sliceSize = options.slice_size ?? 250_000;
+        const maxWorkers = options.max_workers ?? 8;
+        const entries = Object.entries(cellsetAsDict);
+        const chunks: CellsetDict[] = [];
+        for (let i = 0; i < entries.length; i += sliceSize) {
+            chunks.push(Object.fromEntries(entries.slice(i, i + sliceSize)));
         }
 
-        const body = { Cells: cells };
-        const response = await this.rest.patch(url, body);
-        
-        // Return async operation ID
-        return response.data.ID || response.headers['async-id'] || '';
+        const failures: any[] = [];
+        for (let i = 0; i < chunks.length; i += maxWorkers) {
+            const batch = chunks.slice(i, i + maxWorkers);
+            const results = await Promise.allSettled(
+                batch.map(c => this.writeThroughBlob(cubeName, c, { ...options, use_blob: true }))
+            );
+            for (const r of results) if (r.status === 'rejected') failures.push(r.reason);
+        }
+        if (failures.length) {
+            throw new TM1Exception(
+                `writeAsync partial failure: ${failures.length}/${chunks.length} chunks failed: ` +
+                failures.map(f => f?.message || String(f)).join('; ')
+            );
+        }
+        return undefined;
     }
 
     /**
@@ -707,21 +885,54 @@ export class CellService {
     }
 
     /**
-     * Execute MDX and return cell count
+     * Execute MDX and return row element names + string cell values as a case-and-space-insensitive
+     * deduplicated set (parity with tm1py.execute_mdx_rows_and_values_string_set).
+     */
+    public async executeMdxRowsAndValuesStringSet(
+        mdx: string,
+        excludeEmptyCells: boolean = true,
+        sandboxName?: string
+    ): Promise<Set<string>> {
+        const rav = await this.executeMdxRowsAndValues(mdx, {
+            sandbox_name: sandboxName,
+            element_unique_names: false,
+        });
+        return CellService._extractStringSetFromRowsAndValues(rav, excludeEmptyCells);
+    }
+
+    /**
+     * Execute view and return row element names + string cell values as a case-and-space-insensitive
+     * deduplicated set (parity with tm1py.execute_view_rows_and_values_string_set).
+     */
+    public async executeViewRowsAndValuesStringSet(
+        cubeName: string,
+        viewName: string,
+        isPrivate: boolean = false,
+        excludeEmptyCells: boolean = true,
+        sandboxName?: string
+    ): Promise<Set<string>> {
+        const rav = await this.executeViewRowsAndValues(cubeName, viewName, {
+            sandbox_name: sandboxName,
+            private: isPrivate,
+            element_unique_names: false,
+        });
+        return CellService._extractStringSetFromRowsAndValues(rav, excludeEmptyCells);
+    }
+
+    /**
+     * Execute MDX and return cell count (parity with tm1py.execute_mdx_cellcount).
+     * Uses createCellset + /Cellsets/{id}/Cells/$count.
      */
     public async executeMdxCellcount(
         mdx: string,
         options: MDXViewOptions = {}
     ): Promise<number> {
-        let url = '/ExecuteMDXCellCount';
-
-        if (options.sandbox_name) {
-            url += `?$sandbox=${options.sandbox_name}`;
+        const cellsetId = await this.createCellset(mdx, options.sandbox_name);
+        try {
+            return await this.getCellsetCellsCount(cellsetId, options.sandbox_name);
+        } finally {
+            await this._safeDeleteCellset(cellsetId, options.sandbox_name);
         }
-
-        const body = { MDX: mdx };
-        const response = await this.rest.post(url, body);
-        return response.data.value || response.data.CellCount || 0;
     }
 
     /**
@@ -817,34 +1028,39 @@ export class CellService {
     /**
      * Execute view asynchronously
      */
+    /**
+     * Execute view via cellset extraction (parity with tm1py.execute_view_async).
+     * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
+     *
+     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
+     * - tm1py uses extract_cellset_async with parallel-chunked retrieval. Not yet ported;
+     *   this delegates to a serial extractCellset.
+     * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
+     *   not yet wired through extractCellset and are deliberately omitted from this signature
+     *   so misuse is a compile-time error.
+     * - Tuple-key parts are reordered by cube dimensions (parity with tm1py.sort_coordinates).
+     * - Calls createCellsetFromView, which is itself pre-existing on main and currently
+     *   targets a fabricated /tm1.CreateCellset endpoint (out of #69 scope; tracked
+     *   separately for a future fix to use /Cubes/{}/Views/{}/tm1.Execute per tm1py).
+     */
     public async execute_view_async(
         cubeName: string,
         viewName: string,
-        options: MDXViewOptions = {}
-    ): Promise<string> {
-        /** Execute view asynchronously and return execution ID
-         *
-         * :param cubeName: name of the cube
-         * :param viewName: name of the view
-         * :param options: view execution options including sandbox_name
-         * :return: execution ID for tracking async operation
-         */
-        let url = `/Cubes('${cubeName}')/Views('${viewName}')/tm1.ExecuteAsync`;
-
-        const params = new URLSearchParams();
-        if (options.private !== undefined) params.append('$private', options.private.toString());
-        if (options.sandbox_name) params.append('$sandbox', options.sandbox_name);
-        if (options.element_unique_names !== undefined) params.append('$element_unique_names', options.element_unique_names.toString());
-        if (options.skip_zeros !== undefined) params.append('$skip_zeros', options.skip_zeros.toString());
-        if (options.skip_consolidated !== undefined) params.append('$skip_consolidated', options.skip_consolidated.toString());
-        if (options.skip_rule_derived !== undefined) params.append('$skip_rule_derived', options.skip_rule_derived.toString());
-
-        if (params.toString()) {
-            url += `?${params.toString()}`;
+        options: { private?: boolean; sandbox_name?: string } = {}
+    ): Promise<Map<string, any>> {
+        const cellsetId = await this.createCellsetFromView(
+            cubeName,
+            viewName,
+            options.private || false,
+            options.sandbox_name
+        );
+        try {
+            const cellset = await this._extractCellsetForTupleDict(cellsetId, options.sandbox_name);
+            const cubeDims = await this.getDimensionNamesForWriting(cubeName);
+            return CellService._cellsetToTupleDict(cellset, cubeDims);
+        } finally {
+            await this._safeDeleteCellset(cellsetId, options.sandbox_name);
         }
-
-        const response = await this.rest.post(url);
-        return response.data.ID || response.data.ExecutionId || `view_async_${Date.now()}`;
     }
 
     /**
@@ -1699,22 +1915,41 @@ END;
     }
 
     /**
-     * Execute MDX and return element-value dictionary
+     * Execute MDX and return element-value dictionary (parity with tm1py.execute_mdx_elements_value_dict).
+     * Delegates to executeMdxCsv and parses CSV with header skip + quoted-field support.
+     *
+     * Parity divergence: tm1py forwards `element_separator` as both the CSV delimiter and the
+     * key-join separator (so the underlying TM1 CSV is regenerated with that delimiter). tm1npm's
+     * underlying executeMdxCsv does not yet accept a custom delimiter, so we parse the comma-
+     * delimited CSV that TM1 returns and only use `elementSeparator` as the key-join separator.
+     * Output dict keys/values still match tm1py for the default `'|'` separator.
      */
     public async executeMdxElementsValueDict(
         mdx: string,
-        sandbox_name?: string
-    ): Promise<{ [element: string]: any }> {
-        let url = '/ExecuteMDXElementsValue';
-        
-        if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
+        elementSeparator: string = '|',
+        sandboxName?: string,
+        options: { skipZeros?: boolean } = {}
+    ): Promise<{ [key: string]: any }> {
+        // skip_consolidated_cells / skip_rule_derived_cells are not yet wired through
+        // executeMdxCsv to TM1's URL params, so they are deliberately omitted from this
+        // signature (compile-time enforcement matches the pattern used by executeMdxAsync /
+        // execute_view_async). Add them back when executeMdxCsv accepts them.
+        const csv = await this.executeMdxCsv(mdx, {
+            sandbox_name: sandboxName,
+            skip_zeros: options.skipZeros !== false,
+        });
+        if (!csv) return {};
+        const lines = csv.split(/\r?\n/).filter(l => l.length > 0);
+        if (lines.length <= 1) return {};
+        const result: { [key: string]: any } = {};
+        // Skip header (matches tm1py's `next(reader, None)`).
+        for (let i = 1; i < lines.length; i++) {
+            const fields = CellService._parseCsvLine(lines[i], ',');
+            if (fields.length < 2) continue;
+            const key = fields.slice(0, -1).join(elementSeparator);
+            result[key] = fields[fields.length - 1];
         }
-
-        const body = { MDX: mdx };
-        const response = await this.rest.post(url, body);
-        
-        return response.data || {};
+        return result;
     }
 
     /**
@@ -1738,22 +1973,47 @@ END;
     }
 
     /**
-     * Execute proportional spread
+     * Execute relative proportional spread (parity with tm1py.relative_proportional_spread).
+     * @param value value to be spread
+     * @param cube name of the cube
+     * @param uniqueElementNames target cell coordinates as unique element names (e.g. ["[d1].[c1]","[d2].[e3]"])
+     * @param referenceUniqueElementNames reference cell coordinates as unique element names
+     * @param referenceCube name of the reference cube. If omitted, defaults to `cube`.
+     * @param sandboxName optional sandbox name
      */
     public async relativeProportionalSpread(
-        cubeName: string,
-        targetCoordinates: string[],
         value: number,
-        options: MDXViewOptions = {}
-    ): Promise<void> {
-        const coordinateString = targetCoordinates.map(c => `'${c}'`).join(',');
-        let url = `/Cubes('${cubeName}')/tm1.ProportionalSpread(coordinates=[${coordinateString}],value=${value})`;
-        
-        if (options.sandbox_name) {
-            url += `?$sandbox=${options.sandbox_name}`;
+        cube: string,
+        uniqueElementNames: readonly string[],
+        referenceUniqueElementNames: readonly string[],
+        referenceCube?: string,
+        sandboxName?: string
+    ): Promise<any> {
+        const mdx = `SELECT { ${uniqueElementNames.join('}*{')} } ON 0 FROM [${cube}]`;
+        const cellsetId = await this.createCellset(mdx, sandboxName);
+        try {
+            const targetCube = referenceCube || cube;
+            const refBindings = referenceUniqueElementNames.map(unique => {
+                const [dim, hier, elem] = CellService._parseUniqueElementName(unique);
+                return formatUrl(
+                    "Dimensions('{}')/Hierarchies('{}')/Elements('{}')",
+                    escapeODataValue(dim),
+                    escapeODataValue(hier),
+                    escapeODataValue(elem),
+                );
+            });
+            const payload = {
+                BeginOrdinal: 0,
+                Value: 'RP' + String(value),
+                'ReferenceCell@odata.bind': refBindings,
+                'ReferenceCube@odata.bind': formatUrl("Cubes('{}')", escapeODataValue(targetCube)),
+            };
+            let url = formatUrl("/Cellsets('{}')/tm1.Update", cellsetId);
+            if (sandboxName) url += `?!sandbox=${encodeURIComponent(sandboxName)}`;
+            return await this.rest.post(url, JSON.stringify(payload));
+        } finally {
+            await this._safeDeleteCellset(cellsetId, sandboxName);
         }
-
-        await this.rest.post(url);
     }
 
     /**
@@ -1793,20 +2053,48 @@ END;
         return response.data.value === true;
     }
     /**
-     * Write multiple cell values to a cube (legacy method name for compatibility)
+     * Write multiple cell values to a cube (parity with tm1py.write_values).
+     *
+     * Tuple keys are comma-separated dimension elements (e.g. "2024,USA,Books").
+     * Callers must avoid leading/trailing whitespace around commas; element names
+     * are not trimmed in order to preserve fidelity with Python tuple semantics.
+     *
+     * @param cubeName name of the cube
+     * @param cellsetAsDict {tupleKey: value} where tupleKey is comma-joined element names
+     * @param dimensions optional dimension names in natural order (skips a fetch)
+     * @param sandboxName optional sandbox name
+     * @param changeset optional changeset id
+     * @returns the changeset argument (for parity with tm1py)
      */
-    public async writeValues(cubeName: string, cellset: { [key: string]: any }): Promise<void> {
-        const cells = Object.entries(cellset).map(([key, value]) => {
-            const coordinates = key.split(':');
-            return {
-                Coordinates: coordinates.map(c => ({ Name: c })),
-                Value: value
-            };
-        });
+    public async writeValues(
+        cubeName: string,
+        cellsetAsDict: { [tupleKey: string]: any },
+        dimensions?: string[],
+        sandboxName?: string,
+        changeset?: string
+    ): Promise<string | undefined> {
+        const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
+        let url = formatUrl("/Cubes('{}')/tm1.Update", cubeName);
+        const params: string[] = [];
+        if (sandboxName) params.push(`!sandbox=${encodeURIComponent(sandboxName)}`);
+        if (changeset) params.push(`!ChangeSet=${encodeURIComponent(changeset)}`);
+        if (params.length) url += `?${params.join('&')}`;
 
-        const url = `/Cubes('${cubeName}')/tm1.Update`;
-        const body = { Cells: cells };
-        await this.rest.patch(url, body);
+        const updates = Object.entries(cellsetAsDict).map(([tupleKey, value]) => ({
+            Cells: [{
+                'Tuple@odata.bind': tupleKey.split(',').map((elem, i) =>
+                    formatUrl(
+                        "Dimensions('{}')/Hierarchies('{}')/Elements('{}')",
+                        escapeODataValue(dims[i]),
+                        escapeODataValue(dims[i]),
+                        escapeODataValue(elem),
+                    )
+                ),
+            }],
+            Value: value || '',
+        }));
+        await this.rest.post(url, JSON.stringify(updates));
+        return changeset;
     }
 
     /**
@@ -1820,24 +2108,45 @@ END;
     }
 
     /**
-     * Clear all data in a cube (alias for compatibility)
+     * Clear cube data (parity with tm1py.clear).
+     * Builds NON EMPTY column-axis MDX from optional dimension expressions and delegates
+     * to clearWithMdx (which uses MDXView + ViewZeroOut TI). Unmapped dimensions default
+     * to TM1FILTERBYLEVEL({TM1SUBSETALL([dim])},0).
      */
-    public async clear(cubeName: string, sandbox_name?: string): Promise<void> {
-        let url = `/Cubes('${cubeName}')/tm1.Clear`;
+    public async clear(
+        cubeName: string,
+        dimensionExpressions: Record<string, string> = {},
+        sandboxName?: string
+    ): Promise<void> {
+        const dimensionNames = await this.getDimensionNamesForWriting(cubeName);
+        const normToActual = new Map<string, string>();
+        for (const dim of dimensionNames) normToActual.set(lowerAndDropSpaces(dim), dim);
 
-        if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
+        const exprByDim: Record<string, string> = {};
+        for (const [key, expr] of Object.entries(dimensionExpressions)) {
+            const actual = normToActual.get(lowerAndDropSpaces(key));
+            if (actual) {
+                // Mirror tm1py's wrap_in_curly_braces (Utils.py:1693): independent open/close checks.
+                const open = expr.startsWith('{') ? '' : '{';
+                const close = expr.endsWith('}') ? '' : '}';
+                exprByDim[actual] = `${open}${expr}${close}`;
+            }
         }
-
-        await this.rest.post(url);
+        for (const dim of dimensionNames) {
+            if (!(dim in exprByDim)) {
+                exprByDim[dim] = `{TM1FILTERBYLEVEL({TM1SUBSETALL([${dim}])},0)}`;
+            }
+        }
+        const sets = dimensionNames.map(d => exprByDim[d]).join(' * ');
+        const mdx = `SELECT NON EMPTY {${sets}} ON 0 FROM [${cubeName}]`;
+        return this.clearWithMdx(cubeName, mdx, sandboxName);
     }
 
     /**
-     * Clear all data in a cube
+     * Clear all data in a cube (delegates to clear with no expressions).
      */
-    public async clearCube(cubeName: string): Promise<void> {
-        const url = `/Cubes('${cubeName}')/tm1.Clear`;
-        await this.rest.post(url);
+    public async clearCube(cubeName: string, sandboxName?: string): Promise<void> {
+        return this.clear(cubeName, {}, sandboxName);
     }
 
     /**
@@ -1943,23 +2252,33 @@ END;
     }
 
     /**
-     * Execute MDX query asynchronously
+     * Execute MDX via cellset extraction (parity with tm1py.execute_mdx_async).
+     * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
+     *
+     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
+     * - tm1py uses extract_cellset_async with parallel-chunked retrieval. That helper is not
+     *   yet ported; this implementation delegates to a serial extractCellset.
+     * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
+     *   not yet wired through extractCellset. To prevent silent option-drop, those parameters
+     *   are deliberately omitted from this signature so misuse is a compile-time error rather
+     *   than a runtime no-op. Add them back when the underlying extractor supports them.
+     * - Optional `cubeName` lets the caller request tm1py-compatible tuple-key ordering by
+     *   cube dimensions. When omitted, parts are joined in axis order (tm1py-divergent).
      */
-    public async executeMdxAsync(mdx: string, sandbox_name?: string): Promise<string> {
-        /** Execute MDX query asynchronously and return execution ID
-         *
-         * :param mdx: MDX query to execute
-         * :param sandbox_name: optional sandbox name
-         * :return: execution ID for tracking async operation
-         */
-        const url = '/ExecuteMDXAsync';
-        const body = { 
-            MDX: mdx,
-            sandbox_name: sandbox_name 
-        };
-        
-        const response = await this.rest.post(url, body);
-        return response.data.ID || response.data.ExecutionId || `async_${Date.now()}`;
+    public async executeMdxAsync(
+        mdx: string,
+        options: { sandbox_name?: string; cubeName?: string } = {}
+    ): Promise<Map<string, any>> {
+        const cellsetId = await this.createCellset(mdx, options.sandbox_name);
+        try {
+            const cellset = await this._extractCellsetForTupleDict(cellsetId, options.sandbox_name);
+            const cubeDims = options.cubeName
+                ? await this.getDimensionNamesForWriting(options.cubeName)
+                : undefined;
+            return CellService._cellsetToTupleDict(cellset, cubeDims);
+        } finally {
+            await this._safeDeleteCellset(cellsetId, options.sandbox_name);
+        }
     }
 
     /**

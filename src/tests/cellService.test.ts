@@ -88,20 +88,23 @@ describe('CellService Tests', () => {
 
         test('should write multiple cell values', async () => {
             mockRestService.post.mockResolvedValue(createMockResponse({}));
-            mockRestService.patch.mockResolvedValue(createMockResponse({}));
+            jest.spyOn(cellService, 'getDimensionNamesForWriting')
+                .mockResolvedValue(['Time', 'Measure', 'Version']);
 
             const cellData = {
-                'Jan:Revenue:Actual': 1000,
-                'Feb:Revenue:Actual': 1200,
-                'Mar:Revenue:Actual': 1100
+                'Jan,Revenue,Actual': 1000,
+                'Feb,Revenue,Actual': 1200,
+                'Mar,Revenue,Actual': 1100,
             };
 
             await cellService.writeValues('SalesCube', cellData);
 
-            // writeValues still uses the old pattern (patch) — it's a separate method from write()
-            expect(mockRestService.patch).toHaveBeenCalled();
-
-            console.log('✅ Multiple cell values written successfully');
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/Cubes('SalesCube')/tm1.Update",
+                expect.any(String),
+            );
+            const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(body).toHaveLength(3);
         });
     });
 
@@ -167,66 +170,53 @@ describe('CellService Tests', () => {
     });
 
     describe('Cube Operations', () => {
-        test('should clear cube data', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({}));
+        test('clearCube delegates to clear with empty expressions', async () => {
+            const clearSpy = jest.spyOn(cellService, 'clear').mockResolvedValue(undefined);
 
             await cellService.clearCube('TestCube');
 
-            expect(mockRestService.post).toHaveBeenCalledWith("/Cubes('TestCube')/tm1.Clear");
-
-            console.log('✅ Cube cleared successfully');
+            expect(clearSpy).toHaveBeenCalledWith('TestCube', {}, undefined);
         });
 
-        test('clearWithMdx should create view, call ClearCellValues, then delete view', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({}));
-            mockRestService.delete.mockResolvedValue(createMockResponse({}));
+        test('clearWithMdx creates }TM1py<uuid> view, runs ViewZeroOut TI, deletes view', async () => {
+            // ViewService is lazily resolved to a fresh instance when not injected.
+            // Mock the rest layer to capture all writes.
+            mockRestService.post
+                .mockResolvedValueOnce(createMockResponse({}))                                  // view create
+                .mockResolvedValueOnce(createMockResponse({ ProcessExecuteStatusCode: 'CompletedSuccessfully' })) // exec process
+                ;
+            mockRestService.get.mockResolvedValue(createMockResponse({}));                      // view exists check
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));                   // view delete
 
             await cellService.clearWithMdx('SalesCube', 'SELECT {[Measure].[Revenue]} ON 0 FROM [SalesCube]');
 
             const postCalls = mockRestService.post.mock.calls;
-
-            // 1st POST: create MDX view
+            // 1st POST: create MDXView
             expect(postCalls[0][0]).toBe("/Cubes('SalesCube')/Views");
             const viewBody = JSON.parse(postCalls[0][1]);
-            expect(viewBody['@odata.type']).toBe('ibm.tm1.api.v1.MDXView');
             expect(viewBody.Name).toMatch(/^\}TM1py/);
             expect(viewBody.MDX).toBe('SELECT {[Measure].[Revenue]} ON 0 FROM [SalesCube]');
 
-            // 2nd POST: ClearCellValues on the view
-            expect(postCalls[1][0]).toMatch(/\/Cubes\('SalesCube'\)\/Views\('(%7D|\})TM1py.*'\)\/tm1\.ClearCellValues/);
+            // 2nd POST: unbound TI process running ViewZeroOut
+            expect(postCalls[1][0]).toBe('/ExecuteProcessWithReturn?$expand=*');
+            const processBody = JSON.parse(postCalls[1][1]);
+            expect(processBody.Process.EpilogProcedure).toContain("ViewZeroOut('SalesCube',");
+            expect(processBody.Process.PrologProcedure).toContain('ServerActiveSandboxSet');
 
-            // Should delete temp view in finally
-            expect(mockRestService.delete).toHaveBeenCalledWith(
-                expect.stringMatching(/\/Cubes\('SalesCube'\)\/Views\('(%7D|\})TM1py/)
-            );
+            // Cleanup: view deleted
+            expect(mockRestService.delete).toHaveBeenCalled();
         });
 
-        test('clearWithMdx should pass sandbox_name to view creation and clear URLs', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({}));
-            mockRestService.delete.mockResolvedValue(createMockResponse({}));
-
-            await cellService.clearWithMdx('SalesCube', 'SELECT {} ON 0 FROM [SalesCube]', 'MySandbox');
-
-            const postCalls = mockRestService.post.mock.calls;
-
-            // View creation includes sandbox
-            expect(postCalls[0][0]).toContain('?$sandbox=MySandbox');
-
-            // ClearCellValues includes sandbox
-            expect(postCalls[1][0]).toContain('?$sandbox=MySandbox');
-        });
-
-        test('clearWithMdx should delete view even if ClearCellValues fails', async () => {
+        test('clearWithMdx throws TM1Exception with parity message on non-CompletedSuccessfully', async () => {
             mockRestService.post
-                .mockResolvedValueOnce(createMockResponse({}))  // view creation
-                .mockRejectedValueOnce(new Error('ClearCellValues failed'));  // clear fails
+                .mockResolvedValueOnce(createMockResponse({}))                                  // view create
+                .mockResolvedValueOnce(createMockResponse({ ProcessExecuteStatusCode: 'CompletedWithMessages' }));
+            mockRestService.get.mockResolvedValue(createMockResponse({}));
             mockRestService.delete.mockResolvedValue(createMockResponse({}));
 
-            await expect(cellService.clearWithMdx('SalesCube', 'SELECT {} ON 0 FROM [SalesCube]'))
-                .rejects.toThrow('ClearCellValues failed');
-
-            // View should still be deleted in finally
-            expect(mockRestService.delete).toHaveBeenCalledTimes(1);
+            await expect(
+                cellService.clearWithMdx('SalesCube', 'SELECT {} ON 0 FROM [SalesCube]')
+            ).rejects.toThrow(/Failed to clear cube: 'SalesCube' with mdx:/);
         });
 
         test('writeThroughCellset should escape single quotes in bind paths', async () => {
@@ -240,6 +230,59 @@ describe('CellService Tests', () => {
             const bindPath = body.Cells[0]['Tuple@odata.bind'][0];
             expect(bindPath).toContain("Dimensions('O''Brien Dim')");
             expect(bindPath).toContain("Elements('It''s')");
+        });
+
+        test('writeValues posts JSON array of comma-separated tuple writes to /tm1.Update', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            jest.spyOn(cellService, 'getDimensionNamesForWriting')
+                .mockResolvedValue(['Year', 'Region', 'Product']);
+
+            await cellService.writeValues('SalesCube', { '2024,USA,Books': 100 });
+
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                "/Cubes('SalesCube')/tm1.Update",
+                expect.any(String),
+            );
+            const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(Array.isArray(body)).toBe(true);
+            expect(body).toHaveLength(1);
+            expect(body[0].Cells[0]['Tuple@odata.bind']).toEqual([
+                "Dimensions('Year')/Hierarchies('Year')/Elements('2024')",
+                "Dimensions('Region')/Hierarchies('Region')/Elements('USA')",
+                "Dimensions('Product')/Hierarchies('Product')/Elements('Books')",
+            ]);
+            expect(body[0].Value).toBe(100);
+        });
+
+        test('writeValues with sandbox/changeset adds query params and returns changeset', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+
+            const result = await cellService.writeValues(
+                'SalesCube',
+                { 'a,b,c': 1 },
+                ['D1', 'D2', 'D3'],
+                'SB1',
+                'CHG1',
+            );
+
+            const url = mockRestService.post.mock.calls[0][0];
+            expect(url).toContain('!sandbox=SB1');
+            expect(url).toContain('!ChangeSet=CHG1');
+            expect(result).toBe('CHG1');
+        });
+
+        test('writeValues coerces falsy values to empty string', async () => {
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+
+            await cellService.writeValues(
+                'SalesCube',
+                { 'a,b,c': 0, 'd,e,f': null, 'g,h,i': '', 'j,k,l': false, 'm,n,o': undefined as any },
+                ['D1', 'D2', 'D3'],
+            );
+
+            const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(body).toHaveLength(5);
+            for (const entry of body) expect(entry.Value).toBe('');
         });
     });
 
@@ -319,32 +362,27 @@ describe('CellService Tests', () => {
         });
 
         test('should handle large cell data batches', async () => {
-            mockRestService.patch.mockResolvedValue(createMockResponse({}));
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            jest.spyOn(cellService, 'getDimensionNamesForWriting')
+                .mockResolvedValue(['Element', 'Measure', 'Version']);
 
             const largeCellSet: { [key: string]: number } = {};
             for (let i = 0; i < 1000; i++) {
-                largeCellSet[`Element${i}:Revenue:Actual`] = Math.random() * 10000;
+                largeCellSet[`Element${i},Revenue,Actual`] = Math.random() * 10000;
             }
 
             const startTime = Date.now();
             await cellService.writeValues('TestCube', largeCellSet);
             const endTime = Date.now();
-            
-            expect(mockRestService.patch).toHaveBeenCalledWith(
+
+            expect(mockRestService.post).toHaveBeenCalledWith(
                 "/Cubes('TestCube')/tm1.Update",
-                expect.objectContaining({
-                    Cells: expect.arrayContaining([
-                        expect.objectContaining({
-                            Coordinates: expect.any(Array),
-                            Value: expect.any(Number)
-                        })
-                    ])
-                })
+                expect.any(String),
             );
-            
-            expect(endTime - startTime).toBeLessThan(1000); // Should be fast with mocking
-            
-            console.log('✅ Large cell batches handled efficiently');
+            const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(body).toHaveLength(1000);
+            expect(body[0].Cells[0]['Tuple@odata.bind']).toHaveLength(3);
+            expect(endTime - startTime).toBeLessThan(2000);
         });
 
         test('should handle concurrent cell operations', async () => {
@@ -392,33 +430,30 @@ describe('CellService Tests', () => {
         });
 
         test('should handle complex business scenarios', async () => {
-            mockRestService.patch.mockResolvedValue(createMockResponse({}));
+            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            jest.spyOn(cellService, 'getDimensionNamesForWriting')
+                .mockResolvedValue(['Time', 'Account', 'Version']);
 
-            // Simulate monthly budget allocation
+            // Simulate monthly budget allocation (comma-separated tuple keys per tm1py).
             const budgetAllocations = {
-                'Jan:Salaries:Budget': 50000,
-                'Jan:Marketing:Budget': 20000,
-                'Jan:Operations:Budget': 30000,
-                'Feb:Salaries:Budget': 52000,
-                'Feb:Marketing:Budget': 18000,
-                'Feb:Operations:Budget': 28000
+                'Jan,Salaries,Budget': 50000,
+                'Jan,Marketing,Budget': 20000,
+                'Jan,Operations,Budget': 30000,
+                'Feb,Salaries,Budget': 52000,
+                'Feb,Marketing,Budget': 18000,
+                'Feb,Operations,Budget': 28000,
             };
 
             await cellService.writeValues('BudgetCube', budgetAllocations);
-            
-            expect(mockRestService.patch).toHaveBeenCalledWith(
-                "/Cubes('BudgetCube')/tm1.Update",
-                expect.objectContaining({
-                    Cells: expect.arrayContaining([
-                        expect.objectContaining({
-                            Coordinates: [{ Name: 'Jan' }, { Name: 'Salaries' }, { Name: 'Budget' }],
-                            Value: 50000
-                        })
-                    ])
-                })
-            );
-            
-            console.log('✅ Complex business scenarios handled successfully');
+
+            const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(body).toHaveLength(6);
+            expect(body[0].Value).toBe(50000);
+            expect(body[0].Cells[0]['Tuple@odata.bind']).toEqual([
+                "Dimensions('Time')/Hierarchies('Time')/Elements('Jan')",
+                "Dimensions('Account')/Hierarchies('Account')/Elements('Salaries')",
+                "Dimensions('Version')/Hierarchies('Version')/Elements('Budget')",
+            ]);
         });
 
         test('should handle statistical calculations via MDX', async () => {

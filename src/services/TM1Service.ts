@@ -79,15 +79,17 @@ export class TM1Service {
         // Attach to RestService for access by other services
         (this._tm1Rest as any).asyncOperationService = this.asyncOperations;
 
-        // Initialize all services
+        // Initialize all services. ProcessService and ViewService are constructed before
+        // CellService so the latter can use them for unbound-process and view operations
+        // (writeThroughBlob requires ProcessService; clearWithMdx uses ViewService).
         this.dimensions = new DimensionService(this._tm1Rest);
         this.hierarchies = new HierarchyService(this._tm1Rest);
         this.subsets = new SubsetService(this._tm1Rest);
         this.cubes = new CubeService(this._tm1Rest);
         this.elements = new ElementService(this._tm1Rest);
-        this.cells = new CellService(this._tm1Rest);
         this.processes = new ProcessService(this._tm1Rest);
         this.views = new ViewService(this._tm1Rest);
+        this.cells = new CellService(this._tm1Rest, this.processes, this.views);
         this.security = new SecurityService(this._tm1Rest);
         this.files = new FileService(this._tm1Rest);
         this.sessions = new SessionService(this._tm1Rest);
