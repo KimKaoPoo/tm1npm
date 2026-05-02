@@ -633,13 +633,16 @@ async function checkAdminPrivileges(rest: any, privilegeType: 'DATA' | 'SECURITY
     }
 }
 
+// Anchored to start to match tm1py's `re.match` semantics (Utils.py:1065).
+const ODATA_CELLS_CONTEXT_RE = /^\$metadata#Cellsets\(Cells\(([A-Za-z,]+)\)\)\/\$entity/;
+
 /**
  * Extract cell property names from an OData `@odata.context` returned by a
  * compact-JSON cellset response. Mirrors tm1py's
  * `extract_cell_properties_from_odata_context` (Utils.py).
  */
 export function extractCellPropertiesFromOdataContext(context: string): string[] {
-    const match = /^\$metadata#Cellsets\(Cells\(([A-Za-z,]+)\)\)\/\$entity/.exec(context);
+    const match = ODATA_CELLS_CONTEXT_RE.exec(context);
     if (!match) {
         throw new Error('Could not extract cell properties from odata context');
     }
@@ -663,7 +666,9 @@ export function mapCellPropertiesToCompactJsonResponse(
             );
         }
         const d: Record<string, any> = {};
-        properties.forEach((prop, idx) => { d[prop] = cell[idx]; });
+        for (let i = 0; i < properties.length; i++) {
+            d[properties[i]] = cell[i];
+        }
         return d;
     });
     return { Cells: cells };

@@ -186,7 +186,7 @@ export class CellService {
         return result;
     }
 
-    private async _safeDeleteCellset(cellsetId: string, sandboxName?: string): Promise<void> {
+    public async _safeDeleteCellset(cellsetId: string, sandboxName?: string): Promise<void> {
         // Mirror tm1py's @tidy_cellset (CellService.py:80-99): suppress 404 (already gone),
         // re-raise every other status so server-side errors during cleanup are visible.
         try {
@@ -1580,16 +1580,7 @@ export class CellService {
         const cellsetId = await this.createCellset(mdx, options.sandbox_name);
 
         await withTidyCellset(this, cellsetId, async () => {
-            // Build cell updates
-            const cellUpdates: Array<{ ordinal: number; value: any }> = [];
-            let ordinal = 0;
-
-            for (const [, value] of Object.entries(cellsetAsDict)) {
-                cellUpdates.push({ ordinal, value });
-                ordinal++;
-            }
-
-            // Update cellset
+            const cellUpdates = Object.values(cellsetAsDict).map((value, ordinal) => ({ ordinal, value }));
             await this.updateCellset(cellsetId, cellUpdates, options.sandbox_name);
         }, { sandbox_name: options.sandbox_name });
     }
@@ -2851,21 +2842,16 @@ export interface ManagedTransactionLogOptions {
     reactivate_transaction_log?: boolean;
 }
 
-function isHttpStatus(err: any, status: number): boolean {
-    return err?.status === status
-        || err?.statusCode === status
-        || err?.response?.status === status;
-}
-
 /**
  * Run `fn` and ensure the cellset is deleted afterwards (in `finally`).
  *
  * Mirrors tm1py's `@tidy_cellset` decorator (CellService.py:80-100):
  * - When `delete_cellset` is `false`, the cellset is left in place.
- * - When `delete_cellset` is `true` (default), `service.deleteCellset` is
- *   called in `finally`. A 404 response is silently ignored (cellset already
- *   gone); any other error from delete propagates and replaces the inner
- *   error if the inner function also threw (matches Python `try/finally`).
+ * - When `delete_cellset` is `true` (default), `service._safeDeleteCellset`
+ *   is called in `finally` — it deletes the cellset and silently swallows
+ *   404 responses (cellset already gone). Any other error propagates and
+ *   replaces the inner error if the inner function also threw (matches
+ *   Python `try/finally` semantics).
  */
 export async function withTidyCellset<T>(
     service: CellService,
@@ -2878,14 +2864,7 @@ export async function withTidyCellset<T>(
         return await fn();
     } finally {
         if (shouldDelete) {
-            try {
-                await service.deleteCellset(cellsetId, options.sandbox_name);
-            } catch (err: any) {
-                if (!isHttpStatus(err, 404)) {
-                    throw err;
-                }
-                // Fail silently if cellset is already removed
-            }
+            await service._safeDeleteCellset(cellsetId, options.sandbox_name);
         }
     }
 }

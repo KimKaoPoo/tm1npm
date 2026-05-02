@@ -21,18 +21,30 @@ import {
 } from '../utils/Utils';
 
 type CellServiceMock = jest.Mocked<Pick<CellService,
-    'deleteCellset' | 'beginChangeset' | 'endChangeset'
+    'deleteCellset' | '_safeDeleteCellset' | 'beginChangeset' | 'endChangeset'
     | 'activateTransactionlog' | 'deactivateTransactionlog'
 >>;
 
 function makeCellServiceMock(): CellServiceMock {
-    return {
+    const mock: CellServiceMock = {
         deleteCellset: jest.fn().mockResolvedValue(undefined),
+        _safeDeleteCellset: jest.fn(),
         beginChangeset: jest.fn().mockResolvedValue('cs-1'),
         endChangeset: jest.fn().mockResolvedValue(undefined),
         activateTransactionlog: jest.fn().mockResolvedValue(undefined),
         deactivateTransactionlog: jest.fn().mockResolvedValue(undefined),
     };
+    // Delegate _safeDeleteCellset to deleteCellset and replicate its 404 swallow,
+    // so tests can drive behaviour through the deleteCellset mock.
+    mock._safeDeleteCellset.mockImplementation(async (cellsetId: string, sandboxName?: string) => {
+        try {
+            await mock.deleteCellset(cellsetId, sandboxName);
+        } catch (err: any) {
+            const status = err?.statusCode ?? err?.status ?? err?.response?.status;
+            if (status !== 404) throw err;
+        }
+    });
+    return mock;
 }
 
 describe('withTidyCellset', () => {
