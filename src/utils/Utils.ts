@@ -632,3 +632,109 @@ async function checkAdminPrivileges(rest: any, privilegeType: 'DATA' | 'SECURITY
         console.warn(`Unable to verify ${privilegeType} admin privileges:`, error);
     }
 }
+
+// Anchored to start to match tm1py's `re.match` semantics (Utils.py:1065).
+const ODATA_CELLS_CONTEXT_RE = /^\$metadata#Cellsets\(Cells\(([A-Za-z,]+)\)\)\/\$entity/;
+
+/**
+ * Detect whether a string resembles an MDX query. Mirrors tm1py's
+ * `resembles_mdx` (Utils.py:1686-1690): case- and dot-all-insensitive
+ * `.*SELECT.*ON.*FROM.*`.
+ */
+export function resemblesMdx(mdx: string): boolean {
+    return /SELECT[\s\S]*ON[\s\S]*FROM/i.test(mdx);
+}
+
+/**
+ * Extract the cube name from an MDX query. Mirrors tm1py's `get_cube`
+ * (Utils.py:1664-1683):
+ * 1. Strip whitespace.
+ * 2. Happy case: `FROM[<cube>]` — return the bracketed value.
+ * 3. Cut off any `WHERE(...)` clause.
+ * 4. Return whatever follows the last `FROM`.
+ */
+export function getCube(mdx: string): string {
+    // replace tabs, line breaks, spaces
+    let stripped = mdx.replace(/\s+/g, '');
+
+    // happy case: cube name in square brackets
+    const bracketMatch = /FROM\[([\s\S]*?)\]/i.exec(stripped);
+    if (bracketMatch) {
+        return bracketMatch[1];
+    }
+
+    // cut off where
+    if (/.*SELECT.*ON.*FROM.*WHERE\(.*/is.test(stripped)) {
+        // part before where
+        stripped = stripped.split(/WHERE\(.*/is)[0];
+    }
+
+    // part after from
+    const parts = stripped.split(/FROM/i);
+    return parts[parts.length - 1];
+}
+
+/**
+ * Extract cell property names from an OData `@odata.context` returned by a
+ * compact-JSON cellset response. Mirrors tm1py's
+ * `extract_cell_properties_from_odata_context` (Utils.py).
+ */
+export function extractCellPropertiesFromOdataContext(context: string): string[] {
+    const match = ODATA_CELLS_CONTEXT_RE.exec(context);
+    if (!match) {
+        throw new Error('Could not extract cell properties from odata context');
+    }
+    return match[1].split(',');
+}
+
+/**
+ * Map a list of cell properties onto the compact-JSON `value[1]` array,
+ * producing `{ Cells: [{prop1: v1, prop2: v2, ...}, ...] }`. Mirrors tm1py's
+ * `map_cell_properties_to_compact_json_response`.
+ */
+export function mapCellPropertiesToCompactJsonResponse(
+    properties: string[],
+    compactCellsResponse: any[][]
+): { Cells: Array<Record<string, any>> } {
+    const cells = compactCellsResponse.map(cell => {
+        if (cell.length < properties.length) {
+            // Match Python's IndexError when a row has fewer values than expected
+            throw new RangeError(
+                `Compact JSON row has ${cell.length} values but ${properties.length} properties were expected`
+            );
+        }
+        const d: Record<string, any> = {};
+        for (let i = 0; i < properties.length; i++) {
+            d[properties[i]] = cell[i];
+        }
+        return d;
+    });
+    return { Cells: cells };
+}
+
+/**
+ * Translate a TM1 OData compact-JSON cellset response into either a default
+ * dictionary (`{ Cells: [...] }`) or a flat list of values, depending on
+ * `returnAsDict` and the property shape. Mirrors tm1py's
+ * `extract_compact_json_cellset`.
+ */
+export function extractCompactJsonCellset(
+    context: string,
+    response: { value: any[] },
+    returnAsDict: boolean
+): { Cells: Array<Record<string, any>> } | any[] {
+    const props = extractCellPropertiesFromOdataContext(context);
+    // First element [0] is the cellset ID, second is the cellset data
+    const cellsData: any[][] = response.value[1];
+
+    if (returnAsDict) {
+        return mapCellPropertiesToCompactJsonResponse(props, cellsData);
+    }
+    if (props.length === 1) {
+        return cellsData.map(value => value[0]);
+    }
+    if (props.length === 2 && props[0] === 'Ordinal' && props[1] === 'Value') {
+        return cellsData.map(value => value[1]);
+    }
+    return cellsData;
+}

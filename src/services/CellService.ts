@@ -13,7 +13,7 @@ import { OperationStatus, OperationType } from './AsyncOperationService';
 import { MDXView } from '../objects/MDXView';
 import { Process } from '../objects/Process';
 import { TM1Exception } from '../exceptions/TM1Exception';
-import { formatUrl, escapeODataValue, lowerAndDropSpaces } from '../utils/Utils';
+import { formatUrl, escapeODataValue, lowerAndDropSpaces, extractCompactJsonCellset, resemblesMdx, getCube } from '../utils/Utils';
 
 export interface CellsetDict {
     [coordinates: string]: string | number | boolean | null | undefined;
@@ -92,6 +92,11 @@ export interface MDXViewOptions {
     skip_rule_derived?: boolean;
     csv_dialect?: any;
     sandbox_name?: string;
+    /**
+     * Honoured via the `withCompactJson` helper. The `executeMdx*` family of
+     * methods does not yet wrap calls in `withCompactJson`; setting this
+     * flag here is currently a no-op until that wiring is added.
+     */
     use_compact_json?: boolean;
     mdx_headers?: boolean;
 }
@@ -181,7 +186,7 @@ export class CellService {
         return result;
     }
 
-    private async _safeDeleteCellset(cellsetId: string, sandboxName?: string): Promise<void> {
+    public async _safeDeleteCellset(cellsetId: string, sandboxName?: string): Promise<void> {
         // Mirror tm1py's @tidy_cellset (CellService.py:80-99): suppress 404 (already gone),
         // re-raise every other status so server-side errors during cleanup are visible.
         try {
@@ -415,7 +420,6 @@ export class CellService {
         if (options.sandbox_name) params.append('$sandbox', options.sandbox_name);
         if (options.element_unique_names !== undefined) params.append('$element_unique_names', options.element_unique_names.toString());
         if (options.skip_zeros !== undefined) params.append('$skip_zeros', options.skip_zeros.toString());
-        if (options.use_compact_json !== undefined) params.append('$use_compact_json', options.use_compact_json.toString());
 
         if (params.toString()) {
             url += `?${params.toString()}`;
@@ -1099,7 +1103,6 @@ export class CellService {
         if (options.sandbox_name) params.append('$sandbox', options.sandbox_name);
         if (options.element_unique_names !== undefined) params.append('$element_unique_names', options.element_unique_names.toString());
         if (options.skip_zeros !== undefined) params.append('$skip_zeros', options.skip_zeros.toString());
-        if (options.use_compact_json !== undefined) params.append('$use_compact_json', options.use_compact_json.toString());
 
         if (params.toString()) {
             url += `?${params.toString()}`;
@@ -1576,23 +1579,10 @@ export class CellService {
         // Create cellset
         const cellsetId = await this.createCellset(mdx, options.sandbox_name);
 
-        try {
-            // Build cell updates
-            const cellUpdates = [];
-            let ordinal = 0;
-
-            for (const [, value] of Object.entries(cellsetAsDict)) {
-                cellUpdates.push({ ordinal, value });
-                ordinal++;
-            }
-
-            // Update cellset
+        await withTidyCellset(this, cellsetId, async () => {
+            const cellUpdates = Object.values(cellsetAsDict).map((value, ordinal) => ({ ordinal, value }));
             await this.updateCellset(cellsetId, cellUpdates, options.sandbox_name);
-
-        } finally {
-            // Clean up cellset
-            await this.deleteCellset(cellsetId, options.sandbox_name);
-        }
+        }, { sandbox_name: options.sandbox_name });
     }
 
     /**
@@ -2829,5 +2819,177 @@ END;
         }
 
         return await asyncOps.getAsyncOperationStatus(operationId);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Decorator-equivalent helpers (ports of tm1py's @tidy_cellset,
+// @manage_transaction_log, @manage_changeset, @odata_compact_json from
+// CellService.py:80-200). They are higher-order async functions rather than
+// TypeScript class decorators, but provide the same cross-cutting behavior.
+// ---------------------------------------------------------------------------
+
+export interface TidyCellsetOptions {
+    /** Default true (matches tm1py kwarg default). */
+    delete_cellset?: boolean;
+    sandbox_name?: string;
+}
+
+export interface ManagedTransactionLogOptions {
+    /** Default false. */
+    deactivate_transaction_log?: boolean;
+    /** Default false. */
+    reactivate_transaction_log?: boolean;
+}
+
+/**
+ * Run `fn` and ensure the cellset is deleted afterwards (in `finally`).
+ *
+ * Mirrors tm1py's `@tidy_cellset` decorator (CellService.py:80-100):
+ * - When `delete_cellset` is `false`, the cellset is left in place.
+ * - When `delete_cellset` is `true` (default), `service._safeDeleteCellset`
+ *   is called in `finally` — it deletes the cellset and silently swallows
+ *   404 responses (cellset already gone). Any other error propagates and
+ *   replaces the inner error if the inner function also threw (matches
+ *   Python `try/finally` semantics).
+ */
+export async function withTidyCellset<T>(
+    service: CellService,
+    cellsetId: string,
+    fn: () => Promise<T>,
+    options: TidyCellsetOptions = {}
+): Promise<T> {
+    const shouldDelete = options.delete_cellset !== false;
+    try {
+        return await fn();
+    } finally {
+        if (shouldDelete) {
+            await service._safeDeleteCellset(cellsetId, options.sandbox_name);
+        }
+    }
+}
+
+/**
+ * Argument shape accepted by `withManagedTransactionLog`. Mirrors tm1py's
+ * cube_name resolution in `manage_transaction_log` (CellService.py:113-122):
+ * - `{ cubeName }` — explicit cube name.
+ * - `{ mdx }` — derive cube via `getCube(mdx)`.
+ * - A bare string — interpreted as MDX if it looks like MDX
+ *   (`resemblesMdx`), otherwise treated as a cube name.
+ */
+export type ManagedTransactionLogTarget =
+    | string
+    | { cubeName: string; mdx?: undefined }
+    | { mdx: string; cubeName?: undefined };
+
+function resolveCubeName(target: ManagedTransactionLogTarget): string {
+    if (typeof target === 'string') {
+        return resemblesMdx(target) ? getCube(target) : target;
+    }
+    if (target.cubeName !== undefined) {
+        return target.cubeName;
+    }
+    return getCube(target.mdx);
+}
+
+/**
+ * Run `fn` with the transaction log optionally deactivated for the duration.
+ *
+ * Mirrors tm1py's `@manage_transaction_log` decorator
+ * (CellService.py:103-136), including its cube-name resolution: callers may
+ * pass an explicit `cubeName`, an MDX query, or a bare string that is
+ * auto-classified via `resemblesMdx` (Utils.py:1686).
+ *
+ * - When `deactivate_transaction_log` is true, calls
+ *   `service.deactivateTransactionlog(resolvedCube)` before `fn`.
+ * - When `reactivate_transaction_log` is true, calls
+ *   `service.activateTransactionlog(resolvedCube)` in `finally` (always —
+ *   even if `fn` or `deactivate` threw).
+ */
+export async function withManagedTransactionLog<T>(
+    service: CellService,
+    target: ManagedTransactionLogTarget,
+    fn: () => Promise<T>,
+    options: ManagedTransactionLogOptions = {}
+): Promise<T> {
+    const cubeName = resolveCubeName(target);
+    const deactivate = options.deactivate_transaction_log === true;
+    const reactivate = options.reactivate_transaction_log === true;
+    try {
+        if (deactivate) {
+            await service.deactivateTransactionlog(cubeName);
+        }
+        return await fn();
+    } finally {
+        if (reactivate) {
+            await service.activateTransactionlog(cubeName);
+        }
+    }
+}
+
+/**
+ * Run `fn` optionally wrapped in a TM1 changeset (begin/end pair).
+ *
+ * Mirrors tm1py's `@manage_changeset` decorator (CellService.py:139-158):
+ * - When `useChangeset` is false (default), `fn` is invoked with no args.
+ * - When true, `service.beginChangeset()` is awaited first, the resulting id
+ *   is passed to `fn`, and `service.endChangeset(id)` is called in `finally`
+ *   (only after `begin` succeeded — `begin` is intentionally outside `try`).
+ *   `end` is called even when `fn` throws.
+ */
+export async function withManagedChangeset<T>(
+    service: CellService,
+    fn: (changeset?: string) => Promise<T>,
+    useChangeset: boolean = false
+): Promise<T> {
+    if (!useChangeset) {
+        return await fn();
+    }
+    const changeset = await service.beginChangeset();
+    try {
+        return await fn(changeset);
+    } finally {
+        await service.endChangeset(changeset);
+    }
+}
+
+/**
+ * Run `fn` with the compact-JSON Accept header set, then translate the
+ * response into either a dict shape or a flat list.
+ *
+ * Mirrors tm1py's `@odata_compact_json(return_as_dict=...)` decorator
+ * (CellService.py:161-200):
+ * - When `useCompactJson` is false, `fn`'s result is returned unchanged.
+ * - When true: `rest.add_compact_json_header()` is called (saves and
+ *   replaces the Accept header), `fn` is awaited, the response context is
+ *   validated to start with `$metadata#Cellsets`, and
+ *   `extractCompactJsonCellset` is invoked. The original Accept header is
+ *   restored in `finally`, even if `fn` or the extractor throws.
+ */
+export async function withCompactJson<T = any>(
+    rest: RestService,
+    useCompactJson: boolean,
+    fn: () => Promise<any>,
+    returnAsDict: boolean
+): Promise<T> {
+    if (!useCompactJson) {
+        return (await fn()) as T;
+    }
+    const original = rest.add_compact_json_header();
+    try {
+        const response = await fn();
+        // Mirror tm1py's `response["@odata.context"]` (CellService.py:186) —
+        // a missing key raises KeyError in Python; surface a distinct error
+        // here instead of conflating with the wrong-context case.
+        if (!response || !('@odata.context' in response)) {
+            throw new Error("Compact JSON response missing '@odata.context'");
+        }
+        const context: string = response['@odata.context'];
+        if (!context.startsWith('$metadata#Cellsets')) {
+            throw new Error('odata_compact_json decorator must only be used on cellsets');
+        }
+        return extractCompactJsonCellset(context, response, returnAsDict) as unknown as T;
+    } finally {
+        rest.add_http_header('Accept', original);
     }
 }
