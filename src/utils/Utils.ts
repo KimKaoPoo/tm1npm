@@ -637,6 +637,44 @@ async function checkAdminPrivileges(rest: any, privilegeType: 'DATA' | 'SECURITY
 const ODATA_CELLS_CONTEXT_RE = /^\$metadata#Cellsets\(Cells\(([A-Za-z,]+)\)\)\/\$entity/;
 
 /**
+ * Detect whether a string resembles an MDX query. Mirrors tm1py's
+ * `resembles_mdx` (Utils.py:1686-1690): case- and dot-all-insensitive
+ * `.*SELECT.*ON.*FROM.*`.
+ */
+export function resemblesMdx(mdx: string): boolean {
+    return /SELECT[\s\S]*ON[\s\S]*FROM/i.test(mdx);
+}
+
+/**
+ * Extract the cube name from an MDX query. Mirrors tm1py's `get_cube`
+ * (Utils.py:1664-1683):
+ * 1. Strip whitespace.
+ * 2. Happy case: `FROM[<cube>]` — return the bracketed value.
+ * 3. Cut off any `WHERE(...)` clause.
+ * 4. Return whatever follows the last `FROM`.
+ */
+export function getCube(mdx: string): string {
+    // replace tabs, line breaks, spaces
+    let stripped = mdx.replace(/\s+/g, '');
+
+    // happy case: cube name in square brackets
+    const bracketMatch = /FROM\[([\s\S]*?)\]/i.exec(stripped);
+    if (bracketMatch) {
+        return bracketMatch[1];
+    }
+
+    // cut off where
+    if (/.*SELECT.*ON.*FROM.*WHERE\(.*/is.test(stripped)) {
+        // part before where
+        stripped = stripped.split(/WHERE\(.*/is)[0];
+    }
+
+    // part after from
+    const parts = stripped.split(/FROM/i);
+    return parts[parts.length - 1];
+}
+
+/**
  * Extract cell property names from an OData `@odata.context` returned by a
  * compact-JSON cellset response. Mirrors tm1py's
  * `extract_cell_properties_from_odata_context` (Utils.py).

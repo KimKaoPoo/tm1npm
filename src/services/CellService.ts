@@ -13,7 +13,7 @@ import { OperationStatus, OperationType } from './AsyncOperationService';
 import { MDXView } from '../objects/MDXView';
 import { Process } from '../objects/Process';
 import { TM1Exception } from '../exceptions/TM1Exception';
-import { formatUrl, escapeODataValue, lowerAndDropSpaces, extractCompactJsonCellset } from '../utils/Utils';
+import { formatUrl, escapeODataValue, lowerAndDropSpaces, extractCompactJsonCellset, resemblesMdx, getCube } from '../utils/Utils';
 
 export interface CellsetDict {
     [coordinates: string]: string | number | boolean | null | undefined;
@@ -2870,26 +2870,49 @@ export async function withTidyCellset<T>(
 }
 
 /**
+ * Argument shape accepted by `withManagedTransactionLog`. Mirrors tm1py's
+ * cube_name resolution in `manage_transaction_log` (CellService.py:113-122):
+ * - `{ cubeName }` — explicit cube name.
+ * - `{ mdx }` — derive cube via `getCube(mdx)`.
+ * - A bare string — interpreted as MDX if it looks like MDX
+ *   (`resemblesMdx`), otherwise treated as a cube name.
+ */
+export type ManagedTransactionLogTarget =
+    | string
+    | { cubeName: string; mdx?: undefined }
+    | { mdx: string; cubeName?: undefined };
+
+function resolveCubeName(target: ManagedTransactionLogTarget): string {
+    if (typeof target === 'string') {
+        return resemblesMdx(target) ? getCube(target) : target;
+    }
+    if (target.cubeName !== undefined) {
+        return target.cubeName;
+    }
+    return getCube(target.mdx);
+}
+
+/**
  * Run `fn` with the transaction log optionally deactivated for the duration.
  *
  * Mirrors tm1py's `@manage_transaction_log` decorator
- * (CellService.py:103-136):
- * - When `deactivate_transaction_log` is true, calls
- *   `service.deactivateTransactionlog(cubeName)` before `fn`.
- * - When `reactivate_transaction_log` is true, calls
- *   `service.activateTransactionlog(cubeName)` in `finally` (always — even
- *   if `fn` or `deactivate` threw).
+ * (CellService.py:103-136), including its cube-name resolution: callers may
+ * pass an explicit `cubeName`, an MDX query, or a bare string that is
+ * auto-classified via `resemblesMdx` (Utils.py:1686).
  *
- * Note: tm1py also resolves `cube_name` from MDX/cube_name kwarg/first
- * positional via `resembles_mdx`. tm1npm callers always pass `cubeName`
- * explicitly, so that branch is intentionally omitted.
+ * - When `deactivate_transaction_log` is true, calls
+ *   `service.deactivateTransactionlog(resolvedCube)` before `fn`.
+ * - When `reactivate_transaction_log` is true, calls
+ *   `service.activateTransactionlog(resolvedCube)` in `finally` (always —
+ *   even if `fn` or `deactivate` threw).
  */
 export async function withManagedTransactionLog<T>(
     service: CellService,
-    cubeName: string,
+    target: ManagedTransactionLogTarget,
     fn: () => Promise<T>,
     options: ManagedTransactionLogOptions = {}
 ): Promise<T> {
+    const cubeName = resolveCubeName(target);
     const deactivate = options.deactivate_transaction_log === true;
     const reactivate = options.reactivate_transaction_log === true;
     try {
@@ -2955,8 +2978,14 @@ export async function withCompactJson<T = any>(
     const original = rest.add_compact_json_header();
     try {
         const response = await fn();
-        const context: string = response?.['@odata.context'];
-        if (!context || !context.startsWith('$metadata#Cellsets')) {
+        // Mirror tm1py's `response["@odata.context"]` (CellService.py:186) —
+        // a missing key raises KeyError in Python; surface a distinct error
+        // here instead of conflating with the wrong-context case.
+        if (!response || !('@odata.context' in response)) {
+            throw new Error("Compact JSON response missing '@odata.context'");
+        }
+        const context: string = response['@odata.context'];
+        if (!context.startsWith('$metadata#Cellsets')) {
             throw new Error('odata_compact_json decorator must only be used on cellsets');
         }
         return extractCompactJsonCellset(context, response, returnAsDict) as unknown as T;

@@ -327,12 +327,57 @@ describe('withCompactJson', () => {
         expect(rest.add_http_header).toHaveBeenCalledWith('Accept', 'application/json;odata.metadata=minimal');
     });
 
-    it('throws when the response is missing @odata.context', async () => {
+    it('throws a distinct missing-context error when @odata.context is absent', async () => {
         const fn = jest.fn().mockResolvedValue({ value: ['cs-id', []] });
 
         await expect(
             withCompactJson(rest as unknown as RestService, true, fn, false)
-        ).rejects.toThrow('odata_compact_json decorator must only be used on cellsets');
+        ).rejects.toThrow("Compact JSON response missing '@odata.context'");
+        expect(rest.add_http_header).toHaveBeenCalledWith('Accept', 'application/json;odata.metadata=minimal');
+    });
+});
+
+describe('withManagedTransactionLog cube-name resolution', () => {
+    let svc: CellServiceMock;
+
+    beforeEach(() => {
+        svc = makeCellServiceMock();
+    });
+
+    it('uses the cubeName field directly when given an object with cubeName', async () => {
+        await withManagedTransactionLog(svc as unknown as CellService, { cubeName: 'cubeA' }, async () => null, {
+            deactivate_transaction_log: true,
+        });
+
+        expect(svc.deactivateTransactionlog).toHaveBeenCalledWith('cubeA');
+    });
+
+    it('derives the cube name from MDX when given an object with mdx', async () => {
+        const mdx = 'SELECT {[Dim].[All]} ON 0 FROM [SalesCube]';
+
+        await withManagedTransactionLog(svc as unknown as CellService, { mdx }, async () => null, {
+            deactivate_transaction_log: true,
+        });
+
+        expect(svc.deactivateTransactionlog).toHaveBeenCalledWith('SalesCube');
+    });
+
+    it('treats a bare string that does not look like MDX as a cube name', async () => {
+        await withManagedTransactionLog(svc as unknown as CellService, 'PlainCube', async () => null, {
+            deactivate_transaction_log: true,
+        });
+
+        expect(svc.deactivateTransactionlog).toHaveBeenCalledWith('PlainCube');
+    });
+
+    it('treats a bare string that looks like MDX as MDX and extracts the cube', async () => {
+        const mdx = 'SELECT {[Dim].[All]} ON 0 FROM [InferredCube]';
+
+        await withManagedTransactionLog(svc as unknown as CellService, mdx, async () => null, {
+            deactivate_transaction_log: true,
+        });
+
+        expect(svc.deactivateTransactionlog).toHaveBeenCalledWith('InferredCube');
     });
 });
 
