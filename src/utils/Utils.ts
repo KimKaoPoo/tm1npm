@@ -632,3 +632,66 @@ async function checkAdminPrivileges(rest: any, privilegeType: 'DATA' | 'SECURITY
         console.warn(`Unable to verify ${privilegeType} admin privileges:`, error);
     }
 }
+
+/**
+ * Extract cell property names from an OData `@odata.context` returned by a
+ * compact-JSON cellset response. Mirrors tm1py's
+ * `extract_cell_properties_from_odata_context` (Utils.py).
+ */
+export function extractCellPropertiesFromOdataContext(context: string): string[] {
+    const match = /^\$metadata#Cellsets\(Cells\(([A-Za-z,]+)\)\)\/\$entity/.exec(context);
+    if (!match) {
+        throw new Error('Could not extract cell properties from odata context');
+    }
+    return match[1].split(',');
+}
+
+/**
+ * Map a list of cell properties onto the compact-JSON `value[1]` array,
+ * producing `{ Cells: [{prop1: v1, prop2: v2, ...}, ...] }`. Mirrors tm1py's
+ * `map_cell_properties_to_compact_json_response`.
+ */
+export function mapCellPropertiesToCompactJsonResponse(
+    properties: string[],
+    compactCellsResponse: any[][]
+): { Cells: Array<Record<string, any>> } {
+    const cells = compactCellsResponse.map(cell => {
+        if (cell.length < properties.length) {
+            // Match Python's IndexError when a row has fewer values than expected
+            throw new RangeError(
+                `Compact JSON row has ${cell.length} values but ${properties.length} properties were expected`
+            );
+        }
+        const d: Record<string, any> = {};
+        properties.forEach((prop, idx) => { d[prop] = cell[idx]; });
+        return d;
+    });
+    return { Cells: cells };
+}
+
+/**
+ * Translate a TM1 OData compact-JSON cellset response into either a default
+ * dictionary (`{ Cells: [...] }`) or a flat list of values, depending on
+ * `returnAsDict` and the property shape. Mirrors tm1py's
+ * `extract_compact_json_cellset`.
+ */
+export function extractCompactJsonCellset(
+    context: string,
+    response: { value: any[] },
+    returnAsDict: boolean
+): { Cells: Array<Record<string, any>> } | any[] {
+    const props = extractCellPropertiesFromOdataContext(context);
+    // First element [0] is the cellset ID, second is the cellset data
+    const cellsData: any[][] = response.value[1];
+
+    if (returnAsDict) {
+        return mapCellPropertiesToCompactJsonResponse(props, cellsData);
+    }
+    if (props.length === 1) {
+        return cellsData.map(value => value[0]);
+    }
+    if (props.length === 2 && props[0] === 'Ordinal' && props[1] === 'Value') {
+        return cellsData.map(value => value[1]);
+    }
+    return cellsData;
+}
