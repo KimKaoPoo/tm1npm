@@ -1607,6 +1607,84 @@ export class CellService {
     }
 
     /**
+     * Fetch only Axes with Cardinality from a cellset.
+     * Mirrors tm1py's `extract_cellset_axes_cardinality` (CellService.py:3969-3972)
+     * but returns the raw dict shape rather than a processed array.
+     */
+    private async _fetchCellsetAxesCardinalityRaw(
+        cellsetId: string
+    ): Promise<{ Axes: Array<{ Cardinality: number }> }> {
+        const url = `/Cellsets('${cellsetId}')?$expand=Axes($select=Cardinality)`;
+        return (await this.rest.get(url)).data;
+    }
+
+    /**
+     * Extract cellset axes asynchronously using parallel chunked requests.
+     * Mirrors tm1py's `extract_cellset_axes_raw_async` (CellService.py:3974-4076).
+     * Uses Promise.all instead of Python's ThreadPoolExecutor.
+     */
+    public async extractCellsetAxesRawAsync(
+        cellsetId: string,
+        options: ExtractCellsetAxesRawAsyncOptions = {}
+    ): Promise<RawCellsetDict> {
+        const asyncAxis = options.asyncAxis ?? 1;
+        const maxWorkers = options.maxWorkers ?? 8;
+
+        const axesCardinality = await this._fetchCellsetAxesCardinalityRaw(cellsetId);
+
+        if (asyncAxis >= axesCardinality.Axes.length) {
+            throw new Error("Argument 'async_axis' must be less than axes cardinality");
+        }
+
+        const memberProps = (options.memberProperties && options.memberProperties.length > 0)
+            ? options.memberProperties : ['Name'];
+        const selectMember = '$select=' + memberProps.join(',');
+        const expandElem = (options.elemProperties && options.elemProperties.length > 0)
+            ? ';$expand=Element($select=' + options.elemProperties.join(',') + ')' : '';
+        const expandHierarchies = options.includeHierarchies
+            ? 'Hierarchies($select=Name;$expand=Dimension($select=Name)),' : '';
+
+        const fetchAxisChunk = async (axis: number, partition: number, partitionSize: number): Promise<any> => {
+            const top = partitionSize;
+            const skip = partition * partitionSize;
+            const filterAxis = `$filter=Ordinal eq ${axis};`;
+            const partClause = partitionSize > 0 ? `;$top=${top};$skip=${skip}` : '';
+            let url =
+                `/Cellsets('${cellsetId}')?$expand=` +
+                `Axes(${filterAxis}$expand=${expandHierarchies}Tuples($expand=Members(${selectMember}${expandElem})${partClause}))`;
+            if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
+            return (await this.rest.get(url)).data;
+        };
+
+        // Extract non-async axis (the opposite axis)
+        const axes = await fetchAxisChunk(1 - asyncAxis, 0, 0);
+
+        // Extract async axis tuples in parallel chunks
+        const partitionSize = Math.ceil(axesCardinality.Axes[asyncAxis].Cardinality / maxWorkers);
+        const chunkResults = await Promise.all(
+            Array.from({ length: maxWorkers }, (_, p) => fetchAxisChunk(asyncAxis, p, partitionSize))
+        );
+        const asyncAxisTuples = chunkResults.flatMap((r: any) => r.Axes[0]?.Tuples ?? []);
+
+        // Combine results
+        axes.Axes.splice(asyncAxis, 0, {
+            Ordinal: asyncAxis,
+            Cardinality: axesCardinality.Axes[asyncAxis].Cardinality,
+            Tuples: asyncAxisTuples,
+        });
+
+        // Optionally include context axis (axis 2)
+        if (!options.skipContexts) {
+            const ctx = await fetchAxisChunk(2, 0, 0);
+            if (ctx.Axes && ctx.Axes.length > 0) {
+                axes.Axes.push(ctx.Axes[0]);
+            }
+        }
+
+        return axes;
+    }
+
+    /**
      * Extract cellset values only
      */
     public async extractCellsetValues(
