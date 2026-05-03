@@ -2041,44 +2041,60 @@ export class CellService {
     ): Promise<void> {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const { chain } = require('stream-chain');
+        // stream-json v2: default export is the make() function that returns a Duplex stream
+        // (parser() returns a Flushable fn for stream-chain; make() returns a proper Duplex)
         // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const { parser } = require('stream-json');
+        const make = require('stream-json');
 
         return new Promise<void>((resolve, reject) => {
             const pipeline = chain([
                 stream,
-                parser({ packKeys: true, packStrings: true, packNumbers: true }),
+                make({ packKeys: true, packStrings: true, packNumbers: true }),
             ]);
 
-            // Path tracking state
+            // Path tracking state — mirrors ijson prefix semantics
+            // Each entry in pushStack records how many path segments were pushed when
+            // entering the corresponding container, so we know how many to pop on exit.
             const pathStack: string[] = [];
             let lastKey: string | null = null;
-            const pathTypes: Array<'obj' | 'arr'> = [];
+            // pushStack[i]: number of segments pushed when opening the i-th container
+            const pushStack: number[] = [];
+            // currentContainerIsArray[i]: whether the i-th container is an array
+            const containerIsArray: boolean[] = [];
 
             pipeline.on('data', (token: { name: string; value?: any }) => {
                 switch (token.name) {
-                    case 'startObject':
-                        if (lastKey !== null) { pathStack.push(lastKey); lastKey = null; }
-                        else if (pathTypes[pathTypes.length - 1] === 'arr') { pathStack.push('item'); }
-                        pathTypes.push('obj');
+                    case 'startObject': {
+                        let pushed = 0;
+                        const parentIsArray = containerIsArray.length > 0
+                            && containerIsArray[containerIsArray.length - 1];
+                        if (lastKey !== null) {
+                            pathStack.push(lastKey); lastKey = null; pushed = 1;
+                        } else if (parentIsArray) {
+                            pathStack.push('item'); pushed = 1;
+                        }
+                        containerIsArray.push(false);
+                        pushStack.push(pushed);
                         break;
+                    }
 
-                    case 'startArray':
-                        if (lastKey !== null) { pathStack.push(lastKey); lastKey = null; }
-                        pathTypes.push('arr');
+                    case 'startArray': {
+                        let pushed = 0;
+                        if (lastKey !== null) {
+                            pathStack.push(lastKey); lastKey = null; pushed = 1;
+                        }
+                        containerIsArray.push(true);
+                        pushStack.push(pushed);
                         break;
+                    }
 
                     case 'endObject':
-                        pathTypes.pop();
-                        if (pathStack.length > 0 && pathStack[pathStack.length - 1] === 'item') {
-                            pathStack.pop();
-                        }
+                    case 'endArray': {
+                        containerIsArray.pop();
+                        const n = pushStack.pop() ?? 0;
+                        for (let i = 0; i < n; i++) pathStack.pop();
                         break;
-
-                    case 'endArray':
-                        pathTypes.pop();
-                        if (pathStack.length > 0) pathStack.pop();
-                        break;
+                    }
 
                     case 'keyValue':
                         lastKey = token.value;
@@ -2095,7 +2111,12 @@ export class CellService {
                         if (prefixesOfInterest.has(prefix)) {
                             const event = token.name === 'stringValue' ? 'string'
                                 : token.name === 'numberValue' ? 'number' : 'other';
-                            visit(prefix, event, token.value);
+                            // stream-json v2 emits numberValue.value as a string (accumulated chunks)
+                            // — parse to JS number so callers can do numeric comparisons
+                            const value = token.name === 'numberValue'
+                                ? parseFloat(token.value as string)
+                                : token.value;
+                            visit(prefix, event, value);
                         }
                         lastKey = null;
                         break;

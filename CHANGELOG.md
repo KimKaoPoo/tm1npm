@@ -2,6 +2,67 @@
 
 All notable changes to this project are documented here.
 
+## 2.2.0 — 2026-05-02
+
+### BREAKING CHANGES
+
+**Four `CellService` methods changed from positional arguments to an options object**
+(see [#67](https://github.com/KimKaoPoo/tm1npm/issues/67)).
+
+- **`extractCellset`** — was `(cellsetId, deleteCellset?, sandboxName?)`,
+  now accepts `ExtractCellsetOptions` and returns `CaseAndSpaceInsensitiveTuplesDict`
+  instead of a plain object.
+  - Migration: `extractCellset(id, true, 'sb')` → `extractCellset(id, { deleteCellset: true, sandboxName: 'sb' })`.
+
+- **`extractCellsetCsv`** — was `(cellsetId, sandboxName?, includeHeaders?)`,
+  now accepts `ExtractCellsetCsvOptions`.
+  - Migration: `extractCellsetCsv(id, 'sb', false)` → `extractCellsetCsv(id, { sandboxName: 'sb', includeHeaders: false })`.
+
+- **`extractCellsetRawResponse`** — was `(cellsetId, ...positional)`,
+  now accepts `ExtractCellsetRawOptions`.
+
+- **`extractCellsetComposition`** — return shape changed from
+  `{ cube, rows, columns }` to `{ cube, titles, rows, columns }` (adds `titles`
+  for title/page-filter axes, matching tm1py's return value).
+
+### Added
+
+- **`Utils.ts`** — new cellset-shaping helpers (all match tm1py parity):
+  - `dimensionNameFromElementUniqueName` / `hierarchyNameFromElementUniqueName` /
+    `elementNameFromElementUniqueName` — parse element unique-name strings.
+  - `dimensionNamesFromElementUniqueNames` — extract dimension names from an iterable.
+  - `extractAxesFromCellset` — split raw cellset axes into rows/columns/titles.
+  - `extractUniqueNamesFromMembers` — collect member unique-names from axis tuples.
+  - `sortCoordinates` — sort member addresses by cube-dimension order.
+  - `buildContentFromCellsetDict` — convert a `RawCellsetDict` to a nested content dict.
+  - `buildCsvFromCellsetDict` — convert a `RawCellsetDict` to a CSV string.
+  - New interfaces: `CellsetAxis`, `RawCellsetDict`, `CsvDialect`.
+  - `CaseAndSpaceInsensitiveTuplesDict` — `Map` subclass with normalized tuple keys.
+
+- **`CellService`** — new and rewritten methods (all match tm1py parity):
+  - `extractCellsetRaw` — full cellset dict with tidy and compact-JSON support.
+  - `extractCellsetCellsRaw` — cells-only slice; wrapped with `withCompactJson`.
+  - `extractCellsetAxesRawAsync` — parallel per-axis fetch using `Promise.all`.
+  - `extractCellsetCellsRawAsync` — parallel chunk fetch using `Promise.all`.
+  - `extractCellsetCsvIterJson` — streaming CSV via `stream-json` (no full parse).
+  - New exported interfaces: `ExtractCellsetRawOptions`, `ExtractCellsetCsvOptions`,
+    `ExtractCellsetMetadataRawOptions`, `ExtractCellsetCompositionResult`.
+
+### Changed
+
+- `extractCellset` now returns `CaseAndSpaceInsensitiveTuplesDict` (normalized-key
+  `Map` subclass) instead of a plain object.
+- `extractCellsetCsv` now performs client-side CSV conversion via
+  `buildCsvFromCellsetDict` (no server-side `/Content` endpoint call).
+- Internal callers (`extractCellsetRowsAndValues`, `extractCellsetDataframe`,
+  `extractCellsetDataframePivot`, `extractCellsetAsync`) updated to use
+  `extractCellsetRaw` for consistency.
+
+### Dependencies
+
+- Added `stream-json ^2.1.0` as a runtime dependency (used by `extractCellsetCsvIterJson`).
+- Added `@types/stream-json ^1.7.8` as a dev dependency.
+
 ## 2.0.0 — 2026-04-16
 
 ### BREAKING CHANGES
