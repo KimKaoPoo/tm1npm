@@ -19,6 +19,7 @@ import {
     RawCellsetDict,
     buildContentFromCellsetDict,
     buildCsvFromCellsetDict,
+    csvRowToString,
     dimensionNamesFromElementUniqueNames,
     CsvDialect,
 } from '../utils/Utils';
@@ -1433,7 +1434,7 @@ export class CellService {
         options: ExtractCellsetRawOptions = {}
     ): Promise<any> {
         const url = this._buildCellsetRawUrl(cellsetId, options);
-        return this.rest.get(url, { responseType: 'stream' as any });
+        return this.rest.get(url, { responseType: 'stream' });
     }
 
     /**
@@ -1976,7 +1977,7 @@ export class CellService {
                 }
                 if (row.length > maxEntriesPerRow) maxEntriesPerRow = row.length;
                 if (row.length < leastEntriesPerRow) leastEntriesPerRow = row.length;
-                csvBodyLines.push(this._csvRow(row, delimiter, lineterminator));
+                csvBodyLines.push(csvRowToString(row, delimiter, lineterminator));
 
             } else if (prefix === 'Axes.item.Tuples.item.Members.item.Name' && event === 'string') {
                 // tm1py CellService.py:4501-4505
@@ -2025,7 +2026,7 @@ export class CellService {
         }
 
         // tm1py CellService.py:4551-4556 — header + body
-        const headerLine = this._csvRow([...rowHeaders, ...columnHeaders, 'Value'], delimiter, lineterminator);
+        const headerLine = csvRowToString([...rowHeaders, ...columnHeaders, 'Value'], delimiter, lineterminator);
         return headerLine + csvBodyLines.join('').replace(/\s+$/, '');
     }
 
@@ -2125,23 +2126,17 @@ export class CellService {
             });
 
             pipeline.on('end', () => resolve());
-            pipeline.on('error', (err: Error) => reject(err));
+            pipeline.on('error', (err: Error) => {
+                // Ensure the upstream HTTP response stream is released so the socket
+                // doesn't stay buffered when parsing fails mid-document.
+                if (typeof (stream as any).destroy === 'function') {
+                    try { (stream as any).destroy(); } catch { /* already torn down */ }
+                }
+                reject(err);
+            });
         });
     }
 
-    /**
-     * Format a CSV row from string values using Excel-dialect escaping rules.
-     * Wraps values in quotes when they contain the delimiter, line terminator, or `"`.
-     */
-    private _csvRow(values: string[], delimiter: string, lineterminator: string): string {
-        const escape = (v: string): string => {
-            if (v.includes(delimiter) || v.includes(lineterminator) || v.includes('"')) {
-                return '"' + v.replace(/"/g, '""') + '"';
-            }
-            return v;
-        };
-        return values.map(escape).join(delimiter) + lineterminator;
-    }
 
     /**
      * Get element attributes by dimension for a cube.

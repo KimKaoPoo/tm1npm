@@ -1001,7 +1001,7 @@ function csvEscapeField(value: string, delimiter: string, lineterminator: string
 /**
  * Serialize an array of string values into one CSV line (with line terminator).
  */
-function csvRowToString(values: string[], delimiter: string, lineterminator: string): string {
+export function csvRowToString(values: string[], delimiter: string, lineterminator: string): string {
     return values.map(v => csvEscapeField(v, delimiter, lineterminator)).join(delimiter) + lineterminator;
 }
 
