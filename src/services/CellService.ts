@@ -1556,17 +1556,12 @@ export class CellService {
 
         if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
 
-        const deleteCellset = options.deleteCellset === true;
-        const response = await (async () => {
-            try {
-                return (await this.rest.get(url)).data;
-            } finally {
-                if (deleteCellset) {
-                    await this._safeDeleteCellset(cellsetId, options.sandboxName);
-                }
-            }
-        })();
-        return response;
+        // tm1py decorates extract_cellset_metadata_raw with @tidy_cellset
+        // (CellService.py:3789-3790) — default delete_cellset=true.
+        const deleteCellset = options.deleteCellset !== false;
+        return withTidyCellset(this, cellsetId, async () => {
+            return (await this.rest.get(url)).data;
+        }, { delete_cellset: deleteCellset, sandbox_name: options.sandboxName });
     }
 
     /**
@@ -1598,7 +1593,8 @@ export class CellService {
         cellsetId: string,
         sandbox_name?: string
     ): Promise<number[]> {
-        const metadata = await this.extractCellsetMetadataRaw(cellsetId, { sandboxName: sandbox_name });
+        // tm1py extract_cellset_axes_cardinality has no @tidy_cellset (CellService.py:3969-3972).
+        const metadata = await this.extractCellsetMetadataRaw(cellsetId, { sandboxName: sandbox_name, deleteCellset: false });
 
         if (metadata.Axes) {
             return metadata.Axes.map((axis: any) => axis.Cardinality || 0);
@@ -1800,37 +1796,41 @@ export class CellService {
      */
     public async extractCellsetComposition(
         cellsetId: string,
-        options: { sandboxName?: string } = {}
+        options: { sandboxName?: string; deleteCellset?: boolean } = {}
     ): Promise<ExtractCellsetCompositionResult> {
-        let url =
-            `/Cellsets('${cellsetId}')?$expand=` +
-            `Cube($select=Name),Axes($expand=Hierarchies($select=UniqueName))`;
-        if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
+        // tm1py decorates this with @tidy_cellset (CellService.py:4263) — default cleanup on.
+        const deleteCellset = options.deleteCellset !== false;
+        return withTidyCellset(this, cellsetId, async () => {
+            let url =
+                `/Cellsets('${cellsetId}')?$expand=` +
+                `Cube($select=Name),Axes($expand=Hierarchies($select=UniqueName))`;
+            if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
 
-        const data = (await this.rest.get(url)).data;
-        const cube: string = data.Cube.Name;
+            const data = (await this.rest.get(url)).data;
+            const cube: string = data.Cube.Name;
 
-        const rows: string[] = [];
-        const titles: string[] = [];
-        const columns: string[] = [];
+            const rows: string[] = [];
+            const titles: string[] = [];
+            const columns: string[] = [];
 
-        if (data.Axes.length === 1) {
-            if (data.Axes[0].Hierarchies) {
-                columns.push(...data.Axes[0].Hierarchies.map((h: any) => h.UniqueName));
+            if (data.Axes.length === 1) {
+                if (data.Axes[0].Hierarchies) {
+                    columns.push(...data.Axes[0].Hierarchies.map((h: any) => h.UniqueName));
+                }
+            } else {
+                if (data.Axes[0].Hierarchies) {
+                    columns.push(...data.Axes[0].Hierarchies.map((h: any) => h.UniqueName));
+                }
+                if (data.Axes[1].Hierarchies) {
+                    rows.push(...data.Axes[1].Hierarchies.map((h: any) => h.UniqueName));
+                }
             }
-        } else {
-            if (data.Axes[0].Hierarchies) {
-                columns.push(...data.Axes[0].Hierarchies.map((h: any) => h.UniqueName));
+            if (data.Axes.length > 2) {
+                titles.push(...data.Axes[2].Hierarchies.map((h: any) => h.UniqueName));
             }
-            if (data.Axes[1].Hierarchies) {
-                rows.push(...data.Axes[1].Hierarchies.map((h: any) => h.UniqueName));
-            }
-        }
-        if (data.Axes.length > 2) {
-            titles.push(...data.Axes[2].Hierarchies.map((h: any) => h.UniqueName));
-        }
 
-        return { cube, titles, rows, columns };
+            return { cube, titles, rows, columns };
+        }, { delete_cellset: deleteCellset, sandbox_name: options.sandboxName });
     }
 
     /**
@@ -1863,7 +1863,7 @@ export class CellService {
         const deleteCellset = options.deleteCellset !== false;
 
         const { rows, columns } = await this.extractCellsetComposition(
-            cellsetId, { sandboxName: options.sandboxName }
+            cellsetId, { sandboxName: options.sandboxName, deleteCellset: false }
         );
 
         const rawCellset = await this.extractCellsetRaw(cellsetId, {
@@ -1911,7 +1911,7 @@ export class CellService {
         const lineterminator = options.csvDialect?.lineterminator ?? lineSeparator;
 
         const { cube, rows, columns } = await this.extractCellsetComposition(
-            cellsetId, { sandboxName: options.sandboxName }
+            cellsetId, { sandboxName: options.sandboxName, deleteCellset: false }
         );
 
         const rawResponse = await this.extractCellsetRawResponse(cellsetId, {

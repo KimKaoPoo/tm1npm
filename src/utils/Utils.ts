@@ -864,7 +864,8 @@ export function buildContentFromCellsetDict(
     const cells = rawCellset.Cells || [];
     const axes = extractAxesFromCellset(rawCellset);
     const result = new CaseAndSpaceInsensitiveTuplesDict<any>();
-    const limit = top ?? cells.length;
+    // tm1py: cells[: top or len(cells)] — Python slicing clamps; never indexes past end.
+    const limit = Math.min(top ?? cells.length, cells.length);
     for (let enumOrdinal = 0; enumOrdinal < limit; enumOrdinal++) {
         const cell = cells[enumOrdinal];
         // if skip is used we must use the original ordinal from the cell
@@ -1049,7 +1050,8 @@ export function buildCsvFromCellsetDict(
         numHeaders = headers.length;
     }
 
-    const limit = options.top ?? cells.length;
+    // tm1py: cells[: top or len(cells)] — Python slicing clamps; never indexes past end.
+    const limit = Math.min(options.top ?? cells.length, cells.length);
     for (let enumOrdinal = 0; enumOrdinal < limit; enumOrdinal++) {
         const cell = cells[enumOrdinal];
         // if skip was used, use original ordinal from cell
@@ -1066,7 +1068,8 @@ export function buildCsvFromCellsetDict(
             line.push(...buildCsvLineItemsFromAxisTuple(columnAxis.Tuples[indexRows].Members, includeAttributes));
         }
 
-        line.push(String(cell.Value ?? ''));
+        // tm1py: str(cell["Value"] or "") — Python `or` treats 0/false/"" as falsy too.
+        line.push(String(cell.Value || ''));
 
         if (includeAttributes && includeHeaders && line.length !== numHeaders) {
             throw new Error(

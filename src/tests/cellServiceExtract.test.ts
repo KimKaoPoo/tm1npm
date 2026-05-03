@@ -207,6 +207,21 @@ describe('Utils helpers', () => {
             expect(result.get('[d].[d].[x]')).toBe(42);
         });
 
+        it('top > cells.length clamps (no TypeError) — tm1py slicing parity', () => {
+            // tm1py: cells[: top or len(cells)] never indexes past end.
+            const raw: RawCellsetDict = {
+                Cube: { Name: 'C', Dimensions: [{ Name: 'D' }] },
+                Axes: [
+                    { Cardinality: 1, Tuples: [{ Members: [{ UniqueName: '[D].[D].[a]', Element: null as any }] }] }
+                ],
+                Cells: [{ Value: 1 }],
+            };
+            // top=10, only 1 cell present — should clamp, not throw
+            expect(() => buildContentFromCellsetDict(raw, 10)).not.toThrow();
+            const result = buildContentFromCellsetDict(raw, 10);
+            expect(result.size).toBe(1);
+        });
+
         it('skipSandboxDimension drops Sandboxes first dimension', () => {
             const raw: RawCellsetDict = {
                 Cube: { Name: 'C', Dimensions: [{ Name: 'Sandboxes' }, { Name: 'Year' }] },
@@ -267,6 +282,31 @@ describe('Utils helpers', () => {
             };
             const csv = buildCsvFromCellsetDict([], [], emptyCellset);
             expect(csv).toBe('');
+        });
+
+        it('top > cells.length clamps (no TypeError) — tm1py slicing parity', () => {
+            const csv = buildCsvFromCellsetDict(
+                ['[Region].[Region]'], ['[Year].[Year]'], raw2x2,
+                { top: 100, includeHeaders: false }
+            );
+            // raw2x2 has 2 cells; top=100 must NOT throw and must emit 2 lines.
+            expect(csv.trim().split(/\r\n|\n/).length).toBe(2);
+        });
+
+        it('falsy cell values serialize to "" — tm1py `or` semantics (0/false/"")', () => {
+            // tm1py Utils.py:548: str(cell["Value"] or "") — Python `or` treats 0, False, ""
+            // as falsy. JS `||` matches that; `??` does not (the bug we're fixing).
+            const cellsetWithZero: RawCellsetDict = {
+                Cube: { Name: 'C', Dimensions: [{ Name: 'Year' }] },
+                Axes: [
+                    { Cardinality: 1, Tuples: [{ Members: [{ Name: '2024' }] }] },
+                ],
+                Cells: [{ Value: 0 }],
+            };
+            const csv = buildCsvFromCellsetDict([], ['[Year].[Year]'], cellsetWithZero,
+                { includeHeaders: false });
+            // tm1py strips trailing whitespace; last field is empty (not "0").
+            expect(csv).toBe('2024,');
         });
 
         it('default lineSeparator is CRLF', () => {
