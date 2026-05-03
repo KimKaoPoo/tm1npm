@@ -1893,6 +1893,265 @@ export class CellService {
     }
 
     /**
+     * Execute cellset and return only the content, in CSV format — streaming version.
+     * Mirrors tm1py's `extract_cellset_csv_iter_json` (CellService.py:4385-4556).
+     * Uses stream-json for incremental JSON parsing (equivalent of Python's ijson).
+     */
+    public async extractCellsetCsvIterJson(
+        cellsetId: string,
+        options: Omit<ExtractCellsetCsvOptions, 'useCompactJson' | 'deleteCellset'> = {}
+    ): Promise<string> {
+        const skipZeros = options.skipZeros !== false;   // default true
+        const valueSeparator = options.valueSeparator ?? ',';
+        const lineSeparator = options.lineSeparator ?? '\r\n';
+        const includeAttributes = options.includeAttributes === true;
+
+        // Use csvDialect settings if provided (tm1py: CellService.py:4444-4446)
+        const delimiter = options.csvDialect?.delimiter ?? valueSeparator;
+        const lineterminator = options.csvDialect?.lineterminator ?? lineSeparator;
+
+        const { cube, rows, columns } = await this.extractCellsetComposition(
+            cellsetId, { sandboxName: options.sandboxName }
+        );
+
+        const rawResponse = await this.extractCellsetRawResponse(cellsetId, {
+            cellProperties: ['Value', 'Ordinal'],
+            top: options.top,
+            skip: options.skip,
+            skipContexts: true,
+            skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            sandboxName: options.sandboxName,
+            memberProperties: includeAttributes ? ['Name', 'Attributes'] : ['Name'],
+            deleteCellset: false,
+        });
+
+        const rowHeaders = options.mdxHeaders ? [...rows] : [...dimensionNamesFromElementUniqueNames(rows)];
+        const columnHeaders = options.mdxHeaders ? [...columns] : [...dimensionNamesFromElementUniqueNames(columns)];
+
+        const attributesPrefixes = new Set<string>();
+        if (includeAttributes) {
+            const attributesByDimension = await this._getAttributesByDimension(cube);
+            for (const [, attrs] of Object.entries(attributesByDimension)) {
+                for (const attr of attrs) {
+                    attributesPrefixes.add(`Axes.item.Tuples.item.Members.item.Attributes.${attr}`);
+                }
+            }
+        }
+
+        const prefixesOfInterest = new Set<string>([
+            'Cells.item.Value',
+            'Axes.item.Tuples.item.Members.item.Name',
+            'Cells.item.Ordinal',
+            'Axes.item.Tuples.item.Ordinal',
+            'Cube.Dimensions.item.Name',
+            'Axes.item.Ordinal',
+            ...attributesPrefixes,
+        ]);
+
+        // Mirrors tm1py CellService.py:4448-4537 state machine
+        const axes0List: string[][] = [];   // columns axis tuples member names
+        const axes1List: string[][] = [];   // rows axis tuples member names
+        let currentAxes = 0;
+        let currentTuple = 0;
+        let currentCellOrdinal = 0;
+        const csvBodyLines: string[] = [];
+        let maxEntriesPerRow = 0;
+        let leastEntriesPerRow = 1_000;
+
+        await this._streamJsonWalk(rawResponse.data, prefixesOfInterest, (prefix, event, value) => {
+            if (prefix === 'Cells.item.Value') {
+                // tm1py CellService.py:4482-4499
+                const total = axes0List.length || 1;
+                const r = currentCellOrdinal % total;
+                const q = Math.floor(currentCellOrdinal / total);
+                let row: string[];
+                if (axes0List.length === 1 && axes0List[0].length === 0) {
+                    row = [...axes1List[q], String(value)];
+                } else if (axes1List.length === 0) {
+                    row = [...axes0List[r], String(value)];
+                } else {
+                    row = [...axes1List[q], ...axes0List[r], String(value)];
+                }
+                if (row.length > maxEntriesPerRow) maxEntriesPerRow = row.length;
+                if (row.length < leastEntriesPerRow) leastEntriesPerRow = row.length;
+                csvBodyLines.push(this._csvRow(row, delimiter, lineterminator));
+
+            } else if (prefix === 'Axes.item.Tuples.item.Members.item.Name' && event === 'string') {
+                // tm1py CellService.py:4501-4505
+                (currentAxes === 0 ? axes0List : axes1List)[currentTuple].push(String(value));
+            }
+
+            if (attributesPrefixes.has(prefix)) {
+                // tm1py CellService.py:4507-4524
+                if (event !== 'string' && event !== 'number') return;
+                const attributeName = prefix.split('.').pop() ?? '';
+                const v = String(value);
+                const list = currentAxes === 0 ? axes0List : axes1List;
+                list[currentTuple].push(v);
+                if (currentTuple === 0) {
+                    if (currentAxes === 0) {
+                        columnHeaders.splice(list[currentTuple].length - 1, 0, attributeName);
+                    } else {
+                        rowHeaders.splice(list[currentTuple].length - 1, 0, attributeName);
+                    }
+                }
+            } else if (prefix === 'Cells.item.Ordinal' && event === 'number') {
+                // tm1py CellService.py:4526
+                currentCellOrdinal = value as number;
+            } else if (prefix === 'Axes.item.Tuples.item.Ordinal' && event === 'number') {
+                // tm1py CellService.py:4529-4533
+                currentTuple = value as number;
+                (currentAxes === 0 ? axes0List : axes1List).push([]);
+            } else if (prefix === 'Axes.item.Ordinal' && event === 'number') {
+                // tm1py CellService.py:4536
+                currentAxes = value as number;
+            }
+        });
+
+        // tm1py CellService.py:4539-4541 — empty cellset parity
+        if (csvBodyLines.length === 0) return '';
+
+        // tm1py CellService.py:4543-4549 — include_attributes validation
+        if (includeAttributes) {
+            if (!(leastEntriesPerRow === maxEntriesPerRow &&
+                  maxEntriesPerRow === rowHeaders.length + columnHeaders.length + 1)) {
+                throw new Error(
+                    "Invalid response. With 'includeAttributes' as true," +
+                    " Attributes must be requested explicitly as PROPERTIES in the MDX"
+                );
+            }
+        }
+
+        // tm1py CellService.py:4551-4556 — header + body
+        const headerLine = this._csvRow([...rowHeaders, ...columnHeaders, 'Value'], delimiter, lineterminator);
+        return headerLine + csvBodyLines.join('').replace(/\s+$/, '');
+    }
+
+    /**
+     * Walk a JSON stream and call `visit` for each leaf value whose dotted path
+     * is in `prefixesOfInterest`. Mirrors tm1py's ijson.parse prefix filter.
+     * Uses stream-json v2 with stream-chain for incremental parsing.
+     */
+    private async _streamJsonWalk(
+        stream: NodeJS.ReadableStream,
+        prefixesOfInterest: Set<string>,
+        visit: (prefix: string, event: string, value: any) => void
+    ): Promise<void> {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { chain } = require('stream-chain');
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { parser } = require('stream-json');
+
+        return new Promise<void>((resolve, reject) => {
+            const pipeline = chain([
+                stream,
+                parser({ packKeys: true, packStrings: true, packNumbers: true }),
+            ]);
+
+            // Path tracking state
+            const pathStack: string[] = [];
+            let lastKey: string | null = null;
+            const pathTypes: Array<'obj' | 'arr'> = [];
+
+            pipeline.on('data', (token: { name: string; value?: any }) => {
+                switch (token.name) {
+                    case 'startObject':
+                        if (lastKey !== null) { pathStack.push(lastKey); lastKey = null; }
+                        else if (pathTypes[pathTypes.length - 1] === 'arr') { pathStack.push('item'); }
+                        pathTypes.push('obj');
+                        break;
+
+                    case 'startArray':
+                        if (lastKey !== null) { pathStack.push(lastKey); lastKey = null; }
+                        pathTypes.push('arr');
+                        break;
+
+                    case 'endObject':
+                        pathTypes.pop();
+                        if (pathStack.length > 0 && pathStack[pathStack.length - 1] === 'item') {
+                            pathStack.pop();
+                        }
+                        break;
+
+                    case 'endArray':
+                        pathTypes.pop();
+                        if (pathStack.length > 0) pathStack.pop();
+                        break;
+
+                    case 'keyValue':
+                        lastKey = token.value;
+                        break;
+
+                    case 'stringValue':
+                    case 'numberValue':
+                    case 'nullValue':
+                    case 'trueValue':
+                    case 'falseValue': {
+                        const prefix = lastKey !== null
+                            ? (pathStack.length > 0 ? pathStack.join('.') + '.' + lastKey : lastKey)
+                            : pathStack.join('.');
+                        if (prefixesOfInterest.has(prefix)) {
+                            const event = token.name === 'stringValue' ? 'string'
+                                : token.name === 'numberValue' ? 'number' : 'other';
+                            visit(prefix, event, token.value);
+                        }
+                        lastKey = null;
+                        break;
+                    }
+                }
+            });
+
+            pipeline.on('end', () => resolve());
+            pipeline.on('error', (err: Error) => reject(err));
+        });
+    }
+
+    /**
+     * Format a CSV row from string values using Excel-dialect escaping rules.
+     * Wraps values in quotes when they contain the delimiter, line terminator, or `"`.
+     */
+    private _csvRow(values: string[], delimiter: string, lineterminator: string): string {
+        const escape = (v: string): string => {
+            if (v.includes(delimiter) || v.includes(lineterminator) || v.includes('"')) {
+                return '"' + v.replace(/"/g, '""') + '"';
+            }
+            return v;
+        };
+        return values.map(escape).join(delimiter) + lineterminator;
+    }
+
+    /**
+     * Get element attributes by dimension for a cube.
+     * Used by extractCellsetCsvIterJson to build attribute prefix sets.
+     * Mirrors tm1py's `_get_attributes_by_dimension` (CellService.py:~4573).
+     */
+    private async _getAttributesByDimension(cubeName: string): Promise<Record<string, string[]>> {
+        try {
+            // Import ElementService lazily to avoid circular dependency
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { ElementService } = require('./ElementService');
+            const elementService = new ElementService(this.rest);
+            const url = `/Cubes('${encodeURIComponent(cubeName)}')?$expand=Dimensions($select=Name)`;
+            const resp = await this.rest.get(url);
+            const dimensions: string[] = (resp.data?.Dimensions || []).map((d: any) => d.Name);
+            const result: Record<string, string[]> = {};
+            for (const dim of dimensions) {
+                try {
+                    const attrs = await elementService.getElementAttributes(dim, dim);
+                    result[dim] = (attrs || []).map((a: any) => a.Name ?? a.name ?? String(a));
+                } catch {
+                    result[dim] = [];
+                }
+            }
+            return result;
+        } catch {
+            return {};
+        }
+    }
+
+    /**
      * Extract cellset as shaped DataFrame
      */
     public async extractCellsetDataframeShaped(
