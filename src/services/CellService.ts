@@ -1845,37 +1845,51 @@ export class CellService {
     }
 
     /**
-     * Extract cellset as CSV format — REPLACED in Step 9.
-     * This interim version uses extractCellsetRaw.
+     * Execute cellset and return only the content, in CSV format.
+     * Mirrors tm1py's `extract_cellset_csv` (CellService.py:4312-4383).
+     * Uses CLIENT-SIDE conversion via buildCsvFromCellsetDict — no use_blob.
+     *
+     * BREAKING CHANGE from v2.1: was `(cellsetId, sandbox_name?, includeHeaders?)`.
+     * Now takes an options object with full tm1py parameter set.
+     * Migration: `extractCellsetCsv(id, 'sb', false)` →
+     *   `extractCellsetCsv(id, { sandboxName: 'sb', includeHeaders: false })`.
      */
     public async extractCellsetCsv(
         cellsetId: string,
-        sandbox_name?: string,
-        includeHeaders: boolean = true
+        options: ExtractCellsetCsvOptions = {}
     ): Promise<string> {
-        const cellset = await this.extractCellsetRaw(cellsetId, { sandboxName: sandbox_name });
-        const dataframe = this.buildDataFrameFromCellset(cellset);
+        const skipZeros = options.skipZeros !== false;  // default true (tm1py parity)
+        const includeHeaders = options.includeHeaders !== false;
+        const deleteCellset = options.deleteCellset !== false;
 
-        const rows: string[] = [];
+        const { rows, columns } = await this.extractCellsetComposition(
+            cellsetId, { sandboxName: options.sandboxName }
+        );
 
-        // Add headers if requested
-        if (includeHeaders) {
-            rows.push(dataframe.columns.map(col => `"${col}"`).join(','));
-        }
+        const rawCellset = await this.extractCellsetRaw(cellsetId, {
+            cellProperties: ['Value'],
+            elemProperties: ['Name'],
+            memberProperties: options.includeAttributes ? ['Name', 'Attributes'] : undefined,
+            top: options.top,
+            skip: options.skip,
+            skipContexts: true,
+            skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            sandboxName: options.sandboxName,
+            useCompactJson: options.useCompactJson,
+            deleteCellset,
+        });
 
-        // Add data rows
-        for (const row of dataframe.data) {
-            const csvRow = row.map(cell => {
-                if (cell === null || cell === undefined) return '';
-                if (typeof cell === 'string' && (cell.includes(',') || cell.includes('"'))) {
-                    return `"${cell.replace(/"/g, '""')}"`;
-                }
-                return String(cell);
-            }).join(',');
-            rows.push(csvRow);
-        }
-
-        return rows.join('\n');
+        return buildCsvFromCellsetDict(rows, columns, rawCellset, {
+            top: options.top,
+            csvDialect: options.csvDialect,
+            lineSeparator: options.lineSeparator,
+            valueSeparator: options.valueSeparator,
+            includeAttributes: options.includeAttributes,
+            includeHeaders,
+            mdxHeaders: options.mdxHeaders,
+        });
     }
 
     /**

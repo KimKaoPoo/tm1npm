@@ -326,29 +326,38 @@ describe('Enhanced CellService Tests', () => {
         });
 
         test('extractCellsetCsv should extract cellset as CSV with headers', async () => {
-            const mockCellset = {
+            // extractCellsetCsv now makes 2 REST calls:
+            // 1. extractCellsetComposition → GET Cube+Axes(Hierarchies)
+            // 2. extractCellsetRaw → GET full cellset
+            const mockComposition = {
+                Cube: { Name: 'SalesCube' },
+                Axes: [
+                    { Hierarchies: [{ UniqueName: '[Year].[Year]' }] },   // columns axis 0
+                    { Hierarchies: [{ UniqueName: '[Region].[Region]' }] }, // rows axis 1
+                ]
+            };
+            const mockRawCellset = {
+                Cube: { Name: 'SalesCube', Dimensions: [{ Name: 'Year' }, { Name: 'Region' }] },
                 Axes: [
                     {
-                        Hierarchies: [
-                            { Dimension: { Name: 'Year' } },
-                            { Dimension: { Name: 'Region' } }
-                        ],
-                        Tuples: []
+                        Cardinality: 1,
+                        Tuples: [{ Members: [{ Name: '2024', UniqueName: '[Year].[Year].[2024]' }] }]
                     },
                     {
+                        Cardinality: 2,
                         Tuples: [
-                            { Members: [{ Name: '2024' }, { Name: 'London' }] },
-                            { Members: [{ Name: '2024' }, { Name: 'Paris' }] }
+                            { Members: [{ Name: 'London', UniqueName: '[Region].[Region].[London]' }] },
+                            { Members: [{ Name: 'Paris', UniqueName: '[Region].[Region].[Paris]' }] }
                         ]
                     }
                 ],
-                Cells: [
-                    { Value: 100 },
-                    { Value: 200 }
-                ]
+                Cells: [{ Value: 100 }, { Value: 200 }]
             };
 
-            mockRestService.get.mockResolvedValue(createMockResponse(mockCellset));
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse(mockComposition))
+                .mockResolvedValueOnce(createMockResponse(mockRawCellset));
+            mockRestService.delete = jest.fn().mockResolvedValue({});
 
             const csv = await cellService.extractCellsetCsv('cellset-123');
 
@@ -364,22 +373,29 @@ describe('Enhanced CellService Tests', () => {
         });
 
         test('extractCellsetCsv should extract cellset as CSV without headers', async () => {
-            const mockCellset = {
+            const mockComposition = {
+                Cube: { Name: 'SalesCube' },
+                Axes: [
+                    { Hierarchies: [{ UniqueName: '[Year].[Year]' }] },
+                ]
+            };
+            const mockRawCellset = {
+                Cube: { Name: 'SalesCube', Dimensions: [{ Name: 'Year' }] },
                 Axes: [
                     {
-                        Hierarchies: [{ Dimension: { Name: 'Year' } }],
-                        Tuples: []
-                    },
-                    {
-                        Tuples: [{ Members: [{ Name: '2024' }] }]
+                        Cardinality: 1,
+                        Tuples: [{ Members: [{ Name: '2024', UniqueName: '[Year].[Year].[2024]' }] }]
                     }
                 ],
                 Cells: [{ Value: 100 }]
             };
 
-            mockRestService.get.mockResolvedValue(createMockResponse(mockCellset));
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse(mockComposition))
+                .mockResolvedValueOnce(createMockResponse(mockRawCellset));
+            mockRestService.delete = jest.fn().mockResolvedValue({});
 
-            const csv = await cellService.extractCellsetCsv('cellset-123', undefined, false);
+            const csv = await cellService.extractCellsetCsv('cellset-123', { includeHeaders: false });
 
             expect(csv).not.toContain('Year');
             expect(csv).toContain('100');
@@ -388,15 +404,27 @@ describe('Enhanced CellService Tests', () => {
         });
 
         test('extractCellsetCsv should handle special characters in CSV', async () => {
-            const mockCellset = {
+            const mockComposition = {
+                Cube: { Name: 'SalesCube' },
                 Axes: [
-                    { Hierarchies: [{ Dimension: { Name: 'Region' } }], Tuples: [] },
-                    { Tuples: [{ Members: [{ Name: 'London, UK' }] }] }
+                    { Hierarchies: [{ UniqueName: '[Region].[Region]' }] },
+                ]
+            };
+            const mockRawCellset = {
+                Cube: { Name: 'SalesCube', Dimensions: [{ Name: 'Region' }] },
+                Axes: [
+                    {
+                        Cardinality: 1,
+                        Tuples: [{ Members: [{ Name: 'London, UK', UniqueName: '[Region].[Region].[London, UK]' }] }]
+                    }
                 ],
                 Cells: [{ Value: 'Test, Value' }]
             };
 
-            mockRestService.get.mockResolvedValue(createMockResponse(mockCellset));
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse(mockComposition))
+                .mockResolvedValueOnce(createMockResponse(mockRawCellset));
+            mockRestService.delete = jest.fn().mockResolvedValue({});
 
             const csv = await cellService.extractCellsetCsv('cellset-123');
 
