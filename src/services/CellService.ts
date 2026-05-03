@@ -1418,6 +1418,86 @@ export class CellService {
     }
 
     /**
+     * Extract cellset cells without axes metadata.
+     * Mirrors tm1py's `extract_cellset_cells_raw` (CellService.py:3914-3967).
+     * @see extractCellsetCellsRaw — full implementation added in Step 5.
+     */
+    public async extractCellsetCellsRaw(
+        cellsetId: string,
+        options: {
+            cellProperties?: string[];
+            top?: number; skip?: number;
+            skipZeros?: boolean;
+            skipConsolidatedCells?: boolean;
+            skipRuleDerivedCells?: boolean;
+            sandboxName?: string;
+            useCompactJson?: boolean;
+        } = {}
+    ): Promise<{ Cells: any[]; '@odata.context'?: string; ID?: string }> {
+        // Full implementation in Step 5 — this stub satisfies the forward reference.
+        const cellProperties = [...(options.cellProperties ?? ['Value'])];
+        if (options.skipRuleDerivedCells) { cellProperties.push('RuleDerived'); cellProperties.push('Updateable'); }
+        if (options.skipConsolidatedCells) cellProperties.push('Consolidated');
+        if ((options.skip || options.skipZeros || options.skipRuleDerivedCells || options.skipConsolidatedCells)
+                && !cellProperties.includes('Ordinal')) cellProperties.push('Ordinal');
+        const filters: string[] = [];
+        if (options.skipZeros) filters.push("Value ne 0 and Value ne null and Value ne ''");
+        if (options.skipConsolidatedCells) filters.push('Consolidated eq false');
+        if (options.skipRuleDerivedCells) filters.push('RuleDerived eq false');
+        const filterCells = filters.join(' and ');
+        const topClause = options.top ? ';$top=' + options.top : '';
+        const skipClause = options.skip ? ';$skip=' + options.skip : '';
+        const filterClause = filterCells ? ';$filter=' + filterCells : '';
+        let url = `/Cellsets('${cellsetId}')?$expand=Cells($select=${cellProperties.join(',')}${topClause}${skipClause}${filterClause})`;
+        if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
+        return withCompactJson(this.rest, options.useCompactJson === true,
+            async () => (await this.rest.get(url)).data, true);
+    }
+
+    /**
+     * Extract full cellset data and return raw dict.
+     * Mirrors tm1py's `extract_cellset_raw` (CellService.py:3708-3787).
+     * Cleans up cellset by default (deleteCellset=true).
+     */
+    public async extractCellsetRaw(
+        cellsetId: string,
+        options: ExtractCellsetRawOptions = {}
+    ): Promise<RawCellsetDict> {
+        const useCompactJson = options.useCompactJson === true;
+        const deleteCellset = options.deleteCellset !== false;
+
+        return withTidyCellset(this, cellsetId, async () => {
+            if (!useCompactJson) {
+                const url = this._buildCellsetRawUrl(cellsetId, options);
+                return (await this.rest.get(url)).data as RawCellsetDict;
+            }
+
+            // Compact-JSON path: tm1py CellService.py:3762-3787
+            const metadata = await this.extractCellsetMetadataRaw(cellsetId, {
+                elemProperties: options.elemProperties,
+                memberProperties: options.memberProperties,
+                top: options.top,
+                skip: options.skip,
+                skipContexts: options.skipContexts,
+                includeHierarchies: options.includeHierarchies,
+                sandboxName: options.sandboxName,
+                deleteCellset: false,
+            });
+            const cells = await this.extractCellsetCellsRaw(cellsetId, {
+                cellProperties: options.cellProperties,
+                top: options.top,
+                skip: options.skip,
+                skipZeros: options.skipZeros,
+                skipConsolidatedCells: options.skipConsolidatedCells,
+                skipRuleDerivedCells: options.skipRuleDerivedCells,
+                sandboxName: options.sandboxName,
+                useCompactJson: true,
+            });
+            return { ...metadata, ...cells } as RawCellsetDict;
+        }, { delete_cellset: deleteCellset, sandbox_name: options.sandboxName });
+    }
+
+    /**
      * Extract cellset metadata (Cube + Axes) without cells.
      * Mirrors tm1py's `extract_cellset_metadata_raw` (CellService.py:3789-3843).
      */
