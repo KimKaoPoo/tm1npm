@@ -606,25 +606,44 @@ export class CellService {
     }
 
     /**
-     * Extract data from cellset
+     * Execute cellset and return cells with their properties as a
+     * CaseAndSpaceInsensitiveTuplesDict. Mirrors tm1py's `extract_cellset`
+     * (CellService.py:4827-4890).
+     *
+     * BREAKING CHANGE from v2.1: was `(cellsetId, expand_axes, sandbox_name)` returning
+     * raw JSON. Now takes options object and returns CaseAndSpaceInsensitiveTuplesDict.
+     * Migration: `extractCellset(id, true, 'sb')` → `extractCellset(id, { sandboxName: 'sb' })`.
      */
     public async extractCellset(
-        cellsetId: string, 
-        expand_axes: boolean = true,
-        sandbox_name?: string
-    ): Promise<any> {
-        let url = `/Cellsets('${cellsetId}')`;
-        
-        const params = new URLSearchParams();
-        if (expand_axes) params.append('$expand', 'Axes,Cells');
-        if (sandbox_name) params.append('$sandbox', sandbox_name);
+        cellsetId: string,
+        options: ExtractCellsetOptions = {}
+    ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
+        const cellProperties = (options.cellProperties && options.cellProperties.length > 0)
+            ? options.cellProperties : ['Value'];
 
-        if (params.toString()) {
-            url += `?${params.toString()}`;
-        }
+        const rawCellset = await this.extractCellsetRaw(cellsetId, {
+            cellProperties,
+            elemProperties: ['UniqueName'],
+            memberProperties: ['UniqueName'],
+            top: options.top,
+            skip: options.skip,
+            skipContexts: options.skipContexts,
+            deleteCellset: options.deleteCellset !== false,
+            skipZeros: options.skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            sandboxName: options.sandboxName,
+            includeHierarchies: false,
+            useCompactJson: options.useCompactJson,
+        });
 
-        const response = await this.rest.get(url);
-        return response.data;
+        return buildContentFromCellsetDict(
+            rawCellset,
+            options.top ?? null,
+            options.elementUniqueNames !== false,
+            options.skipCellProperties === true,
+            options.skipSandboxDimension === true
+        );
     }
 
     /**
@@ -1599,7 +1618,7 @@ export class CellService {
         cellsetId: string,
         sandbox_name?: string
     ): Promise<{ rows: any[][], values: any[] }> {
-        const cellset = await this.extractCellset(cellsetId, true, sandbox_name);
+        const cellset = await this.extractCellsetRaw(cellsetId, { sandboxName: sandbox_name });
 
         const rows: any[][] = [];
         const values: any[] = [];
@@ -1664,19 +1683,20 @@ export class CellService {
         cellsetId: string,
         sandbox_name?: string
     ): Promise<DataFrame> {
-        const cellset = await this.extractCellset(cellsetId, true, sandbox_name);
+        const cellset = await this.extractCellsetRaw(cellsetId, { sandboxName: sandbox_name });
         return this.buildDataFrameFromCellset(cellset);
     }
 
     /**
-     * Extract cellset as CSV format
+     * Extract cellset as CSV format — REPLACED in Step 9.
+     * This interim version uses extractCellsetRaw.
      */
     public async extractCellsetCsv(
         cellsetId: string,
         sandbox_name?: string,
         includeHeaders: boolean = true
     ): Promise<string> {
-        const cellset = await this.extractCellset(cellsetId, true, sandbox_name);
+        const cellset = await this.extractCellsetRaw(cellsetId, { sandboxName: sandbox_name });
         const dataframe = this.buildDataFrameFromCellset(cellset);
 
         const rows: string[] = [];
@@ -1725,7 +1745,7 @@ export class CellService {
         cellsetId: string,
         sandbox_name?: string
     ): Promise<DataFrame> {
-        const cellset = await this.extractCellset(cellsetId, true, sandbox_name);
+        const cellset = await this.extractCellsetRaw(cellsetId, { sandboxName: sandbox_name });
         return this.buildPivotDataFrameFromCellset(cellset);
     }
 
@@ -1755,7 +1775,7 @@ export class CellService {
          */
 
         // Get cellset metadata first
-        const cellset = await this.extractCellset(cellsetId, false, sandbox_name);
+        const cellset = await this.extractCellsetRaw(cellsetId, { sandboxName: sandbox_name, deleteCellset: false });
         const cellCount = cellset.Cells?.length || 0;
 
         // For small cellsets, use synchronous method
