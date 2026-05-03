@@ -1438,14 +1438,16 @@ export class CellService {
 
     /**
      * Extract cellset cells without axes metadata.
-     * Mirrors tm1py's `extract_cellset_cells_raw` (CellService.py:3914-3967).
-     * @see extractCellsetCellsRaw — full implementation added in Step 5.
+     * Mirrors tm1py's `@odata_compact_json(return_as_dict=True) extract_cellset_cells_raw`
+     * (CellService.py:3913-3967).
+     * Wrapped with withCompactJson(returnAsDict=true) to mirror the decorator.
      */
     public async extractCellsetCellsRaw(
         cellsetId: string,
         options: {
             cellProperties?: string[];
-            top?: number; skip?: number;
+            top?: number;
+            skip?: number;
             skipZeros?: boolean;
             skipConsolidatedCells?: boolean;
             skipRuleDerivedCells?: boolean;
@@ -1453,24 +1455,34 @@ export class CellService {
             useCompactJson?: boolean;
         } = {}
     ): Promise<{ Cells: any[]; '@odata.context'?: string; ID?: string }> {
-        // Full implementation in Step 5 — this stub satisfies the forward reference.
         const cellProperties = [...(options.cellProperties ?? ['Value'])];
-        if (options.skipRuleDerivedCells) { cellProperties.push('RuleDerived'); cellProperties.push('Updateable'); }
+        if (options.skipRuleDerivedCells) {
+            cellProperties.push('RuleDerived');
+            // necessary due to bug in TM1 11.8: If only RuleDerived is retrieved
+            // it occasionally produces wrong results (tm1py parity comment)
+            cellProperties.push('Updateable');
+        }
         if (options.skipConsolidatedCells) cellProperties.push('Consolidated');
         if ((options.skip || options.skipZeros || options.skipRuleDerivedCells || options.skipConsolidatedCells)
-                && !cellProperties.includes('Ordinal')) cellProperties.push('Ordinal');
+                && !cellProperties.includes('Ordinal')) {
+            cellProperties.push('Ordinal');
+        }
+
         const filters: string[] = [];
         if (options.skipZeros) filters.push("Value ne 0 and Value ne null and Value ne ''");
         if (options.skipConsolidatedCells) filters.push('Consolidated eq false');
         if (options.skipRuleDerivedCells) filters.push('RuleDerived eq false');
         const filterCells = filters.join(' and ');
+
         const topClause = options.top ? ';$top=' + options.top : '';
         const skipClause = options.skip ? ';$skip=' + options.skip : '';
         const filterClause = filterCells ? ';$filter=' + filterCells : '';
+
         let url = `/Cellsets('${cellsetId}')?$expand=Cells($select=${cellProperties.join(',')}${topClause}${skipClause}${filterClause})`;
         if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
+
         return withCompactJson(this.rest, options.useCompactJson === true,
-            async () => (await this.rest.get(url)).data, true);
+            async () => (await this.rest.get(url)).data, /* returnAsDict */ true);
     }
 
     /**
