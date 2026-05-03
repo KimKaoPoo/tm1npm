@@ -1790,39 +1790,47 @@ export class CellService {
     }
 
     /**
-     * Extract cellset composition (cube, dimensions)
-     * @deprecated Replaced by new extractCellsetComposition with options object in Step 8
+     * Retrieve composition of dimensions on the axes in the cellset.
+     * Mirrors tm1py's `@tidy_cellset extract_cellset_composition` (CellService.py:4263-4296).
+     *
+     * BREAKING CHANGE from v2.1: was `(cellsetId, sandbox_name?)` returning
+     * `{cube, dimensions}`. Now returns `{cube, titles, rows, columns}` matching
+     * tm1py's 4-tuple. Migration: use `.columns` / `.rows` / `.titles` instead of
+     * `.dimensions`.
      */
-    private async _extractCellsetCompositionOld(
+    public async extractCellsetComposition(
         cellsetId: string,
-        sandbox_name?: string
-    ): Promise<{ cube: string; dimensions: string[] }> {
-        const metadata = await this.extractCellsetMetadataRaw(cellsetId, { sandboxName: sandbox_name });
+        options: { sandboxName?: string } = {}
+    ): Promise<ExtractCellsetCompositionResult> {
+        let url =
+            `/Cellsets('${cellsetId}')?$expand=` +
+            `Cube($select=Name),Axes($expand=Hierarchies($select=UniqueName))`;
+        if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
 
-        let cube = '';
-        const dimensions: string[] = [];
+        const data = (await this.rest.get(url)).data;
+        const cube: string = data.Cube.Name;
 
-        if (metadata.Axes) {
-            for (const axis of metadata.Axes) {
-                if (axis.Hierarchies) {
-                    for (const hierarchy of axis.Hierarchies) {
-                        if (hierarchy.Dimension && hierarchy.Dimension.Name) {
-                            dimensions.push(hierarchy.Dimension.Name);
-                        }
-                    }
-                }
+        const rows: string[] = [];
+        const titles: string[] = [];
+        const columns: string[] = [];
+
+        if (data.Axes.length === 1) {
+            if (data.Axes[0].Hierarchies) {
+                columns.push(...data.Axes[0].Hierarchies.map((h: any) => h.UniqueName));
+            }
+        } else {
+            if (data.Axes[0].Hierarchies) {
+                columns.push(...data.Axes[0].Hierarchies.map((h: any) => h.UniqueName));
+            }
+            if (data.Axes[1].Hierarchies) {
+                rows.push(...data.Axes[1].Hierarchies.map((h: any) => h.UniqueName));
             }
         }
-
-        // Try to derive cube name from cellset context or metadata
-        if (metadata['@odata.context']) {
-            const contextMatch = metadata['@odata.context'].match(/Cubes\('([^']+)'\)/);
-            if (contextMatch) {
-                cube = contextMatch[1];
-            }
+        if (data.Axes.length > 2) {
+            titles.push(...data.Axes[2].Hierarchies.map((h: any) => h.UniqueName));
         }
 
-        return { cube, dimensions };
+        return { cube, titles, rows, columns };
     }
 
     /**
