@@ -738,3 +738,345 @@ export function extractCompactJsonCellset(
     }
     return cellsData;
 }
+
+// ─── Cellset interfaces ────────────────────────────────────────────────────
+
+export interface CellsetAxis {
+    Ordinal?: number;
+    Cardinality: number;
+    Tuples: Array<{ Ordinal?: number; Members: any[] }>;
+    Hierarchies?: Array<{ Name: string; UniqueName?: string; Dimension?: { Name: string } }>;
+}
+
+export interface RawCellsetDict {
+    Cube?: { Name: string; Dimensions: Array<{ Name: string }> };
+    Axes: CellsetAxis[];
+    Cells: Array<Record<string, any>>;
+    '@odata.context'?: string;
+    ID?: string;
+}
+
+// ─── Element-name helpers (tm1py Utils.py:835-861) ────────────────────────
+
+/**
+ * Extract the dimension name from an element unique name like [Dim].[Hier].[Elem].
+ * Mirrors tm1py's `dimension_name_from_element_unique_name` (Utils.py:835-836).
+ */
+export function dimensionNameFromElementUniqueName(uniqueName: string): string {
+    return uniqueName.substring(1, uniqueName.indexOf('].['));
+}
+
+/**
+ * Extract the hierarchy name from an element unique name like [Dim].[Hier].[Elem].
+ * Mirrors tm1py's `hierarchy_name_from_element_unique_name` (Utils.py:839-840).
+ */
+export function hierarchyNameFromElementUniqueName(uniqueName: string): string {
+    return uniqueName.substring(uniqueName.indexOf('].[')+3, uniqueName.lastIndexOf('].['));
+}
+
+/**
+ * Extract the element name from an element unique name like [Dim].[Hier].[Elem].
+ * Mirrors tm1py's `element_name_from_element_unique_name` (Utils.py:843-844).
+ * Unescapes `]]` → `]`.
+ */
+export function elementNameFromElementUniqueName(uniqueName: string): string {
+    return uniqueName
+        .substring(uniqueName.lastIndexOf('].[')+3, uniqueName.length - 1)
+        .replace(/\]\]/g, ']');
+}
+
+/**
+ * Get tuple of dimension names from iterable of element unique names.
+ * Mirrors tm1py's `dimension_names_from_element_unique_names` (Utils.py:855-860).
+ */
+export function dimensionNamesFromElementUniqueNames(uniqueNames: Iterable<string>): string[] {
+    return Array.from(uniqueNames, dimensionNameFromElementUniqueName);
+}
+
+// ─── Cellset shape helpers (tm1py Utils.py:313-365) ───────────────────────
+
+/**
+ * Extract non-empty axes from a raw cellset dict.
+ * Mirrors tm1py's `extract_axes_from_cellset` (Utils.py:313-322).
+ */
+export function extractAxesFromCellset(rawCellset: RawCellsetDict): CellsetAxis[] {
+    const rawAxes = rawCellset.Axes || [];
+    const axes: CellsetAxis[] = [];
+    for (const axis of rawAxes) {
+        if (axis && Array.isArray(axis.Tuples) && axis.Tuples.length > 0) {
+            axes.push(axis);
+        }
+    }
+    return axes;
+}
+
+/**
+ * Extract list of unique names from members in a cellset response.
+ * Mirrors tm1py's `extract_unique_names_from_members` (Utils.py:325-335):
+ * prefers `m.Element.UniqueName`, falls back to `m.UniqueName`.
+ */
+export function extractUniqueNamesFromMembers(members: Iterable<any>): string[] {
+    const out: string[] = [];
+    for (const m of members) {
+        out.push(m?.Element?.UniqueName ?? m.UniqueName);
+    }
+    return out;
+}
+
+/**
+ * Sort coordinate unique names by cube dimension order.
+ * Mirrors tm1py's `sort_coordinates` (Utils.py:351-365).
+ * When `elementUniqueNames` is false, strips to bare element names.
+ */
+export function sortCoordinates(
+    cubeDimensions: Iterable<string>,
+    unsortedCoordinates: string[],
+    elementUniqueNames: boolean = true
+): string[] {
+    const sorted: string[] = [];
+    for (const dim of cubeDimensions) {
+        const prefix = '[' + dim + '].';
+        for (const addr of unsortedCoordinates) {
+            if (!addr.startsWith(prefix)) continue;
+            sorted.push(elementUniqueNames ? addr : elementNameFromElementUniqueName(addr));
+        }
+    }
+    return sorted;
+}
+
+// ─── Content builder (tm1py Utils.py:368-414) ─────────────────────────────
+
+/**
+ * Transform raw cellset data into a CaseAndSpaceInsensitiveTuplesDict.
+ * Mirrors tm1py's `build_content_from_cellset_dict` (Utils.py:368-414).
+ */
+export function buildContentFromCellsetDict(
+    rawCellset: RawCellsetDict,
+    top: number | null = null,
+    elementUniqueNames: boolean = true,
+    skipCellProperties: boolean = false,
+    skipSandboxDimension: boolean = false
+): CaseAndSpaceInsensitiveTuplesDict<any> {
+    let cubeDimensions = (rawCellset.Cube?.Dimensions || []).map(d => d.Name);
+    if (skipSandboxDimension && cubeDimensions[0]?.toLowerCase() === 'sandboxes') {
+        cubeDimensions = cubeDimensions.slice(1);
+    }
+    const cells = rawCellset.Cells || [];
+    const axes = extractAxesFromCellset(rawCellset);
+    const result = new CaseAndSpaceInsensitiveTuplesDict<any>();
+    const limit = top ?? cells.length;
+    for (let enumOrdinal = 0; enumOrdinal < limit; enumOrdinal++) {
+        const cell = cells[enumOrdinal];
+        // if skip is used we must use the original ordinal from the cell
+        const cellOrdinal: number = cell.Ordinal ?? enumOrdinal;
+        const coords: string[] = [];
+        for (let ai = 0; ai < axes.length; ai++) {
+            const axis = axes[ai];
+            let idx: number;
+            if (ai === 0) {
+                idx = cellOrdinal % axis.Cardinality;
+            } else {
+                let t = cellOrdinal;
+                for (let pre = 0; pre < ai; pre++) t = Math.floor(t / axes[pre].Cardinality);
+                idx = t % axis.Cardinality;
+            }
+            coords.push(...extractUniqueNamesFromMembers(axis.Tuples[idx].Members));
+        }
+        const sorted = sortCoordinates(cubeDimensions, coords, elementUniqueNames);
+        result.set(sorted.join(','), skipCellProperties ? cell.Value : cell);
+    }
+    return result;
+}
+
+// ─── CSV builder (tm1py Utils.py:417-556) ────────────────────────────────
+
+export interface CsvDialect {
+    delimiter: string;
+    lineterminator: string;
+    quoteAll?: boolean;
+}
+
+/**
+ * Build CSV field from member tuple, optionally including attributes.
+ * Mirrors tm1py's `_build_csv_line_items_from_axis_tuple`.
+ */
+function buildCsvLineItemsFromAxisTuple(
+    members: any[],
+    includeAttributes: boolean
+): string[] {
+    const items: string[] = [];
+    for (const member of members) {
+        items.push(member.Name ?? String(member));
+        if (includeAttributes && member.Attributes) {
+            for (const attr of Object.keys(member.Attributes)) {
+                items.push(member.Attributes[attr] !== null && member.Attributes[attr] !== undefined
+                    ? String(member.Attributes[attr]) : '');
+            }
+        }
+    }
+    return items;
+}
+
+/**
+ * Build CSV header row.
+ * Mirrors tm1py's `_build_headers_for_csv` (Utils.py:417-459).
+ */
+function buildHeadersForCsv(
+    rowAxis: CellsetAxis | null,
+    columnAxis: CellsetAxis,
+    rowDimensions: string[],
+    columnDimensions: string[],
+    includeAttributes: boolean,
+    mdxHeaders: boolean = false
+): string[] {
+    if (!includeAttributes) {
+        return [
+            ...(rowDimensions.concat(columnDimensions)).map(d =>
+                mdxHeaders ? d : dimensionNameFromElementUniqueName(d)
+            ),
+            'Value'
+        ];
+    }
+
+    const headers: string[] = [];
+    if (rowAxis && rowAxis.Tuples.length > 0) {
+        const members = rowAxis.Tuples[0].Members;
+        for (let i = 0; i < rowDimensions.length; i++) {
+            const dimension = rowDimensions[i];
+            const member = members[i];
+            if (mdxHeaders) {
+                headers.push(dimension);
+                if (member?.Attributes) {
+                    for (const attr of Object.keys(member.Attributes)) {
+                        headers.push(dimension + '.[' + attr + ']');
+                    }
+                }
+            } else {
+                headers.push(dimensionNameFromElementUniqueName(dimension));
+                if (member?.Attributes) {
+                    for (const attr of Object.keys(member.Attributes)) {
+                        headers.push(attr);
+                    }
+                }
+            }
+        }
+    }
+    if (columnAxis.Tuples.length > 0) {
+        const members = columnAxis.Tuples[0].Members;
+        for (let i = 0; i < columnDimensions.length; i++) {
+            const dimension = columnDimensions[i];
+            const member = members[i];
+            if (mdxHeaders) {
+                headers.push(dimension);
+                if (member?.Attributes) {
+                    for (const attr of Object.keys(member.Attributes)) {
+                        headers.push(dimension + '.[' + attr + ']');
+                    }
+                }
+            } else {
+                headers.push(dimensionNameFromElementUniqueName(dimension));
+                if (member?.Attributes) {
+                    for (const attr of Object.keys(member.Attributes)) {
+                        headers.push(attr);
+                    }
+                }
+            }
+        }
+    }
+    return headers.concat(['Value']);
+}
+
+/**
+ * Escape a single CSV field value using Excel dialect rules.
+ * Wraps in quotes when value contains delimiter, line terminator, or `"`.
+ * Doubles internal quotes.
+ */
+function csvEscapeField(value: string, delimiter: string, lineterminator: string): string {
+    if (value.includes(delimiter) || value.includes(lineterminator) || value.includes('"')) {
+        return '"' + value.replace(/"/g, '""') + '"';
+    }
+    return value;
+}
+
+/**
+ * Serialize an array of string values into one CSV line (with line terminator).
+ */
+function csvRowToString(values: string[], delimiter: string, lineterminator: string): string {
+    return values.map(v => csvEscapeField(v, delimiter, lineterminator)).join(delimiter) + lineterminator;
+}
+
+/**
+ * Transform raw cellset data into CSV string.
+ * Mirrors tm1py's `build_csv_from_cellset_dict` (Utils.py:462-556).
+ * Returns empty string for empty cellsets (tm1py parity, Utils.py:491-492).
+ */
+export function buildCsvFromCellsetDict(
+    rowDimensions: string[],
+    columnDimensions: string[],
+    rawCellset: RawCellsetDict,
+    options: {
+        top?: number | null;
+        csvDialect?: CsvDialect;
+        lineSeparator?: string;
+        valueSeparator?: string;
+        includeAttributes?: boolean;
+        includeHeaders?: boolean;
+        mdxHeaders?: boolean;
+    } = {}
+): string {
+    const cells = rawCellset.Cells || [];
+    // empty cellsets → "" (tm1py parity)
+    if (cells.length === 0) return '';
+
+    const delimiter = options.csvDialect?.delimiter ?? options.valueSeparator ?? ',';
+    const lineterminator = options.csvDialect?.lineterminator ?? options.lineSeparator ?? '\r\n';
+    const includeAttributes = options.includeAttributes === true;
+    const includeHeaders = options.includeHeaders !== false;
+    const mdxHeaders = options.mdxHeaders === true;
+
+    const axes = extractAxesFromCellset(rawCellset);
+    const columnAxis = axes[0];
+    const rowAxis = axes.length > 1 ? axes[1] : null;
+
+    const rows: string[] = [];
+    let numHeaders = 0;
+
+    if (includeHeaders) {
+        const headers = buildHeadersForCsv(
+            rowAxis, columnAxis, rowDimensions, columnDimensions, includeAttributes, mdxHeaders
+        );
+        rows.push(csvRowToString(headers, delimiter, lineterminator));
+        numHeaders = headers.length;
+    }
+
+    const limit = options.top ?? cells.length;
+    for (let enumOrdinal = 0; enumOrdinal < limit; enumOrdinal++) {
+        const cell = cells[enumOrdinal];
+        // if skip was used, use original ordinal from cell
+        const ordinal: number = cell.Ordinal ?? enumOrdinal;
+
+        const line: string[] = [];
+        if (columnAxis && rowAxis) {
+            const indexRows = Math.floor(ordinal / columnAxis.Cardinality) % rowAxis.Cardinality;
+            const indexCols = ordinal % columnAxis.Cardinality;
+            line.push(...buildCsvLineItemsFromAxisTuple(rowAxis.Tuples[indexRows].Members, includeAttributes));
+            line.push(...buildCsvLineItemsFromAxisTuple(columnAxis.Tuples[indexCols].Members, includeAttributes));
+        } else if (columnAxis) {
+            const indexRows = ordinal % columnAxis.Cardinality;
+            line.push(...buildCsvLineItemsFromAxisTuple(columnAxis.Tuples[indexRows].Members, includeAttributes));
+        }
+
+        line.push(String(cell.Value ?? ''));
+
+        if (includeAttributes && includeHeaders && line.length !== numHeaders) {
+            throw new Error(
+                "Invalid response. With 'includeAttributes' as true," +
+                " Attributes must be requested explicitly as PROPERTIES in the MDX"
+            );
+        }
+        rows.push(csvRowToString(line, delimiter, lineterminator));
+    }
+
+    // tm1py parity: strip trailing whitespace from final output (Utils.py:556)
+    return rows.join('').replace(/\s+$/, '');
+}
