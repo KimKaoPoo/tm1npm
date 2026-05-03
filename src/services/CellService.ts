@@ -1685,6 +1685,65 @@ export class CellService {
     }
 
     /**
+     * Extract cellset cells asynchronously using parallel chunked requests.
+     * Mirrors tm1py's `extract_cellset_cells_raw_async` (CellService.py:4078-4157).
+     * Uses Promise.all instead of Python's ThreadPoolExecutor.
+     */
+    public async extractCellsetCellsRawAsync(
+        cellsetId: string,
+        options: ExtractCellsetCellsRawAsyncOptions = {}
+    ): Promise<{ '@odata.context': string; ID: string; Cells: any[] }> {
+        const maxWorkers = options.maxWorkers ?? 8;
+
+        const cellProperties = [...(options.cellProperties ?? ['Value'])];
+        if (options.skipRuleDerivedCells) {
+            cellProperties.push('RuleDerived');
+            cellProperties.push('Updateable');
+        }
+        if (options.skipConsolidatedCells) cellProperties.push('Consolidated');
+        if ((options.skipZeros || options.skipRuleDerivedCells || options.skipConsolidatedCells)
+                && !cellProperties.includes('Ordinal')) {
+            cellProperties.push('Ordinal');
+        }
+
+        const filters: string[] = [];
+        if (options.skipZeros) filters.push("Value ne 0 and Value ne null and Value ne ''");
+        if (options.skipConsolidatedCells) filters.push('Consolidated eq false');
+        if (options.skipRuleDerivedCells) filters.push('RuleDerived eq false');
+        const filterCells = filters.join(' and ');
+
+        const fetchChunk = async (partition: number, partitionSize: number): Promise<any> => {
+            const top = partitionSize;
+            const skip = partition * partitionSize;
+            const topClause = top ? ';$top=' + top : '';
+            const skipClause = skip ? ';$skip=' + skip : '';
+            const filterClause = filterCells ? ';$filter=' + filterCells : '';
+            let url = `/Cellsets('${cellsetId}')?$expand=Cells($select=${cellProperties.join(',')}${topClause}${skipClause}${filterClause})`;
+            if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
+            return (await this.rest.get(url)).data;
+        };
+
+        const cellcount = await this.getCellsetCellsCount(cellsetId, options.sandboxName);
+
+        if (cellcount === 0) {
+            return { '@odata.context': '', ID: '', Cells: [] };
+        }
+
+        const partitionSize = Math.ceil(cellcount / maxWorkers);
+        const results = await Promise.all(
+            Array.from({ length: maxWorkers }, (_, p) => fetchChunk(p, partitionSize))
+        );
+
+        const allCells = results.flatMap((r: any) => r.Cells || []);
+        const last = results[results.length - 1];
+        return {
+            '@odata.context': last['@odata.context'] ?? '',
+            ID: last.ID ?? '',
+            Cells: allCells,
+        };
+    }
+
+    /**
      * Extract cellset values only
      */
     public async extractCellsetValues(
