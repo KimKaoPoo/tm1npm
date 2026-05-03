@@ -662,11 +662,15 @@ describe('extractCellsetCellsRawAsync', () => {
         svc = makeCellService(rest);
     });
 
-    it('cellcount=0 → returns {Cells: []} without error', async () => {
-        // getCellsetCellsCount returns 0
-        rest.get.mockResolvedValueOnce(mockResp(0));
-        const result = await svc.extractCellsetCellsRawAsync('CS1');
+    it('cellcount=0 → still issues maxWorkers chunk requests (tm1py wire parity)', async () => {
+        // tm1py issues max_workers parallel chunks even when cellcount=0 — partition_size=0
+        // produces no `;$top=` clause so each chunk fetches the full (empty) cellset.
+        rest.get
+            .mockResolvedValueOnce(mockResp(0))
+            .mockResolvedValue(mockResp({ '@odata.context': 'ctx', ID: 'id', Cells: [] }));
+        const result = await svc.extractCellsetCellsRawAsync('CS1', { maxWorkers: 8 });
         expect(result.Cells).toEqual([]);
+        expect(rest.get).toHaveBeenCalledTimes(9); // 1 count + 8 chunks
     });
 
     it('cellcount=100 maxWorkers=4 → 4 GETs + 1 count', async () => {

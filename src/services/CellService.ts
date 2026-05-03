@@ -1726,10 +1726,9 @@ export class CellService {
 
         const cellcount = await this.getCellsetCellsCount(cellsetId, options.sandboxName);
 
-        if (cellcount === 0) {
-            return { '@odata.context': '', ID: '', Cells: [] };
-        }
-
+        // Match tm1py: when cellcount is 0, partitionSize=ceil(0/maxWorkers)=0 and
+        // each chunk fetch issues a request without `;$top=` — equivalent to fetching
+        // all (zero) cells. Don't short-circuit; keep wire behavior identical to tm1py.
         const partitionSize = Math.ceil(cellcount / maxWorkers);
         const results = await Promise.all(
             Array.from({ length: maxWorkers }, (_, p) => fetchChunk(p, partitionSize))
@@ -1963,8 +1962,12 @@ export class CellService {
 
         await this._streamJsonWalk(rawResponse.data, prefixesOfInterest, (prefix, event, value) => {
             if (prefix === 'Cells.item.Value') {
-                // tm1py CellService.py:4482-4499
-                const total = axes0List.length || 1;
+                // tm1py CellService.py:4482-4499 — divmod raises ZeroDivisionError
+                // when axes0List is empty; match that strict behavior.
+                if (axes0List.length === 0) {
+                    throw new Error('division by zero: axes0List is empty');
+                }
+                const total = axes0List.length;
                 const r = currentCellOrdinal % total;
                 const q = Math.floor(currentCellOrdinal / total);
                 let row: string[];
