@@ -61,6 +61,7 @@ All notable changes to this project are documented here.
 ### Dependencies
 
 - Added `stream-json ^2.1.0` as a runtime dependency (used by `extractCellsetCsvIterJson`).
+- Added `stream-chain ^3.0.0` as a runtime dependency (composed with `stream-json` to chain the read/parse pipeline). Listed explicitly so installs under pnpm strict mode and Yarn PnP resolve correctly — previously only present as a transitive dep.
 - Added `@types/stream-json ^1.7.8` as a dev dependency.
 
 ## 2.0.0 — 2026-04-16

@@ -872,8 +872,10 @@ export function buildContentFromCellsetDict(
     const cells = rawCellset.Cells || [];
     const axes = extractAxesFromCellset(rawCellset);
     const result = new CaseAndSpaceInsensitiveTuplesDict<any>();
-    // tm1py: cells[: top or len(cells)] — Python slicing clamps; never indexes past end.
-    const limit = Math.min(top ?? cells.length, cells.length);
+    // tm1py: cells[: top or len(cells)] — Python `or` treats 0 as falsy, so
+    // top=0 means "no limit". JS `||` matches; `??` would honor 0 and slice empty.
+    // Math.min still clamps top > cells.length (parity with Python slice).
+    const limit = Math.min(top || cells.length, cells.length);
     for (let enumOrdinal = 0; enumOrdinal < limit; enumOrdinal++) {
         const cell = cells[enumOrdinal];
         // if skip is used we must use the original ordinal from the cell
@@ -924,8 +926,10 @@ function buildCsvLineItemsFromAxisTuple(
         items.push(member?.Element?.Name ?? member.Name ?? String(member));
         if (includeAttributes && member.Attributes) {
             for (const attr of Object.keys(member.Attributes)) {
-                items.push(member.Attributes[attr] !== null && member.Attributes[attr] !== undefined
-                    ? String(member.Attributes[attr]) : '');
+                // tm1py: str(attribute_value) if attribute_value else "" (Utils.py:654)
+                // — Python truthy: 0/false/""/None all become "". JS `?` matches.
+                const v = member.Attributes[attr];
+                items.push(v ? String(v) : '');
             }
         }
     }
@@ -1071,8 +1075,9 @@ export function buildCsvFromCellsetDict(
         numHeaders = headers.length;
     }
 
-    // tm1py: cells[: top or len(cells)] — Python slicing clamps; never indexes past end.
-    const limit = Math.min(options.top ?? cells.length, cells.length);
+    // tm1py: cells[: top or len(cells)] — Python `or` treats 0 as falsy, so
+    // top=0 means "no limit". `||` matches; `??` would honor 0 and slice empty.
+    const limit = Math.min(options.top || cells.length, cells.length);
     for (let enumOrdinal = 0; enumOrdinal < limit; enumOrdinal++) {
         const cell = cells[enumOrdinal];
         // if skip was used, use original ordinal from cell

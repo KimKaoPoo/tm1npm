@@ -223,6 +223,27 @@ describe('Utils helpers', () => {
             expect(result.size).toBe(1);
         });
 
+        it('top=0 returns ALL cells (Python `or` truthy semantics)', () => {
+            // tm1py: cells[: top or len(cells)] — `0 or N` evaluates to N.
+            // JS `??` would honor 0 and slice empty; `||` matches Python.
+            const raw: RawCellsetDict = {
+                Cube: { Name: 'C', Dimensions: [{ Name: 'D' }] },
+                Axes: [
+                    {
+                        Cardinality: 3,
+                        Tuples: [
+                            { Members: [{ UniqueName: '[D].[D].[a]', Element: null as any }] },
+                            { Members: [{ UniqueName: '[D].[D].[b]', Element: null as any }] },
+                            { Members: [{ UniqueName: '[D].[D].[c]', Element: null as any }] },
+                        ]
+                    }
+                ],
+                Cells: [{ Value: 1 }, { Value: 2 }, { Value: 3 }],
+            };
+            const result = buildContentFromCellsetDict(raw, 0);
+            expect(result.size).toBe(3);
+        });
+
         it('coordinate tuples with element names containing "," do NOT collide', () => {
             // tm1py uses Python tuples as dict keys (Utils.py:412); the TS port joins
             // with TUPLE_KEY_SEPARATOR (\x00), which can't appear in TM1 element names.
@@ -338,6 +359,45 @@ describe('Utils helpers', () => {
                 { includeHeaders: false });
             // tm1py strips trailing whitespace; last field is empty (not "0").
             expect(csv).toBe('2024,');
+        });
+
+        it('top=0 returns ALL cells (Python `or` truthy semantics)', () => {
+            // tm1py: cells[: top or len(cells)] — `0 or N` → N.
+            const csv = buildCsvFromCellsetDict(
+                ['[Region].[Region]'], ['[Year].[Year]'], raw2x2,
+                { top: 0, includeHeaders: false }
+            );
+            // raw2x2 has 2 cells; top=0 must NOT slice empty.
+            const lines = csv.trim().split(/\r\n|\n/).filter(l => l.length > 0);
+            expect(lines.length).toBe(2);
+        });
+
+        it('falsy attribute values serialize to "" — tm1py `if attribute_value else ""` parity', () => {
+            // tm1py Utils.py:654: str(attribute_value) if attribute_value else "" —
+            // 0/false/"" all become "". JS check `v ? String(v) : ''` matches.
+            const cellset: RawCellsetDict = {
+                Cube: { Name: 'C', Dimensions: [{ Name: 'Year' }] },
+                Axes: [
+                    {
+                        Cardinality: 1,
+                        Tuples: [{
+                            Members: [{
+                                Name: '2024',
+                                Attributes: { count: 0, flag: false, label: '' }
+                            }]
+                        }]
+                    },
+                ],
+                Cells: [{ Value: 1 }],
+            };
+            const csv = buildCsvFromCellsetDict(
+                [], ['[Year].[Year]'], cellset,
+                { includeAttributes: true, includeHeaders: false }
+            );
+            // Member name '2024', then 3 empty attribute fields, then '1'.
+            expect(csv).toBe('2024,,,,1');
+            expect(csv).not.toContain(',0,');
+            expect(csv).not.toContain('false');
         });
 
         it('quotes values containing bare \\n (tm1py csv.writer QUOTE_MINIMAL parity)', () => {
