@@ -1372,7 +1372,8 @@ export class CellService {
         // (CellService.py:4308) which produces &!sandbox= (URL-encoded), not $sandbox.
         let url = `/Cellsets('${cellsetId}')/Cells/$count`;
         if (sandbox_name) {
-            url += `&!sandbox=${encodeURIComponent(sandbox_name)}`;
+            // First query param on this URL — must use `?`, not `&`.
+            url += `?!sandbox=${encodeURIComponent(sandbox_name)}`;
         }
         const response = await this.rest.get(url);
         return response.data.value || response.data || 0;
@@ -1975,13 +1976,17 @@ export class CellService {
                 const total = axes0List.length;
                 const r = currentCellOrdinal % total;
                 const q = Math.floor(currentCellOrdinal / total);
+                // tm1py: row = … + [str(value)]. Python's str(None) is 'None',
+                // not 'null' — match so downstream parsers (dataframe NA detection)
+                // see the expected sentinel.
+                const cellStr = value === null ? 'None' : String(value);
                 let row: string[];
                 if (axes0List.length === 1 && axes0List[0].length === 0) {
-                    row = [...axes1List[q], String(value)];
+                    row = [...axes1List[q], cellStr];
                 } else if (axes1List.length === 0) {
-                    row = [...axes0List[r], String(value)];
+                    row = [...axes0List[r], cellStr];
                 } else {
-                    row = [...axes1List[q], ...axes0List[r], String(value)];
+                    row = [...axes1List[q], ...axes0List[r], cellStr];
                 }
                 if (row.length > maxEntriesPerRow) maxEntriesPerRow = row.length;
                 if (row.length < leastEntriesPerRow) leastEntriesPerRow = row.length;

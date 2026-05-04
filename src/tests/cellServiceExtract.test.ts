@@ -756,6 +756,17 @@ describe('extractCellsetCellsRawAsync', () => {
         expect(rest.get).toHaveBeenCalledTimes(9); // 1 count + 8 chunks
     });
 
+    it('passes !sandbox to getCellsetCellsCount via the count GET (?-prefixed)', async () => {
+        rest.get
+            .mockResolvedValueOnce(mockResp(0))
+            .mockResolvedValue(mockResp({ '@odata.context': 'ctx', ID: 'id', Cells: [] }));
+        await svc.extractCellsetCellsRawAsync('CS1', { maxWorkers: 1, sandboxName: 'sb1' });
+        const countUrl = rest.get.mock.calls[0][0] as string;
+        // First (and only) query param on the $count URL must use `?`, not `&`.
+        expect(countUrl).toContain("/Cells/$count?!sandbox=sb1");
+        expect(countUrl).not.toContain("/Cells/$count&");
+    });
+
     it('cellcount=100 maxWorkers=4 → 4 GETs + 1 count', async () => {
         rest.get
             .mockResolvedValueOnce(mockResp(100))   // getCellsetCellsCount
@@ -1076,6 +1087,27 @@ describe('extractCellsetCsvIterJson', () => {
 
         const csv = await svc.extractCellsetCsvIterJson('CS1');
         expect(csv).toContain('42');
+    });
+
+    it('null cell value serializes to "None" (Python str(None) parity)', async () => {
+        // tm1py: row = … + [str(value)]. Python str(None) → "None", not "null".
+        // Downstream dataframe NA detection looks for "None" specifically.
+        const rawData = {
+            Cube: { Name: 'C', Dimensions: [{ Name: 'Year' }, { Name: 'Region' }] },
+            Axes: [
+                { Ordinal: 0, Tuples: [{ Ordinal: 0, Members: [{ Name: 'Jan' }] }] },
+                { Ordinal: 1, Tuples: [{ Ordinal: 0, Members: [{ Name: 'North' }] }] }
+            ],
+            Cells: [{ Value: null, Ordinal: 0 }]
+        };
+
+        rest.get
+            .mockResolvedValueOnce(mockResp(compositionResp))
+            .mockResolvedValueOnce(mockResp(makeReadableStream(rawData)));
+
+        const csv = await svc.extractCellsetCsvIterJson('CS1');
+        expect(csv).toContain('None');
+        expect(csv).not.toContain('null');
     });
 
     it('rejects when visit() throws (Cells.item.Value before any axes tuples)', async () => {
