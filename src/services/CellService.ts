@@ -1384,7 +1384,10 @@ export class CellService {
      * Mirrors tm1py's `extract_cellset_raw_response` URL builder (CellService.py:3636-3704).
      */
     private _buildCellsetRawUrl(cellsetId: string, opts: ExtractCellsetRawOptions): string {
-        const cellProperties = [...(opts.cellProperties ?? ['Value'])];
+        // tm1py: `if not cell_properties:` treats [] as falsy. JS `??` would
+        // accept [] verbatim and emit a malformed `Cells($select=)` URL.
+        const cellProperties = [...((opts.cellProperties && opts.cellProperties.length > 0)
+            ? opts.cellProperties : ['Value'])];
         if (opts.skipRuleDerivedCells) {
             cellProperties.push('RuleDerived');
             cellProperties.push('Updateable');
@@ -1457,7 +1460,9 @@ export class CellService {
             useCompactJson?: boolean;
         } = {}
     ): Promise<{ Cells: any[]; '@odata.context'?: string; ID?: string }> {
-        const cellProperties = [...(options.cellProperties ?? ['Value'])];
+        // tm1py: `if not cell_properties:` treats [] as falsy.
+        const cellProperties = [...((options.cellProperties && options.cellProperties.length > 0)
+            ? options.cellProperties : ['Value'])];
         if (options.skipRuleDerivedCells) {
             cellProperties.push('RuleDerived');
             // necessary due to bug in TM1 11.8: If only RuleDerived is retrieved
@@ -1698,7 +1703,9 @@ export class CellService {
     ): Promise<{ '@odata.context': string; ID: string; Cells: any[] }> {
         const maxWorkers = options.maxWorkers ?? 8;
 
-        const cellProperties = [...(options.cellProperties ?? ['Value'])];
+        // tm1py: `if not cell_properties:` treats [] as falsy.
+        const cellProperties = [...((options.cellProperties && options.cellProperties.length > 0)
+            ? options.cellProperties : ['Value'])];
         if (options.skipRuleDerivedCells) {
             cellProperties.push('RuleDerived');
             cellProperties.push('Updateable');

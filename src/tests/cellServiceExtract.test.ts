@@ -478,6 +478,14 @@ describe('_buildCellsetRawUrl (via extractCellsetRaw URL inspection)', () => {
         expect(url).toContain('$select=Name');  // member properties default
     });
 
+    it('cellProperties=[] is treated as falsy and defaults to ["Value"] (tm1py parity)', async () => {
+        // tm1py: `if not cell_properties:` treats [] as falsy. JS `??` would let
+        // [] through and emit `Cells($select=)` — malformed.
+        const url = await captureUrl({ cellProperties: [] });
+        expect(url).toContain('Cells($select=Value)');
+        expect(url).not.toContain('Cells($select=)');
+    });
+
     it('appends Ordinal when skip is set', async () => {
         const url = await captureUrl({ skip: 5 });
         expect(url).toContain('Value,Ordinal');
