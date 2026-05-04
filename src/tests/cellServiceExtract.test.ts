@@ -900,6 +900,37 @@ describe('extractCellsetCellsRawAsync', () => {
         expect(countUrl).not.toContain("/Cells/$count&");
     });
 
+    it('coerces /$count text/plain response to a number (tm1py int(response.content) parity)', async () => {
+        // OData $count returns text/plain; axios may deliver it as a string.
+        // tm1py uses int(response.content); tm1npm must coerce too — otherwise
+        // Math.ceil(cellcount / maxWorkers) downstream can produce NaN.
+        rest.get
+            .mockResolvedValueOnce(mockResp("100"))   // string body (axios on text/plain)
+            .mockResolvedValue(mockResp({ '@odata.context': 'ctx', ID: 'id', Cells: [] }));
+        await svc.extractCellsetCellsRawAsync('CS1', { maxWorkers: 4 });
+        // 100 / 4 = 25 → each chunk URL must contain `;$top=25`, not `;$top=NaN`.
+        const chunkUrls = rest.get.mock.calls.slice(1).map(c => c[0] as string);
+        for (const url of chunkUrls) {
+            expect(url).toContain(';$top=25');
+            expect(url).not.toContain('NaN');
+        }
+    });
+
+    it('uses tm1py-style sandbox quoting (single-quote doubling, no %-encoding)', async () => {
+        rest.get
+            .mockResolvedValueOnce(mockResp(0))
+            .mockResolvedValue(mockResp({ '@odata.context': 'ctx', ID: 'id', Cells: [] }));
+        // Sandbox name with characters that encodeURIComponent would mangle
+        // (& and ') — tm1py only doubles the single quote.
+        await svc.extractCellsetCellsRawAsync('CS1', {
+            maxWorkers: 1, sandboxName: "a&b'c",
+        });
+        const chunkUrl = rest.get.mock.calls[1][0] as string;
+        expect(chunkUrl).toContain("!sandbox=a&b''c");
+        expect(chunkUrl).not.toContain('%26');
+        expect(chunkUrl).not.toContain('%27');
+    });
+
     it('cellcount=100 maxWorkers=4 → 4 GETs + 1 count', async () => {
         rest.get
             .mockResolvedValueOnce(mockResp(100))   // getCellsetCellsCount

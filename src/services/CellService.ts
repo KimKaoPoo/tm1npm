@@ -1376,14 +1376,21 @@ export class CellService {
      */
     public async getCellsetCellsCount(cellsetId: string, sandbox_name?: string): Promise<number> {
         // tm1py extract_cellset_cellcount uses add_url_parameters(url, **{"!sandbox": ...})
-        // (CellService.py:4308) which produces &!sandbox= (URL-encoded), not $sandbox.
+        // (CellService.py:4308) which produces &!sandbox= , and `value.replace("'", "''")`
+        // is the only escaping applied.
         let url = `/Cellsets('${cellsetId}')/Cells/$count`;
         if (sandbox_name) {
             // First query param on this URL — must use `?`, not `&`.
-            url += `?!sandbox=${encodeURIComponent(sandbox_name)}`;
+            url += `?!sandbox=${sandbox_name.replace(/'/g, "''")}`;
         }
         const response = await this.rest.get(url);
-        return response.data.value || response.data || 0;
+        // tm1py: return int(response.content) (CellService.py:4310). The OData
+        // /$count endpoint returns text/plain, which axios delivers as a string
+        // (or sometimes a parsed number). Coerce explicitly so downstream
+        // arithmetic doesn't silently produce NaN.
+        const raw = response.data?.value ?? response.data;
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : 0;
     }
 
     /**
@@ -1432,7 +1439,12 @@ export class CellService {
             `Cube($select=Name;$expand=Dimensions($select=Name)),` +
             `Axes(${filterAxis}$expand=${expandHierarchies}Tuples($expand=Members(${selectMember}${expandElem})${topTuples})),` +
             `Cells($select=${cellProperties.join(',')}${topCells}${skipCells}${filterClause})`;
-        if (opts.sandboxName) url += `&!sandbox=${encodeURIComponent(opts.sandboxName)}`;
+        // tm1py add_url_parameters (Utils.py:1011-1030) only doubles single
+        // quotes; the HTTP layer handles any further encoding. encodeURIComponent
+        // would over-encode (%, &, +, ?) and produce a wire string that diverges
+        // from tm1py — TM1 rejects/misinterprets some payloads. Apply tm1py's
+        // exact escaping at all !sandbox sites in this PR.
+        if (opts.sandboxName) url += `&!sandbox=${opts.sandboxName.replace(/'/g, "''")}`;
         return url;
     }
 
@@ -1501,7 +1513,7 @@ export class CellService {
         const filterClause = filterCells ? ';$filter=' + filterCells : '';
 
         let url = `/Cellsets('${cellsetId}')?$expand=Cells($select=${cellProperties.join(',')}${topClause}${skipClause}${filterClause})`;
-        if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
+        if (options.sandboxName) url += `&!sandbox=${options.sandboxName.replace(/'/g, "''")}`;
 
         return withCompactJson(this.rest, options.useCompactJson === true,
             async () => (await this.rest.get(url)).data, /* returnAsDict */ true);
@@ -1578,7 +1590,7 @@ export class CellService {
             `Cube($select=Name;$expand=Dimensions($select=Name)),` +
             `Axes(${filterAxis}$expand=${expandHierarchies}Tuples($expand=Members(${selectMember}${expandElem})${topTuples}))`;
 
-        if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
+        if (options.sandboxName) url += `&!sandbox=${options.sandboxName.replace(/'/g, "''")}`;
 
         // tm1py extract_cellset_metadata_raw is @tidy_cellset (CellService.py:3789).
         // The function-level `delete_cellset=False` default lives in the inner
@@ -1675,7 +1687,7 @@ export class CellService {
             let url =
                 `/Cellsets('${cellsetId}')?$expand=` +
                 `Axes(${filterAxis}$expand=${expandHierarchies}Tuples($expand=Members(${selectMember}${expandElem})${partClause}))`;
-            if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
+            if (options.sandboxName) url += `&!sandbox=${options.sandboxName.replace(/'/g, "''")}`;
             return (await this.rest.get(url)).data;
         };
 
@@ -1744,7 +1756,7 @@ export class CellService {
             const skipClause = skip ? ';$skip=' + skip : '';
             const filterClause = filterCells ? ';$filter=' + filterCells : '';
             let url = `/Cellsets('${cellsetId}')?$expand=Cells($select=${cellProperties.join(',')}${topClause}${skipClause}${filterClause})`;
-            if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
+            if (options.sandboxName) url += `&!sandbox=${options.sandboxName.replace(/'/g, "''")}`;
             return (await this.rest.get(url)).data;
         };
 
@@ -1832,7 +1844,7 @@ export class CellService {
             let url =
                 `/Cellsets('${cellsetId}')?$expand=` +
                 `Cube($select=Name),Axes($expand=Hierarchies($select=UniqueName))`;
-            if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
+            if (options.sandboxName) url += `&!sandbox=${options.sandboxName.replace(/'/g, "''")}`;
 
             const data = (await this.rest.get(url)).data;
             const cube: string = data.Cube.Name;
