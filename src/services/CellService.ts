@@ -56,6 +56,13 @@ export interface ExtractCellsetRawOptions {
     includeHierarchies?: boolean;
     useCompactJson?: boolean;
     deleteCellset?: boolean;          // default true (tidy)
+    /**
+     * Only meaningful for `extractCellsetRawResponse`. When true, the underlying
+     * Axios GET uses `responseType: 'stream'` so callers can iterate the raw
+     * bytes (used by `extractCellsetCsvIterJson`). Default false — matches
+     * tm1py's `extract_cellset_raw_response` which returns a buffered Response.
+     */
+    asStream?: boolean;
 }
 
 export interface ExtractCellsetCsvOptions {
@@ -1430,15 +1437,23 @@ export class CellService {
     }
 
     /**
-     * Extract cellset raw response as an Axios response with stream body.
-     * Mirrors tm1py's `extract_cellset_raw_response` (CellService.py:3610-3706).
+     * Extract cellset raw response as an Axios response.
+     * Mirrors tm1py's `extract_cellset_raw_response` (CellService.py:3610-3706),
+     * which returns a buffered Response by default — callers like
+     * `extract_cellset_raw` then call `.json()`. Streaming is opt-in.
+     *
+     * Pass `asStream: true` to receive a `responseType: 'stream'` body for
+     * incremental iteration (used by `extractCellsetCsvIterJson`).
      */
     public async extractCellsetRawResponse(
         cellsetId: string,
         options: ExtractCellsetRawOptions = {}
     ): Promise<any> {
         const url = this._buildCellsetRawUrl(cellsetId, options);
-        return this.rest.get(url, { responseType: 'stream' });
+        if (options.asStream === true) {
+            return this.rest.get(url, { responseType: 'stream' });
+        }
+        return this.rest.get(url);
     }
 
     /**
@@ -1938,6 +1953,7 @@ export class CellService {
             sandboxName: options.sandboxName,
             memberProperties: includeAttributes ? ['Name', 'Attributes'] : ['Name'],
             deleteCellset: false,
+            asStream: true,
         });
 
         const rowHeaders = options.mdxHeaders ? [...rows] : [...dimensionNamesFromElementUniqueNames(rows)];

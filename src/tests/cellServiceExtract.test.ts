@@ -600,6 +600,40 @@ describe('_buildCellsetRawUrl (via extractCellsetRaw URL inspection)', () => {
     });
 });
 
+// ─── extractCellsetRawResponse stream-vs-buffered ────────────────────────────
+
+describe('extractCellsetRawResponse', () => {
+    let rest: jest.Mocked<RestService>;
+    let svc: CellService;
+
+    beforeEach(() => {
+        rest = makeMockRest();
+        svc = makeCellService(rest);
+    });
+
+    it('default → buffered Axios response (parseable JSON), no responseType: stream', async () => {
+        // tm1py extract_cellset_raw_response (CellService.py:3705) returns a
+        // buffered Response by default; consumers call .json() on it. Streaming
+        // is opt-in via caller kwargs. Default tm1npm must NOT request 'stream'.
+        rest.get.mockResolvedValueOnce(mockResp({ Cube: {}, Axes: [], Cells: [] }));
+        const resp = await svc.extractCellsetRawResponse('CS1');
+        // No options object passed to rest.get → buffered.
+        expect(rest.get).toHaveBeenCalledWith(expect.any(String));
+        expect(rest.get.mock.calls[0].length).toBe(1);
+        // Response data is the parsed JSON, not a stream.
+        expect(resp.data).toMatchObject({ Cube: {}, Axes: [], Cells: [] });
+    });
+
+    it('asStream: true → responseType: stream is forwarded to Axios', async () => {
+        rest.get.mockResolvedValueOnce(mockResp({}));
+        await svc.extractCellsetRawResponse('CS1', { asStream: true });
+        expect(rest.get).toHaveBeenCalledWith(
+            expect.any(String),
+            { responseType: 'stream' }
+        );
+    });
+});
+
 // ─── Tidy / cleanup tests ─────────────────────────────────────────────────────
 
 describe('extractCellsetRaw tidy / cleanup', () => {
