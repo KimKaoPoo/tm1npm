@@ -13,7 +13,111 @@ import { OperationStatus, OperationType } from './AsyncOperationService';
 import { MDXView } from '../objects/MDXView';
 import { Process } from '../objects/Process';
 import { TM1Exception } from '../exceptions/TM1Exception';
-import { formatUrl, escapeODataValue, lowerAndDropSpaces, extractCompactJsonCellset, resemblesMdx, getCube } from '../utils/Utils';
+import {
+    formatUrl, escapeODataValue, lowerAndDropSpaces, extractCompactJsonCellset, resemblesMdx, getCube,
+    CaseAndSpaceInsensitiveTuplesDict,
+    RawCellsetDict,
+    buildContentFromCellsetDict,
+    buildCsvFromCellsetDict,
+    csvRowToString,
+    dimensionNamesFromElementUniqueNames,
+    CsvDialect,
+} from '../utils/Utils';
+
+// ─── Public interface types for CellService extract methods ───────────────
+
+export interface ExtractCellsetOptions {
+    cellProperties?: string[];
+    top?: number;
+    skip?: number;
+    deleteCellset?: boolean;          // default true
+    skipContexts?: boolean;
+    skipZeros?: boolean;
+    skipConsolidatedCells?: boolean;
+    skipRuleDerivedCells?: boolean;
+    sandboxName?: string;
+    elementUniqueNames?: boolean;     // default true
+    skipCellProperties?: boolean;
+    useCompactJson?: boolean;
+    skipSandboxDimension?: boolean;
+}
+
+export interface ExtractCellsetRawOptions {
+    cellProperties?: string[];
+    elemProperties?: string[];
+    memberProperties?: string[];
+    top?: number;
+    skip?: number;
+    skipContexts?: boolean;
+    skipZeros?: boolean;
+    skipConsolidatedCells?: boolean;
+    skipRuleDerivedCells?: boolean;
+    sandboxName?: string;
+    includeHierarchies?: boolean;
+    useCompactJson?: boolean;
+    deleteCellset?: boolean;          // default true (tidy)
+    /**
+     * Only meaningful for `extractCellsetRawResponse`. When true, the underlying
+     * Axios GET uses `responseType: 'stream'` so callers can iterate the raw
+     * bytes (used by `extractCellsetCsvIterJson`). Default false — matches
+     * tm1py's `extract_cellset_raw_response` which returns a buffered Response.
+     */
+    asStream?: boolean;
+}
+
+export interface ExtractCellsetCsvOptions {
+    top?: number;
+    skip?: number;
+    skipZeros?: boolean;              // default true (matches tm1py)
+    skipConsolidatedCells?: boolean;
+    skipRuleDerivedCells?: boolean;
+    csvDialect?: CsvDialect;
+    lineSeparator?: string;           // default '\r\n'
+    valueSeparator?: string;          // default ','
+    sandboxName?: string;
+    includeAttributes?: boolean;
+    useCompactJson?: boolean;
+    includeHeaders?: boolean;         // default true
+    mdxHeaders?: boolean;
+    deleteCellset?: boolean;          // default true
+}
+
+export interface ExtractCellsetAxesRawAsyncOptions {
+    asyncAxis?: number;               // default 1
+    maxWorkers?: number;              // default 8
+    elemProperties?: string[];
+    memberProperties?: string[];
+    skipContexts?: boolean;
+    includeHierarchies?: boolean;
+    sandboxName?: string;
+}
+
+export interface ExtractCellsetCellsRawAsyncOptions {
+    maxWorkers?: number;              // default 8
+    cellProperties?: string[];
+    skipZeros?: boolean;
+    skipConsolidatedCells?: boolean;
+    skipRuleDerivedCells?: boolean;
+    sandboxName?: string;
+}
+
+export interface ExtractCellsetCompositionResult {
+    cube: string;
+    titles: string[];
+    rows: string[];
+    columns: string[];
+}
+
+export interface ExtractCellsetMetadataRawOptions {
+    elemProperties?: string[];
+    memberProperties?: string[];
+    top?: number;
+    skip?: number;
+    skipContexts?: boolean;
+    includeHierarchies?: boolean;
+    sandboxName?: string;
+    deleteCellset?: boolean;
+}
 
 export interface CellsetDict {
     [coordinates: string]: string | number | boolean | null | undefined;
@@ -510,25 +614,44 @@ export class CellService {
     }
 
     /**
-     * Extract data from cellset
+     * Execute cellset and return cells with their properties as a
+     * CaseAndSpaceInsensitiveTuplesDict. Mirrors tm1py's `extract_cellset`
+     * (CellService.py:4827-4890).
+     *
+     * BREAKING CHANGE from v2.1: was `(cellsetId, expand_axes, sandbox_name)` returning
+     * raw JSON. Now takes options object and returns CaseAndSpaceInsensitiveTuplesDict.
+     * Migration: `extractCellset(id, true, 'sb')` → `extractCellset(id, { sandboxName: 'sb' })`.
      */
     public async extractCellset(
-        cellsetId: string, 
-        expand_axes: boolean = true,
-        sandbox_name?: string
-    ): Promise<any> {
-        let url = `/Cellsets('${cellsetId}')`;
-        
-        const params = new URLSearchParams();
-        if (expand_axes) params.append('$expand', 'Axes,Cells');
-        if (sandbox_name) params.append('$sandbox', sandbox_name);
+        cellsetId: string,
+        options: ExtractCellsetOptions = {}
+    ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
+        const cellProperties = (options.cellProperties && options.cellProperties.length > 0)
+            ? options.cellProperties : ['Value'];
 
-        if (params.toString()) {
-            url += `?${params.toString()}`;
-        }
+        const rawCellset = await this.extractCellsetRaw(cellsetId, {
+            cellProperties,
+            elemProperties: ['UniqueName'],
+            memberProperties: ['UniqueName'],
+            top: options.top,
+            skip: options.skip,
+            skipContexts: options.skipContexts,
+            deleteCellset: options.deleteCellset !== false,
+            skipZeros: options.skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            sandboxName: options.sandboxName,
+            includeHierarchies: false,
+            useCompactJson: options.useCompactJson,
+        });
 
-        const response = await this.rest.get(url);
-        return response.data;
+        return buildContentFromCellsetDict(
+            rawCellset,
+            options.top ?? null,
+            options.elementUniqueNames !== false,
+            options.skipCellProperties === true,
+            options.skipSandboxDimension === true
+        );
     }
 
     /**
@@ -1252,48 +1375,231 @@ export class CellService {
      * Get cellset cells count
      */
     public async getCellsetCellsCount(cellsetId: string, sandbox_name?: string): Promise<number> {
+        // tm1py extract_cellset_cellcount uses add_url_parameters(url, **{"!sandbox": ...})
+        // (CellService.py:4308) which produces &!sandbox= , and `value.replace("'", "''")`
+        // is the only escaping applied.
         let url = `/Cellsets('${cellsetId}')/Cells/$count`;
-
         if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
+            // First query param on this URL — must use `?`, not `&`.
+            url += `?!sandbox=${sandbox_name.replace(/'/g, "''")}`;
         }
-
         const response = await this.rest.get(url);
-        return response.data.value || response.data || 0;
+        // tm1py: return int(response.content) (CellService.py:4310). The OData
+        // /$count endpoint returns text/plain, which axios delivers as a string
+        // (or sometimes a parsed number). Coerce explicitly so downstream
+        // arithmetic doesn't silently produce NaN.
+        const raw = response.data?.value ?? response.data;
+        const n = Number(raw);
+        return Number.isFinite(n) ? n : 0;
     }
 
     /**
-     * Extract cellset raw response
+     * Build the full OData URL for a cellset GET.
+     * Mirrors tm1py's `extract_cellset_raw_response` URL builder (CellService.py:3636-3704).
+     */
+    private _buildCellsetRawUrl(cellsetId: string, opts: ExtractCellsetRawOptions): string {
+        // tm1py: `if not cell_properties:` treats [] as falsy. JS `??` would
+        // accept [] verbatim and emit a malformed `Cells($select=)` URL.
+        const cellProperties = [...((opts.cellProperties && opts.cellProperties.length > 0)
+            ? opts.cellProperties : ['Value'])];
+        if (opts.skipRuleDerivedCells) {
+            cellProperties.push('RuleDerived');
+            cellProperties.push('Updateable');
+        }
+        if (opts.skipConsolidatedCells) cellProperties.push('Consolidated');
+        if ((opts.skip || opts.skipZeros || opts.skipRuleDerivedCells || opts.skipConsolidatedCells)
+                && !cellProperties.includes('Ordinal')) {
+            cellProperties.push('Ordinal');
+        }
+
+        const memberProps = (opts.memberProperties && opts.memberProperties.length > 0)
+            ? opts.memberProperties : ['Name'];
+        const selectMember = '$select=' + memberProps.join(',');
+        const expandElem = (opts.elemProperties && opts.elemProperties.length > 0)
+            ? ';$expand=Element($select=' + opts.elemProperties.join(',') + ')' : '';
+
+        const filterAxis = opts.skipContexts ? '$filter=Ordinal ne 2;' : '';
+
+        const filters: string[] = [];
+        if (opts.skipZeros) filters.push("Value ne 0 and Value ne null and Value ne ''");
+        if (opts.skipConsolidatedCells) filters.push('Consolidated eq false');
+        if (opts.skipRuleDerivedCells) filters.push('RuleDerived eq false');
+        const filterCells = filters.join(' and ');
+
+        const expandHierarchies = opts.includeHierarchies
+            ? 'Hierarchies($select=Name;$expand=Dimension($select=Name)),' : '';
+
+        const topTuples = (opts.top && !opts.skip) ? ';$top=' + opts.top : '';
+        const topCells = opts.top ? ';$top=' + opts.top : '';
+        const skipCells = opts.skip ? ';$skip=' + opts.skip : '';
+        const filterClause = filterCells ? ';$filter=' + filterCells : '';
+
+        let url =
+            `/Cellsets('${cellsetId}')?$expand=` +
+            `Cube($select=Name;$expand=Dimensions($select=Name)),` +
+            `Axes(${filterAxis}$expand=${expandHierarchies}Tuples($expand=Members(${selectMember}${expandElem})${topTuples})),` +
+            `Cells($select=${cellProperties.join(',')}${topCells}${skipCells}${filterClause})`;
+        // tm1py add_url_parameters (Utils.py:1011-1030) only doubles single
+        // quotes; the HTTP layer handles any further encoding. encodeURIComponent
+        // would over-encode (%, &, +, ?) and produce a wire string that diverges
+        // from tm1py — TM1 rejects/misinterprets some payloads. Apply tm1py's
+        // exact escaping at all !sandbox sites in this PR.
+        if (opts.sandboxName) url += `&!sandbox=${opts.sandboxName.replace(/'/g, "''")}`;
+        return url;
+    }
+
+    /**
+     * Extract cellset raw response as an Axios response.
+     * Mirrors tm1py's `extract_cellset_raw_response` (CellService.py:3610-3706),
+     * which returns a buffered Response by default — callers like
+     * `extract_cellset_raw` then call `.json()`. Streaming is opt-in.
+     *
+     * Pass `asStream: true` to receive a `responseType: 'stream'` body for
+     * incremental iteration (used by `extractCellsetCsvIterJson`).
      */
     public async extractCellsetRawResponse(
         cellsetId: string,
-        sandbox_name?: string
-    ): Promise<Response> {
-        let url = `/Cellsets('${cellsetId}')/?$expand=Axes,Cells`;
-
-        if (sandbox_name) {
-            url += `&$sandbox=${sandbox_name}`;
+        options: ExtractCellsetRawOptions = {}
+    ): Promise<any> {
+        const url = this._buildCellsetRawUrl(cellsetId, options);
+        if (options.asStream === true) {
+            return this.rest.get(url, { responseType: 'stream' });
         }
-
-        const response = await this.rest.get(url, { responseType: 'stream' });
-        return response.data;
+        return this.rest.get(url);
     }
 
     /**
-     * Extract cellset metadata raw
+     * Extract cellset cells without axes metadata.
+     * Mirrors tm1py's `@odata_compact_json(return_as_dict=True) extract_cellset_cells_raw`
+     * (CellService.py:3913-3967).
+     * Wrapped with withCompactJson(returnAsDict=true) to mirror the decorator.
+     */
+    public async extractCellsetCellsRaw(
+        cellsetId: string,
+        options: {
+            cellProperties?: string[];
+            top?: number;
+            skip?: number;
+            skipZeros?: boolean;
+            skipConsolidatedCells?: boolean;
+            skipRuleDerivedCells?: boolean;
+            sandboxName?: string;
+            useCompactJson?: boolean;
+        } = {}
+    ): Promise<{ Cells: any[]; '@odata.context'?: string; ID?: string }> {
+        // tm1py: `if not cell_properties:` treats [] as falsy.
+        const cellProperties = [...((options.cellProperties && options.cellProperties.length > 0)
+            ? options.cellProperties : ['Value'])];
+        if (options.skipRuleDerivedCells) {
+            cellProperties.push('RuleDerived');
+            // necessary due to bug in TM1 11.8: If only RuleDerived is retrieved
+            // it occasionally produces wrong results (tm1py parity comment)
+            cellProperties.push('Updateable');
+        }
+        if (options.skipConsolidatedCells) cellProperties.push('Consolidated');
+        if ((options.skip || options.skipZeros || options.skipRuleDerivedCells || options.skipConsolidatedCells)
+                && !cellProperties.includes('Ordinal')) {
+            cellProperties.push('Ordinal');
+        }
+
+        const filters: string[] = [];
+        if (options.skipZeros) filters.push("Value ne 0 and Value ne null and Value ne ''");
+        if (options.skipConsolidatedCells) filters.push('Consolidated eq false');
+        if (options.skipRuleDerivedCells) filters.push('RuleDerived eq false');
+        const filterCells = filters.join(' and ');
+
+        const topClause = options.top ? ';$top=' + options.top : '';
+        const skipClause = options.skip ? ';$skip=' + options.skip : '';
+        const filterClause = filterCells ? ';$filter=' + filterCells : '';
+
+        let url = `/Cellsets('${cellsetId}')?$expand=Cells($select=${cellProperties.join(',')}${topClause}${skipClause}${filterClause})`;
+        if (options.sandboxName) url += `&!sandbox=${options.sandboxName.replace(/'/g, "''")}`;
+
+        return withCompactJson(this.rest, options.useCompactJson === true,
+            async () => (await this.rest.get(url)).data, /* returnAsDict */ true);
+    }
+
+    /**
+     * Extract full cellset data and return raw dict.
+     * Mirrors tm1py's `extract_cellset_raw` (CellService.py:3708-3787).
+     * Cleans up cellset by default (deleteCellset=true).
+     */
+    public async extractCellsetRaw(
+        cellsetId: string,
+        options: ExtractCellsetRawOptions = {}
+    ): Promise<RawCellsetDict> {
+        const useCompactJson = options.useCompactJson === true;
+        // tm1py extract_cellset_raw is @tidy_cellset (CellService.py:3708). The
+        // wrapper's `kwargs.get("delete_cellset", True)` defaults to True when
+        // no kwarg is passed — function-signature defaults don't reach **kwargs.
+        const deleteCellset = options.deleteCellset !== false;
+
+        return withTidyCellset(this, cellsetId, async () => {
+            if (!useCompactJson) {
+                const url = this._buildCellsetRawUrl(cellsetId, options);
+                return (await this.rest.get(url)).data as RawCellsetDict;
+            }
+
+            // Compact-JSON path: tm1py CellService.py:3762-3787
+            const metadata = await this.extractCellsetMetadataRaw(cellsetId, {
+                elemProperties: options.elemProperties,
+                memberProperties: options.memberProperties,
+                top: options.top,
+                skip: options.skip,
+                skipContexts: options.skipContexts,
+                includeHierarchies: options.includeHierarchies,
+                sandboxName: options.sandboxName,
+                deleteCellset: false,
+            });
+            const cells = await this.extractCellsetCellsRaw(cellsetId, {
+                cellProperties: options.cellProperties,
+                top: options.top,
+                skip: options.skip,
+                skipZeros: options.skipZeros,
+                skipConsolidatedCells: options.skipConsolidatedCells,
+                skipRuleDerivedCells: options.skipRuleDerivedCells,
+                sandboxName: options.sandboxName,
+                useCompactJson: true,
+            });
+            return { ...metadata, ...cells } as RawCellsetDict;
+        }, { delete_cellset: deleteCellset, sandbox_name: options.sandboxName });
+    }
+
+    /**
+     * Extract cellset metadata (Cube + Axes) without cells.
+     * Mirrors tm1py's `extract_cellset_metadata_raw` (CellService.py:3789-3843).
      */
     public async extractCellsetMetadataRaw(
         cellsetId: string,
-        sandbox_name?: string
+        options: ExtractCellsetMetadataRawOptions = {}
     ): Promise<any> {
-        let url = `/Cellsets('${cellsetId}')?$expand=Axes`;
+        const memberProps = (options.memberProperties && options.memberProperties.length > 0)
+            ? options.memberProperties : ['Name'];
+        const selectMember = '$select=' + memberProps.join(',');
+        const expandElem = (options.elemProperties && options.elemProperties.length > 0)
+            ? ';$expand=Element($select=' + options.elemProperties.join(',') + ')' : '';
 
-        if (sandbox_name) {
-            url += `&$sandbox=${sandbox_name}`;
-        }
+        const expandHierarchies = options.includeHierarchies
+            ? 'Hierarchies($select=Name;$expand=Dimension($select=Name)),' : '';
 
-        const response = await this.rest.get(url);
-        return response.data;
+        const filterAxis = options.skipContexts ? '$filter=Ordinal ne 2;' : '';
+        const topTuples = (options.top && !options.skip) ? ';$top=' + options.top : '';
+
+        let url =
+            `/Cellsets('${cellsetId}')?$expand=` +
+            `Cube($select=Name;$expand=Dimensions($select=Name)),` +
+            `Axes(${filterAxis}$expand=${expandHierarchies}Tuples($expand=Members(${selectMember}${expandElem})${topTuples}))`;
+
+        if (options.sandboxName) url += `&!sandbox=${options.sandboxName.replace(/'/g, "''")}`;
+
+        // tm1py extract_cellset_metadata_raw is @tidy_cellset (CellService.py:3789).
+        // The function-level `delete_cellset=False` default lives in the inner
+        // function and never reaches the wrapper's **kwargs, so an unforwarded
+        // call still deletes (kwargs.get("delete_cellset", True) → True).
+        const deleteCellset = options.deleteCellset !== false;
+        return withTidyCellset(this, cellsetId, async () => {
+            return (await this.rest.get(url)).data;
+        }, { delete_cellset: deleteCellset, sandbox_name: options.sandboxName });
     }
 
     /**
@@ -1325,13 +1631,152 @@ export class CellService {
         cellsetId: string,
         sandbox_name?: string
     ): Promise<number[]> {
-        const metadata = await this.extractCellsetMetadataRaw(cellsetId, sandbox_name);
+        // tm1py extract_cellset_axes_cardinality has no @tidy_cellset (CellService.py:3969-3972).
+        const metadata = await this.extractCellsetMetadataRaw(cellsetId, { sandboxName: sandbox_name, deleteCellset: false });
 
         if (metadata.Axes) {
             return metadata.Axes.map((axis: any) => axis.Cardinality || 0);
         }
 
         return [];
+    }
+
+    /**
+     * Fetch only Axes with Cardinality from a cellset.
+     * Mirrors tm1py's `extract_cellset_axes_cardinality` (CellService.py:3969-3972)
+     * but returns the raw dict shape rather than a processed array.
+     */
+    private async _fetchCellsetAxesCardinalityRaw(
+        cellsetId: string
+    ): Promise<{ Axes: Array<{ Cardinality: number }> }> {
+        const url = `/Cellsets('${cellsetId}')?$expand=Axes($select=Cardinality)`;
+        return (await this.rest.get(url)).data;
+    }
+
+    /**
+     * Extract cellset axes asynchronously using parallel chunked requests.
+     * Mirrors tm1py's `extract_cellset_axes_raw_async` (CellService.py:3974-4076).
+     * Uses Promise.all instead of Python's ThreadPoolExecutor.
+     */
+    public async extractCellsetAxesRawAsync(
+        cellsetId: string,
+        options: ExtractCellsetAxesRawAsyncOptions = {}
+    ): Promise<RawCellsetDict> {
+        const asyncAxis = options.asyncAxis ?? 1;
+        const maxWorkers = options.maxWorkers ?? 8;
+
+        const axesCardinality = await this._fetchCellsetAxesCardinalityRaw(cellsetId);
+
+        if (asyncAxis >= axesCardinality.Axes.length) {
+            throw new Error("Argument 'async_axis' must be less than axes cardinality");
+        }
+
+        const memberProps = (options.memberProperties && options.memberProperties.length > 0)
+            ? options.memberProperties : ['Name'];
+        const selectMember = '$select=' + memberProps.join(',');
+        const expandElem = (options.elemProperties && options.elemProperties.length > 0)
+            ? ';$expand=Element($select=' + options.elemProperties.join(',') + ')' : '';
+        const expandHierarchies = options.includeHierarchies
+            ? 'Hierarchies($select=Name;$expand=Dimension($select=Name)),' : '';
+
+        const fetchAxisChunk = async (axis: number, partition: number, partitionSize: number): Promise<any> => {
+            const top = partitionSize;
+            const skip = partition * partitionSize;
+            const filterAxis = `$filter=Ordinal eq ${axis};`;
+            const partClause = partitionSize > 0 ? `;$top=${top};$skip=${skip}` : '';
+            let url =
+                `/Cellsets('${cellsetId}')?$expand=` +
+                `Axes(${filterAxis}$expand=${expandHierarchies}Tuples($expand=Members(${selectMember}${expandElem})${partClause}))`;
+            if (options.sandboxName) url += `&!sandbox=${options.sandboxName.replace(/'/g, "''")}`;
+            return (await this.rest.get(url)).data;
+        };
+
+        // Extract non-async axis (the opposite axis)
+        const axes = await fetchAxisChunk(1 - asyncAxis, 0, 0);
+
+        // Extract async axis tuples in parallel chunks
+        const partitionSize = Math.ceil(axesCardinality.Axes[asyncAxis].Cardinality / maxWorkers);
+        const chunkResults = await Promise.all(
+            Array.from({ length: maxWorkers }, (_, p) => fetchAxisChunk(asyncAxis, p, partitionSize))
+        );
+        const asyncAxisTuples = chunkResults.flatMap((r: any) => r.Axes[0]?.Tuples ?? []);
+
+        // Combine results
+        axes.Axes.splice(asyncAxis, 0, {
+            Ordinal: asyncAxis,
+            Cardinality: axesCardinality.Axes[asyncAxis].Cardinality,
+            Tuples: asyncAxisTuples,
+        });
+
+        // Optionally include context axis (axis 2)
+        if (!options.skipContexts) {
+            const ctx = await fetchAxisChunk(2, 0, 0);
+            if (ctx.Axes && ctx.Axes.length > 0) {
+                axes.Axes.push(ctx.Axes[0]);
+            }
+        }
+
+        return axes;
+    }
+
+    /**
+     * Extract cellset cells asynchronously using parallel chunked requests.
+     * Mirrors tm1py's `extract_cellset_cells_raw_async` (CellService.py:4078-4157).
+     * Uses Promise.all instead of Python's ThreadPoolExecutor.
+     */
+    public async extractCellsetCellsRawAsync(
+        cellsetId: string,
+        options: ExtractCellsetCellsRawAsyncOptions = {}
+    ): Promise<{ '@odata.context': string; ID: string; Cells: any[] }> {
+        const maxWorkers = options.maxWorkers ?? 8;
+
+        // tm1py: `if not cell_properties:` treats [] as falsy.
+        const cellProperties = [...((options.cellProperties && options.cellProperties.length > 0)
+            ? options.cellProperties : ['Value'])];
+        if (options.skipRuleDerivedCells) {
+            cellProperties.push('RuleDerived');
+            cellProperties.push('Updateable');
+        }
+        if (options.skipConsolidatedCells) cellProperties.push('Consolidated');
+        if ((options.skipZeros || options.skipRuleDerivedCells || options.skipConsolidatedCells)
+                && !cellProperties.includes('Ordinal')) {
+            cellProperties.push('Ordinal');
+        }
+
+        const filters: string[] = [];
+        if (options.skipZeros) filters.push("Value ne 0 and Value ne null and Value ne ''");
+        if (options.skipConsolidatedCells) filters.push('Consolidated eq false');
+        if (options.skipRuleDerivedCells) filters.push('RuleDerived eq false');
+        const filterCells = filters.join(' and ');
+
+        const fetchChunk = async (partition: number, partitionSize: number): Promise<any> => {
+            const top = partitionSize;
+            const skip = partition * partitionSize;
+            const topClause = top ? ';$top=' + top : '';
+            const skipClause = skip ? ';$skip=' + skip : '';
+            const filterClause = filterCells ? ';$filter=' + filterCells : '';
+            let url = `/Cellsets('${cellsetId}')?$expand=Cells($select=${cellProperties.join(',')}${topClause}${skipClause}${filterClause})`;
+            if (options.sandboxName) url += `&!sandbox=${options.sandboxName.replace(/'/g, "''")}`;
+            return (await this.rest.get(url)).data;
+        };
+
+        const cellcount = await this.getCellsetCellsCount(cellsetId, options.sandboxName);
+
+        // Match tm1py: when cellcount is 0, partitionSize=ceil(0/maxWorkers)=0 and
+        // each chunk fetch issues a request without `;$top=` — equivalent to fetching
+        // all (zero) cells. Don't short-circuit; keep wire behavior identical to tm1py.
+        const partitionSize = Math.ceil(cellcount / maxWorkers);
+        const results = await Promise.all(
+            Array.from({ length: maxWorkers }, (_, p) => fetchChunk(p, partitionSize))
+        );
+
+        const allCells = results.flatMap((r: any) => r.Cells || []);
+        const last = results[results.length - 1];
+        return {
+            '@odata.context': last['@odata.context'] ?? '',
+            ID: last.ID ?? '',
+            Cells: allCells,
+        };
     }
 
     /**
@@ -1358,7 +1803,7 @@ export class CellService {
         cellsetId: string,
         sandbox_name?: string
     ): Promise<{ rows: any[][], values: any[] }> {
-        const cellset = await this.extractCellset(cellsetId, true, sandbox_name);
+        const cellset = await this.extractCellsetRaw(cellsetId, { sandboxName: sandbox_name });
 
         const rows: any[][] = [];
         const values: any[] = [];
@@ -1381,38 +1826,51 @@ export class CellService {
     }
 
     /**
-     * Extract cellset composition (cube, dimensions)
+     * Retrieve composition of dimensions on the axes in the cellset.
+     * Mirrors tm1py's `@tidy_cellset extract_cellset_composition` (CellService.py:4263-4296).
+     *
+     * BREAKING CHANGE from v2.1: was `(cellsetId, sandbox_name?)` returning
+     * `{cube, dimensions}`. Now returns `{cube, titles, rows, columns}` matching
+     * tm1py's 4-tuple. Migration: use `.columns` / `.rows` / `.titles` instead of
+     * `.dimensions`.
      */
     public async extractCellsetComposition(
         cellsetId: string,
-        sandbox_name?: string
-    ): Promise<{ cube: string; dimensions: string[] }> {
-        const metadata = await this.extractCellsetMetadataRaw(cellsetId, sandbox_name);
+        options: { sandboxName?: string; deleteCellset?: boolean } = {}
+    ): Promise<ExtractCellsetCompositionResult> {
+        // tm1py decorates this with @tidy_cellset (CellService.py:4263) — default cleanup on.
+        const deleteCellset = options.deleteCellset !== false;
+        return withTidyCellset(this, cellsetId, async () => {
+            let url =
+                `/Cellsets('${cellsetId}')?$expand=` +
+                `Cube($select=Name),Axes($expand=Hierarchies($select=UniqueName))`;
+            if (options.sandboxName) url += `&!sandbox=${options.sandboxName.replace(/'/g, "''")}`;
 
-        let cube = '';
-        const dimensions: string[] = [];
+            const data = (await this.rest.get(url)).data;
+            const cube: string = data.Cube.Name;
 
-        if (metadata.Axes) {
-            for (const axis of metadata.Axes) {
-                if (axis.Hierarchies) {
-                    for (const hierarchy of axis.Hierarchies) {
-                        if (hierarchy.Dimension && hierarchy.Dimension.Name) {
-                            dimensions.push(hierarchy.Dimension.Name);
-                        }
-                    }
+            const rows: string[] = [];
+            const titles: string[] = [];
+            const columns: string[] = [];
+
+            if (data.Axes.length === 1) {
+                if (data.Axes[0].Hierarchies) {
+                    columns.push(...data.Axes[0].Hierarchies.map((h: any) => h.UniqueName));
+                }
+            } else {
+                if (data.Axes[0].Hierarchies) {
+                    columns.push(...data.Axes[0].Hierarchies.map((h: any) => h.UniqueName));
+                }
+                if (data.Axes[1].Hierarchies) {
+                    rows.push(...data.Axes[1].Hierarchies.map((h: any) => h.UniqueName));
                 }
             }
-        }
-
-        // Try to derive cube name from cellset context or metadata
-        if (metadata['@odata.context']) {
-            const contextMatch = metadata['@odata.context'].match(/Cubes\('([^']+)'\)/);
-            if (contextMatch) {
-                cube = contextMatch[1];
+            if (data.Axes.length > 2) {
+                titles.push(...data.Axes[2].Hierarchies.map((h: any) => h.UniqueName));
             }
-        }
 
-        return { cube, dimensions };
+            return { cube, titles, rows, columns };
+        }, { delete_cellset: deleteCellset, sandbox_name: options.sandboxName });
     }
 
     /**
@@ -1422,41 +1880,347 @@ export class CellService {
         cellsetId: string,
         sandbox_name?: string
     ): Promise<DataFrame> {
-        const cellset = await this.extractCellset(cellsetId, true, sandbox_name);
+        const cellset = await this.extractCellsetRaw(cellsetId, { sandboxName: sandbox_name });
         return this.buildDataFrameFromCellset(cellset);
     }
 
     /**
-     * Extract cellset as CSV format
+     * Execute cellset and return only the content, in CSV format.
+     * Mirrors tm1py's `extract_cellset_csv` (CellService.py:4312-4383).
+     * Uses CLIENT-SIDE conversion via buildCsvFromCellsetDict — no use_blob.
+     *
+     * BREAKING CHANGE from v2.1: was `(cellsetId, sandbox_name?, includeHeaders?)`.
+     * Now takes an options object with full tm1py parameter set.
+     * Migration: `extractCellsetCsv(id, 'sb', false)` →
+     *   `extractCellsetCsv(id, { sandboxName: 'sb', includeHeaders: false })`.
      */
     public async extractCellsetCsv(
         cellsetId: string,
-        sandbox_name?: string,
-        includeHeaders: boolean = true
+        options: ExtractCellsetCsvOptions = {}
     ): Promise<string> {
-        const cellset = await this.extractCellset(cellsetId, true, sandbox_name);
-        const dataframe = this.buildDataFrameFromCellset(cellset);
+        const skipZeros = options.skipZeros !== false;  // default true (tm1py parity)
+        const includeHeaders = options.includeHeaders !== false;
+        const deleteCellset = options.deleteCellset !== false;
 
-        const rows: string[] = [];
+        const { rows, columns } = await this.extractCellsetComposition(
+            cellsetId, { sandboxName: options.sandboxName, deleteCellset: false }
+        );
 
-        // Add headers if requested
-        if (includeHeaders) {
-            rows.push(dataframe.columns.map(col => `"${col}"`).join(','));
-        }
+        const rawCellset = await this.extractCellsetRaw(cellsetId, {
+            cellProperties: ['Value'],
+            elemProperties: ['Name'],
+            memberProperties: options.includeAttributes ? ['Name', 'Attributes'] : undefined,
+            top: options.top,
+            skip: options.skip,
+            skipContexts: true,
+            skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            sandboxName: options.sandboxName,
+            useCompactJson: options.useCompactJson,
+            deleteCellset,
+        });
 
-        // Add data rows
-        for (const row of dataframe.data) {
-            const csvRow = row.map(cell => {
-                if (cell === null || cell === undefined) return '';
-                if (typeof cell === 'string' && (cell.includes(',') || cell.includes('"'))) {
-                    return `"${cell.replace(/"/g, '""')}"`;
+        return buildCsvFromCellsetDict(rows, columns, rawCellset, {
+            top: options.top,
+            csvDialect: options.csvDialect,
+            lineSeparator: options.lineSeparator,
+            valueSeparator: options.valueSeparator,
+            includeAttributes: options.includeAttributes,
+            includeHeaders,
+            mdxHeaders: options.mdxHeaders,
+        });
+    }
+
+    /**
+     * Execute cellset and return only the content, in CSV format — streaming version.
+     * Mirrors tm1py's `extract_cellset_csv_iter_json` (CellService.py:4385-4556).
+     * Uses stream-json for incremental JSON parsing (equivalent of Python's ijson).
+     */
+    public async extractCellsetCsvIterJson(
+        cellsetId: string,
+        options: Omit<ExtractCellsetCsvOptions, 'useCompactJson' | 'deleteCellset'> = {}
+    ): Promise<string> {
+        const skipZeros = options.skipZeros !== false;   // default true
+        const valueSeparator = options.valueSeparator ?? ',';
+        const lineSeparator = options.lineSeparator ?? '\r\n';
+        const includeAttributes = options.includeAttributes === true;
+
+        // Use csvDialect settings if provided (tm1py: CellService.py:4444-4446)
+        const delimiter = options.csvDialect?.delimiter ?? valueSeparator;
+        const lineterminator = options.csvDialect?.lineterminator ?? lineSeparator;
+
+        const { cube, rows, columns } = await this.extractCellsetComposition(
+            cellsetId, { sandboxName: options.sandboxName, deleteCellset: false }
+        );
+
+        const rawResponse = await this.extractCellsetRawResponse(cellsetId, {
+            cellProperties: ['Value', 'Ordinal'],
+            top: options.top,
+            skip: options.skip,
+            skipContexts: true,
+            skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            sandboxName: options.sandboxName,
+            memberProperties: includeAttributes ? ['Name', 'Attributes'] : ['Name'],
+            deleteCellset: false,
+            asStream: true,
+        });
+
+        const rowHeaders = options.mdxHeaders ? [...rows] : [...dimensionNamesFromElementUniqueNames(rows)];
+        const columnHeaders = options.mdxHeaders ? [...columns] : [...dimensionNamesFromElementUniqueNames(columns)];
+
+        const attributesPrefixes = new Set<string>();
+        if (includeAttributes) {
+            const attributesByDimension = await this._getAttributesByDimension(cube);
+            for (const [, attrs] of Object.entries(attributesByDimension)) {
+                for (const attr of attrs) {
+                    attributesPrefixes.add(`Axes.item.Tuples.item.Members.item.Attributes.${attr}`);
                 }
-                return String(cell);
-            }).join(',');
-            rows.push(csvRow);
+            }
         }
 
-        return rows.join('\n');
+        const prefixesOfInterest = new Set<string>([
+            'Cells.item.Value',
+            'Axes.item.Tuples.item.Members.item.Name',
+            'Cells.item.Ordinal',
+            'Axes.item.Tuples.item.Ordinal',
+            'Cube.Dimensions.item.Name',
+            'Axes.item.Ordinal',
+            ...attributesPrefixes,
+        ]);
+
+        // Mirrors tm1py CellService.py:4448-4537 state machine
+        const axes0List: string[][] = [];   // columns axis tuples member names
+        const axes1List: string[][] = [];   // rows axis tuples member names
+        let currentAxes = 0;
+        let currentTuple = 0;
+        let currentCellOrdinal = 0;
+        const csvBodyLines: string[] = [];
+        let maxEntriesPerRow = 0;
+        let leastEntriesPerRow = 1_000;
+
+        await this._streamJsonWalk(rawResponse.data, prefixesOfInterest, (prefix, event, value) => {
+            if (prefix === 'Cells.item.Value') {
+                // tm1py CellService.py:4482-4499 — divmod raises ZeroDivisionError
+                // when axes0List is empty; match that strict behavior.
+                if (axes0List.length === 0) {
+                    throw new Error('division by zero: axes0List is empty');
+                }
+                const total = axes0List.length;
+                const r = currentCellOrdinal % total;
+                const q = Math.floor(currentCellOrdinal / total);
+                // tm1py: row = … + [str(value)]. Python's str(None) is 'None',
+                // not 'null' — match so downstream parsers (dataframe NA detection)
+                // see the expected sentinel.
+                const cellStr = value === null ? 'None' : String(value);
+                let row: string[];
+                if (axes0List.length === 1 && axes0List[0].length === 0) {
+                    row = [...axes1List[q], cellStr];
+                } else if (axes1List.length === 0) {
+                    row = [...axes0List[r], cellStr];
+                } else {
+                    row = [...axes1List[q], ...axes0List[r], cellStr];
+                }
+                if (row.length > maxEntriesPerRow) maxEntriesPerRow = row.length;
+                if (row.length < leastEntriesPerRow) leastEntriesPerRow = row.length;
+                csvBodyLines.push(csvRowToString(row, delimiter, lineterminator));
+
+            } else if (prefix === 'Axes.item.Tuples.item.Members.item.Name' && event === 'string') {
+                // tm1py CellService.py:4501-4505
+                (currentAxes === 0 ? axes0List : axes1List)[currentTuple].push(String(value));
+            }
+
+            if (attributesPrefixes.has(prefix)) {
+                // tm1py CellService.py:4507-4524
+                if (event !== 'string' && event !== 'number') return;
+                const attributeName = prefix.split('.').pop() ?? '';
+                const v = String(value);
+                const list = currentAxes === 0 ? axes0List : axes1List;
+                list[currentTuple].push(v);
+                if (currentTuple === 0) {
+                    if (currentAxes === 0) {
+                        columnHeaders.splice(list[currentTuple].length - 1, 0, attributeName);
+                    } else {
+                        rowHeaders.splice(list[currentTuple].length - 1, 0, attributeName);
+                    }
+                }
+            } else if (prefix === 'Cells.item.Ordinal' && event === 'number') {
+                // tm1py CellService.py:4526
+                currentCellOrdinal = value as number;
+            } else if (prefix === 'Axes.item.Tuples.item.Ordinal' && event === 'number') {
+                // tm1py CellService.py:4529-4533
+                currentTuple = value as number;
+                (currentAxes === 0 ? axes0List : axes1List).push([]);
+            } else if (prefix === 'Axes.item.Ordinal' && event === 'number') {
+                // tm1py CellService.py:4536
+                currentAxes = value as number;
+            }
+        });
+
+        // tm1py CellService.py:4539-4541 — empty cellset parity
+        if (csvBodyLines.length === 0) return '';
+
+        // tm1py CellService.py:4543-4549 — include_attributes validation
+        if (includeAttributes) {
+            if (!(leastEntriesPerRow === maxEntriesPerRow &&
+                  maxEntriesPerRow === rowHeaders.length + columnHeaders.length + 1)) {
+                throw new Error(
+                    "Invalid response. With 'includeAttributes' as true," +
+                    " Attributes must be requested explicitly as PROPERTIES in the MDX"
+                );
+            }
+        }
+
+        // tm1py CellService.py:4551-4556 — header + body
+        const headerLine = csvRowToString([...rowHeaders, ...columnHeaders, 'Value'], delimiter, lineterminator);
+        return headerLine + csvBodyLines.join('').replace(/\s+$/, '');
+    }
+
+    /**
+     * Walk a JSON stream and call `visit` for each leaf value whose dotted path
+     * is in `prefixesOfInterest`. Mirrors tm1py's ijson.parse prefix filter.
+     * Uses stream-json v2 with stream-chain for incremental parsing.
+     */
+    private async _streamJsonWalk(
+        stream: NodeJS.ReadableStream,
+        prefixesOfInterest: Set<string>,
+        visit: (prefix: string, event: string, value: any) => void
+    ): Promise<void> {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { chain } = require('stream-chain');
+        // stream-json v2: default export is the make() function that returns a Duplex stream
+        // (parser() returns a Flushable fn for stream-chain; make() returns a proper Duplex)
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const make = require('stream-json');
+
+        return new Promise<void>((resolve, reject) => {
+            const pipeline = chain([
+                stream,
+                make({ packKeys: true, packStrings: true, packNumbers: true }),
+            ]);
+
+            // Path tracking state — mirrors ijson prefix semantics
+            // Each entry in pushStack records how many path segments were pushed when
+            // entering the corresponding container, so we know how many to pop on exit.
+            const pathStack: string[] = [];
+            let lastKey: string | null = null;
+            // pushStack[i]: number of segments pushed when opening the i-th container
+            const pushStack: number[] = [];
+            // currentContainerIsArray[i]: whether the i-th container is an array
+            const containerIsArray: boolean[] = [];
+
+            pipeline.on('data', (token: { name: string; value?: any }) => {
+                switch (token.name) {
+                    case 'startObject': {
+                        let pushed = 0;
+                        const parentIsArray = containerIsArray.length > 0
+                            && containerIsArray[containerIsArray.length - 1];
+                        if (lastKey !== null) {
+                            pathStack.push(lastKey); lastKey = null; pushed = 1;
+                        } else if (parentIsArray) {
+                            pathStack.push('item'); pushed = 1;
+                        }
+                        containerIsArray.push(false);
+                        pushStack.push(pushed);
+                        break;
+                    }
+
+                    case 'startArray': {
+                        let pushed = 0;
+                        if (lastKey !== null) {
+                            pathStack.push(lastKey); lastKey = null; pushed = 1;
+                        }
+                        containerIsArray.push(true);
+                        pushStack.push(pushed);
+                        break;
+                    }
+
+                    case 'endObject':
+                    case 'endArray': {
+                        containerIsArray.pop();
+                        const n = pushStack.pop() ?? 0;
+                        for (let i = 0; i < n; i++) pathStack.pop();
+                        break;
+                    }
+
+                    case 'keyValue':
+                        lastKey = token.value;
+                        break;
+
+                    case 'stringValue':
+                    case 'numberValue':
+                    case 'nullValue':
+                    case 'trueValue':
+                    case 'falseValue': {
+                        const prefix = lastKey !== null
+                            ? (pathStack.length > 0 ? pathStack.join('.') + '.' + lastKey : lastKey)
+                            : pathStack.join('.');
+                        if (prefixesOfInterest.has(prefix)) {
+                            const event = token.name === 'stringValue' ? 'string'
+                                : token.name === 'numberValue' ? 'number' : 'other';
+                            // stream-json v2 emits numberValue.value as a string (accumulated chunks)
+                            // — parse to JS number so callers can do numeric comparisons
+                            const value = token.name === 'numberValue'
+                                ? parseFloat(token.value as string)
+                                : token.value;
+                            // Synchronous visitor exceptions (e.g. ZeroDivisionError-style
+                            // throws inside the cells handler) must reject the outer Promise;
+                            // EventEmitter listener throws don't propagate naturally.
+                            try {
+                                visit(prefix, event, value);
+                            } catch (err) {
+                                if (typeof (stream as any).destroy === 'function') {
+                                    try { (stream as any).destroy(); } catch { /* already torn down */ }
+                                }
+                                pipeline.destroy();
+                                reject(err as Error);
+                                return;
+                            }
+                        }
+                        lastKey = null;
+                        break;
+                    }
+                }
+            });
+
+            pipeline.on('end', () => resolve());
+            pipeline.on('error', (err: Error) => {
+                // Ensure the upstream HTTP response stream is released so the socket
+                // doesn't stay buffered when parsing fails mid-document.
+                if (typeof (stream as any).destroy === 'function') {
+                    try { (stream as any).destroy(); } catch { /* already torn down */ }
+                }
+                reject(err);
+            });
+        });
+    }
+
+
+    /**
+     * Get element attributes by dimension for a cube.
+     * Used by extractCellsetCsvIterJson to build attribute prefix sets.
+     * Mirrors tm1py's `_get_attributes_by_dimension` (CellService.py:~4573).
+     */
+    private async _getAttributesByDimension(cubeName: string): Promise<Record<string, string[]>> {
+        // tm1py _get_attributes_by_dimension (CellService.py:5123-5134) calls
+        // get_dimension_names_for_writing(cube) — which excludes the sandbox
+        // dim and other control dims — and element_service.get_element_attribute_names
+        // (the lighter `?$select=Name` form, not the full attribute objects).
+        // Exceptions propagate; do NOT swallow them here.
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { ElementService } = require('./ElementService');
+        const elementService = new ElementService(this.rest);
+        const dimensions = await this.getDimensionNamesForWriting(cubeName);
+        const result: Record<string, string[]> = {};
+        for (const dim of dimensions) {
+            // Defensive: getDimensionNamesForWriting should already exclude
+            // `}`-prefixed control dims, but skip if any leak through.
+            if (dim.startsWith('}')) continue;
+            result[dim] = await elementService.getElementAttributeNames(dim, dim);
+        }
+        return result;
     }
 
     /**
@@ -1483,7 +2247,7 @@ export class CellService {
         cellsetId: string,
         sandbox_name?: string
     ): Promise<DataFrame> {
-        const cellset = await this.extractCellset(cellsetId, true, sandbox_name);
+        const cellset = await this.extractCellsetRaw(cellsetId, { sandboxName: sandbox_name });
         return this.buildPivotDataFrameFromCellset(cellset);
     }
 
@@ -1513,7 +2277,7 @@ export class CellService {
          */
 
         // Get cellset metadata first
-        const cellset = await this.extractCellset(cellsetId, false, sandbox_name);
+        const cellset = await this.extractCellsetRaw(cellsetId, { sandboxName: sandbox_name, deleteCellset: false });
         const cellCount = cellset.Cells?.length || 0;
 
         // For small cellsets, use synchronous method
