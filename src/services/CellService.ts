@@ -1368,12 +1368,12 @@ export class CellService {
      * Get cellset cells count
      */
     public async getCellsetCellsCount(cellsetId: string, sandbox_name?: string): Promise<number> {
+        // tm1py extract_cellset_cellcount uses add_url_parameters(url, **{"!sandbox": ...})
+        // (CellService.py:4308) which produces &!sandbox= (URL-encoded), not $sandbox.
         let url = `/Cellsets('${cellsetId}')/Cells/$count`;
-
         if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
+            url += `&!sandbox=${encodeURIComponent(sandbox_name)}`;
         }
-
         const response = await this.rest.get(url);
         return response.data.value || response.data || 0;
     }
@@ -1496,6 +1496,9 @@ export class CellService {
         options: ExtractCellsetRawOptions = {}
     ): Promise<RawCellsetDict> {
         const useCompactJson = options.useCompactJson === true;
+        // tm1py extract_cellset_raw is @tidy_cellset (CellService.py:3708). The
+        // wrapper's `kwargs.get("delete_cellset", True)` defaults to True when
+        // no kwarg is passed — function-signature defaults don't reach **kwargs.
         const deleteCellset = options.deleteCellset !== false;
 
         return withTidyCellset(this, cellsetId, async () => {
@@ -1556,8 +1559,10 @@ export class CellService {
 
         if (options.sandboxName) url += `&!sandbox=${encodeURIComponent(options.sandboxName)}`;
 
-        // tm1py decorates extract_cellset_metadata_raw with @tidy_cellset
-        // (CellService.py:3789-3790) — default delete_cellset=true.
+        // tm1py extract_cellset_metadata_raw is @tidy_cellset (CellService.py:3789).
+        // The function-level `delete_cellset=False` default lives in the inner
+        // function and never reaches the wrapper's **kwargs, so an unforwarded
+        // call still deletes (kwargs.get("delete_cellset", True) → True).
         const deleteCellset = options.deleteCellset !== false;
         return withTidyCellset(this, cellsetId, async () => {
             return (await this.rest.get(url)).data;
@@ -2120,7 +2125,19 @@ export class CellService {
                             const value = token.name === 'numberValue'
                                 ? parseFloat(token.value as string)
                                 : token.value;
-                            visit(prefix, event, value);
+                            // Synchronous visitor exceptions (e.g. ZeroDivisionError-style
+                            // throws inside the cells handler) must reject the outer Promise;
+                            // EventEmitter listener throws don't propagate naturally.
+                            try {
+                                visit(prefix, event, value);
+                            } catch (err) {
+                                if (typeof (stream as any).destroy === 'function') {
+                                    try { (stream as any).destroy(); } catch { /* already torn down */ }
+                                }
+                                pipeline.destroy();
+                                reject(err as Error);
+                                return;
+                            }
                         }
                         lastKey = null;
                         break;
@@ -2147,27 +2164,23 @@ export class CellService {
      * Mirrors tm1py's `_get_attributes_by_dimension` (CellService.py:~4573).
      */
     private async _getAttributesByDimension(cubeName: string): Promise<Record<string, string[]>> {
-        try {
-            // Import ElementService lazily to avoid circular dependency
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const { ElementService } = require('./ElementService');
-            const elementService = new ElementService(this.rest);
-            const url = `/Cubes('${encodeURIComponent(cubeName)}')?$expand=Dimensions($select=Name)`;
-            const resp = await this.rest.get(url);
-            const dimensions: string[] = (resp.data?.Dimensions || []).map((d: any) => d.Name);
-            const result: Record<string, string[]> = {};
-            for (const dim of dimensions) {
-                try {
-                    const attrs = await elementService.getElementAttributes(dim, dim);
-                    result[dim] = (attrs || []).map((a: any) => a.Name ?? a.name ?? String(a));
-                } catch {
-                    result[dim] = [];
-                }
-            }
-            return result;
-        } catch {
-            return {};
+        // tm1py _get_attributes_by_dimension (CellService.py:5123-5134) calls
+        // get_dimension_names_for_writing(cube) — which excludes the sandbox
+        // dim and other control dims — and element_service.get_element_attribute_names.
+        // Exceptions propagate; do NOT swallow them here.
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { ElementService } = require('./ElementService');
+        const elementService = new ElementService(this.rest);
+        const dimensions = await this.getDimensionNamesForWriting(cubeName);
+        const result: Record<string, string[]> = {};
+        for (const dim of dimensions) {
+            // Skip TM1 control dimensions (names starting with `}`) — tm1py's
+            // get_dimension_names_for_writing already excludes them.
+            if (dim.startsWith('}')) continue;
+            const attrs = await elementService.getElementAttributes(dim, dim);
+            result[dim] = (attrs || []).map((a: any) => a.Name ?? a.name ?? String(a));
         }
+        return result;
     }
 
     /**

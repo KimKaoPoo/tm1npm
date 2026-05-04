@@ -309,6 +309,49 @@ describe('Utils helpers', () => {
             expect(csv).toBe('2024,');
         });
 
+        it('quotes values containing bare \\n (tm1py csv.writer QUOTE_MINIMAL parity)', () => {
+            const cellsetWithNewline: RawCellsetDict = {
+                Cube: { Name: 'C', Dimensions: [{ Name: 'Year' }] },
+                Axes: [
+                    { Cardinality: 1, Tuples: [{ Members: [{ Name: 'foo\nbar' }] }] },
+                ],
+                Cells: [{ Value: 1 }],
+            };
+            const csv = buildCsvFromCellsetDict([], ['[Year].[Year]'], cellsetWithNewline,
+                { includeHeaders: false });
+            // bare \n inside default lineterminator '\r\n' must trigger quoting.
+            expect(csv).toBe('"foo\nbar",1');
+        });
+
+        it('quotes values containing bare \\r (tm1py csv.writer QUOTE_MINIMAL parity)', () => {
+            const cellsetWithCR: RawCellsetDict = {
+                Cube: { Name: 'C', Dimensions: [{ Name: 'Year' }] },
+                Axes: [
+                    { Cardinality: 1, Tuples: [{ Members: [{ Name: 'foo\rbar' }] }] },
+                ],
+                Cells: [{ Value: 1 }],
+            };
+            const csv = buildCsvFromCellsetDict([], ['[Year].[Year]'], cellsetWithCR,
+                { includeHeaders: false });
+            expect(csv).toBe('"foo\rbar",1');
+        });
+
+        it('prefers Element.Name over member.Name (tm1py Utils.py:641-656)', () => {
+            const cellset: RawCellsetDict = {
+                Cube: { Name: 'C', Dimensions: [{ Name: 'Year' }] },
+                Axes: [
+                    {
+                        Cardinality: 1,
+                        Tuples: [{ Members: [{ Name: 'fallback', Element: { Name: 'preferred' } }] }],
+                    },
+                ],
+                Cells: [{ Value: 1 }],
+            };
+            const csv = buildCsvFromCellsetDict([], ['[Year].[Year]'], cellset,
+                { includeHeaders: false });
+            expect(csv).toBe('preferred,1');
+        });
+
         it('default lineSeparator is CRLF', () => {
             const csv = buildCsvFromCellsetDict(['[Region].[Region]'], ['[Year].[Year]'], raw2x2);
             expect(csv).toContain('\r\n');
@@ -1033,5 +1076,25 @@ describe('extractCellsetCsvIterJson', () => {
 
         const csv = await svc.extractCellsetCsvIterJson('CS1');
         expect(csv).toContain('42');
+    });
+
+    it('rejects when visit() throws (Cells.item.Value before any axes tuples)', async () => {
+        // tm1py raises ZeroDivisionError when divmod(ordinal, len(axes0_list))
+        // sees axes0_list==[] — port mirrors via explicit throw. Stream-data
+        // listener throws don't auto-propagate, so we catch+reject explicitly.
+        const malformedRawData = {
+            Cube: { Name: 'C', Dimensions: [{ Name: 'Year' }, { Name: 'Region' }] },
+            // No Axes population (no Axes.item.Tuples.item.Members.item.Name event
+            // fires before Cells.item.Value).
+            Axes: [],
+            Cells: [{ Value: 42, Ordinal: 0 }]
+        };
+
+        rest.get
+            .mockResolvedValueOnce(mockResp(compositionResp))
+            .mockResolvedValueOnce(mockResp(makeReadableStream(malformedRawData)));
+
+        await expect(svc.extractCellsetCsvIterJson('CS1'))
+            .rejects.toThrow(/division by zero/);
     });
 });

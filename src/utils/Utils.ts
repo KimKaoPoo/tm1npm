@@ -907,7 +907,9 @@ function buildCsvLineItemsFromAxisTuple(
 ): string[] {
     const items: string[] = [];
     for (const member of members) {
-        items.push(member.Name ?? String(member));
+        // tm1py: member["Element"]["Name"] if "Element" in member and member["Element"]
+        // else member["Name"] (Utils.py:641-656). Element is preferred when present.
+        items.push(member?.Element?.Name ?? member.Name ?? String(member));
         if (includeAttributes && member.Attributes) {
             for (const attr of Object.keys(member.Attributes)) {
                 items.push(member.Attributes[attr] !== null && member.Attributes[attr] !== undefined
@@ -993,7 +995,14 @@ function buildHeadersForCsv(
  * Doubles internal quotes.
  */
 function csvEscapeField(value: string, delimiter: string, lineterminator: string): string {
-    if (value.includes(delimiter) || value.includes(lineterminator) || value.includes('"')) {
+    // Python csv.writer with QUOTE_MINIMAL quotes when value contains delimiter,
+    // quotechar, escapechar, OR ANY character in lineterminator (not the
+    // substring as a whole). Default lineterminator '\r\n' → \r alone or \n
+    // alone must trigger quoting. (tm1py Utils.py:495-499)
+    const needsQuote = value.includes(delimiter)
+        || value.includes('"')
+        || [...lineterminator].some(c => value.includes(c));
+    if (needsQuote) {
         return '"' + value.replace(/"/g, '""') + '"';
     }
     return value;
