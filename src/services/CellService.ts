@@ -2171,7 +2171,8 @@ export class CellService {
     private async _getAttributesByDimension(cubeName: string): Promise<Record<string, string[]>> {
         // tm1py _get_attributes_by_dimension (CellService.py:5123-5134) calls
         // get_dimension_names_for_writing(cube) — which excludes the sandbox
-        // dim and other control dims — and element_service.get_element_attribute_names.
+        // dim and other control dims — and element_service.get_element_attribute_names
+        // (the lighter `?$select=Name` form, not the full attribute objects).
         // Exceptions propagate; do NOT swallow them here.
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const { ElementService } = require('./ElementService');
@@ -2179,11 +2180,10 @@ export class CellService {
         const dimensions = await this.getDimensionNamesForWriting(cubeName);
         const result: Record<string, string[]> = {};
         for (const dim of dimensions) {
-            // Skip TM1 control dimensions (names starting with `}`) — tm1py's
-            // get_dimension_names_for_writing already excludes them.
+            // Defensive: getDimensionNamesForWriting should already exclude
+            // `}`-prefixed control dims, but skip if any leak through.
             if (dim.startsWith('}')) continue;
-            const attrs = await elementService.getElementAttributes(dim, dim);
-            result[dim] = (attrs || []).map((a: any) => a.Name ?? a.name ?? String(a));
+            result[dim] = await elementService.getElementAttributeNames(dim, dim);
         }
         return result;
     }

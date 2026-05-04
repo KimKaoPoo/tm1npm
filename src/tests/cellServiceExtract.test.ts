@@ -16,6 +16,7 @@ import {
     sortCoordinates,
     buildContentFromCellsetDict,
     buildCsvFromCellsetDict,
+    TUPLE_KEY_SEPARATOR,
     RawCellsetDict,
 } from '../utils/Utils';
 
@@ -173,7 +174,7 @@ describe('Utils helpers', () => {
             const result = buildContentFromCellsetDict(raw);
             expect(result.size).toBe(4);
             // year=2024, region=NA → ordinal 0
-            expect(result.get('[year].[year].[2024],[region].[region].[na]')).toBeDefined();
+            expect(result.get(`[year].[year].[2024]${TUPLE_KEY_SEPARATOR}[region].[region].[na]`)).toBeDefined();
         });
 
         it('applies top truncation', () => {
@@ -220,6 +221,36 @@ describe('Utils helpers', () => {
             expect(() => buildContentFromCellsetDict(raw, 10)).not.toThrow();
             const result = buildContentFromCellsetDict(raw, 10);
             expect(result.size).toBe(1);
+        });
+
+        it('coordinate tuples with element names containing "," do NOT collide', () => {
+            // tm1py uses Python tuples as dict keys (Utils.py:412); the TS port joins
+            // with TUPLE_KEY_SEPARATOR (\x00), which can't appear in TM1 element names.
+            // Joining with ',' instead would silently merge ['a,b','c'] and ['a','b,c'].
+            const raw: RawCellsetDict = {
+                Cube: { Name: 'C', Dimensions: [{ Name: 'D1' }, { Name: 'D2' }] },
+                Axes: [
+                    {
+                        Cardinality: 2,
+                        Tuples: [
+                            { Members: [{ UniqueName: '[D1].[D1].[a,b]', Element: null as any }] },
+                            { Members: [{ UniqueName: '[D1].[D1].[a]', Element: null as any }] },
+                        ]
+                    },
+                    {
+                        Cardinality: 2,
+                        Tuples: [
+                            { Members: [{ UniqueName: '[D2].[D2].[c]', Element: null as any }] },
+                            { Members: [{ UniqueName: '[D2].[D2].[b,c]', Element: null as any }] },
+                        ]
+                    },
+                ],
+                Cells: [{ Value: 1 }, { Value: 2 }, { Value: 3 }, { Value: 4 }],
+            };
+            const result = buildContentFromCellsetDict(raw);
+            expect(result.size).toBe(4);
+            expect(result.get(`[d1].[d1].[a,b]${TUPLE_KEY_SEPARATOR}[d2].[d2].[c]`)).toBeDefined();
+            expect(result.get(`[d1].[d1].[a]${TUPLE_KEY_SEPARATOR}[d2].[d2].[b,c]`)).toBeDefined();
         });
 
         it('skipSandboxDimension drops Sandboxes first dimension', () => {

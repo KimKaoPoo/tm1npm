@@ -847,6 +847,14 @@ export function sortCoordinates(
 // ─── Content builder (tm1py Utils.py:368-414) ─────────────────────────────
 
 /**
+ * Separator used to flatten tuple coordinates into a single string key for
+ * CaseAndSpaceInsensitiveTuplesDict. NUL (\x00) is illegal in TM1 element
+ * names, so it can never collide with content. Mirrors the role of Python's
+ * native tuple-as-dict-key in tm1py (Utils.py:412-413).
+ */
+export const TUPLE_KEY_SEPARATOR = '\x00';
+
+/**
  * Transform raw cellset data into a CaseAndSpaceInsensitiveTuplesDict.
  * Mirrors tm1py's `build_content_from_cellset_dict` (Utils.py:368-414).
  */
@@ -884,7 +892,11 @@ export function buildContentFromCellsetDict(
             coords.push(...extractUniqueNamesFromMembers(axis.Tuples[idx].Members));
         }
         const sorted = sortCoordinates(cubeDimensions, coords, elementUniqueNames);
-        result.set(sorted.join(','), skipCellProperties ? cell.Value : cell);
+        // tm1py keys content_as_dict by Python tuples (Utils.py:412-413). Joining with ','
+        // collides when element names contain ','. \x00 (NUL) is illegal in TM1 element
+        // names, so it's a safe in-band separator. Callers building keys for .get() must
+        // use the same separator (e.g. coords.join(TUPLE_KEY_SEPARATOR)).
+        result.set(sorted.join(TUPLE_KEY_SEPARATOR), skipCellProperties ? cell.Value : cell);
     }
     return result;
 }
