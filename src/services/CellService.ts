@@ -843,13 +843,12 @@ export class CellService {
         const uniqueName = `tm1py_${crypto.randomBytes(6).toString('hex')}`;
         const fileName = `${uniqueName}.csv`;
 
-        // tm1py's @manage_transaction_log decorator wraps the WHOLE function body, including the
-        // CSV upload. Deactivate before any I/O so a deactivate failure aborts upload+execute,
-        // and put reactivate in the outer finally so it always runs (mirrors decorator semantics).
-        if (options.deactivate_transaction_log) {
-            await this.deactivateTransactionlog(cubeName);
-        }
+        // tm1py's @manage_transaction_log decorator (CellService.py:111-136) puts deactivate
+        // INSIDE the try so a failed deactivate still hits the reactivate in finally.
         try {
+            if (options.deactivate_transaction_log) {
+                await this.deactivateTransactionlog(cubeName);
+            }
             // CSV: tm1py uses csv.writer(QUOTE_ALL, delimiter=','). Quote every field; double
             // internal quotes; replace \r/\n in string values with empty (mirrors tm1py:1463
             // cleanup). Python csv.writer defaults to lineterminator='\r\n' AND writes a
@@ -1099,11 +1098,13 @@ export class CellService {
         // tm1py's @manage_transaction_log decorator wraps the WHOLE write_async (CellService.py:969).
         // The inner _write (line 1015) does NOT forward deactivate/reactivate flags, so per-chunk
         // writes never toggle individually — important when chunks run in parallel because one
-        // chunk reactivating mid-flight would defeat the surrounding deactivate intent.
-        if (options.deactivate_transaction_log) {
-            await this.deactivateTransactionlog(cubeName);
-        }
+        // chunk reactivating mid-flight would defeat the surrounding deactivate intent. Per the
+        // decorator at CellService.py:111-136, the deactivate sits INSIDE the try so reactivate
+        // always runs in finally even if the deactivate itself throws.
         try {
+            if (options.deactivate_transaction_log) {
+                await this.deactivateTransactionlog(cubeName);
+            }
             // Forward only the per-write flags; do NOT forward transaction-log toggles.
             const blobOpts = {
                 sandbox_name: options.sandbox_name,
@@ -1185,12 +1186,12 @@ export class CellService {
             reactivate_transaction_log?: boolean;
         } = {}
     ): Promise<string | undefined> {
-        // tm1py's @manage_transaction_log decorator wraps the WHOLE function body — deactivate
-        // before any helper fetches, reactivate in the outer finally regardless of failure path.
-        if (options.deactivate_transaction_log) {
-            await this.deactivateTransactionlog(cubeName);
-        }
+        // tm1py's @manage_transaction_log decorator (CellService.py:111-136) puts deactivate
+        // INSIDE the try so reactivate always runs in finally even if deactivate itself fails.
         try {
+            if (options.deactivate_transaction_log) {
+                await this.deactivateTransactionlog(cubeName);
+            }
             const isAttributeCube = options.is_attribute_cube
                 ?? cubeName.toLowerCase().startsWith('}elementattributes_');
             const enableSandbox = await this.generateEnableSandboxTi(options.sandbox_name);
