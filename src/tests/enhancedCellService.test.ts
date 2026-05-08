@@ -98,16 +98,52 @@ describe('Enhanced CellService Tests', () => {
             );
         });
 
-        test('writeAsync aggregates per-chunk failures into TM1pyWritePartialFailureException', async () => {
-            const cellset = { 'a,b,c': 1, 'd,e,f': 2 };
+        test('writeAsync aggregates TM1pyWriteFailureException chunks into TM1pyWritePartialFailureException with merged statuses/logs', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { TM1pyWriteFailureException, TM1pyWritePartialFailureException } =
+                require('../exceptions/TM1Exception');
+            const cellset = { 'a,b,c': 1, 'd,e,f': 2, 'g,h,i': 3 };
 
             jest.spyOn(cellService, 'writeThroughBlob')
-                .mockRejectedValueOnce(new Error('chunk1 failed'))
-                .mockResolvedValueOnce(undefined);
+                .mockRejectedValueOnce(new TM1pyWriteFailureException(['HasMinorErrors'], ['log1.log']))
+                .mockResolvedValueOnce(undefined)
+                .mockRejectedValueOnce(new TM1pyWritePartialFailureException(['Aborted'], ['log3.log'], 2));
 
-            await expect(
-                cellService.writeAsync('SalesCube', cellset, { slice_size: 1, max_workers: 2 })
-            ).rejects.toThrow(/partial failure \(1\/2 chunks failed\)/);
+            try {
+                await cellService.writeAsync('SalesCube', cellset, { slice_size: 1, max_workers: 3 });
+                fail('expected writeAsync to throw');
+            } catch (err: any) {
+                expect(err).toBeInstanceOf(TM1pyWritePartialFailureException);
+                // Statuses + log files are concatenated across both failed chunks (tm1py-style merge).
+                expect(err.statuses).toEqual(['HasMinorErrors', 'Aborted']);
+                expect(err.errorLogFiles).toEqual(['log1.log', 'log3.log']);
+                // attempts: 1 (bare WriteFailure) + 2 (partial.attempts) = 3
+                expect(err.attempts).toBe(3);
+            }
+        });
+
+        test('writeAsync hoists transaction-log toggles around the whole job (does NOT forward to chunks)', async () => {
+            const cellset = { 'a,b,c': 1, 'd,e,f': 2 };
+            const deactivateSpy = jest.spyOn(cellService, 'deactivateTransactionlog').mockResolvedValue(undefined);
+            const activateSpy = jest.spyOn(cellService, 'activateTransactionlog').mockResolvedValue(undefined);
+            const blobSpy = jest.spyOn(cellService, 'writeThroughBlob').mockResolvedValue(undefined);
+
+            await cellService.writeAsync('SalesCube', cellset, {
+                slice_size: 1,
+                max_workers: 2,
+                deactivate_transaction_log: true,
+                reactivate_transaction_log: true,
+            });
+
+            // Only ONE deactivate / activate pair around the whole job, not one per chunk.
+            expect(deactivateSpy).toHaveBeenCalledTimes(1);
+            expect(activateSpy).toHaveBeenCalledTimes(1);
+            // Per-chunk options must NOT include transaction-log toggles (would race in parallel).
+            for (const call of blobSpy.mock.calls) {
+                const opts = call[2] as Record<string, unknown>;
+                expect(opts).not.toHaveProperty('deactivate_transaction_log');
+                expect(opts).not.toHaveProperty('reactivate_transaction_log');
+            }
         });
 
         test('writeThroughUnboundProcess emits CellPutN statements via Process body', async () => {

@@ -1096,30 +1096,68 @@ export class CellService {
         // cube's dimension list (would be N HTTP GETs for N chunks).
         const dims = options.dimensions ?? await this.getDimensionNamesForWriting(cubeName);
 
-        const blobOpts = {
-            sandbox_name: options.sandbox_name,
-            increment: options.increment,
-            deactivate_transaction_log: options.deactivate_transaction_log,
-            reactivate_transaction_log: options.reactivate_transaction_log,
-            skip_non_updateable: options.skip_non_updateable,
-            allow_spread: options.allow_spread,
-            remove_blob: options.remove_blob,
-            dimensions: dims,
-        };
+        // tm1py's @manage_transaction_log decorator wraps the WHOLE write_async (CellService.py:969).
+        // The inner _write (line 1015) does NOT forward deactivate/reactivate flags, so per-chunk
+        // writes never toggle individually — important when chunks run in parallel because one
+        // chunk reactivating mid-flight would defeat the surrounding deactivate intent.
+        if (options.deactivate_transaction_log) {
+            await this.deactivateTransactionlog(cubeName);
+        }
+        try {
+            // Forward only the per-write flags; do NOT forward transaction-log toggles.
+            const blobOpts = {
+                sandbox_name: options.sandbox_name,
+                increment: options.increment,
+                skip_non_updateable: options.skip_non_updateable,
+                allow_spread: options.allow_spread,
+                remove_blob: options.remove_blob,
+                dimensions: dims,
+            };
 
-        const failures: unknown[] = [];
-        for (let i = 0; i < chunks.length; i += maxWorkers) {
-            const batch = chunks.slice(i, i + maxWorkers);
-            const results = await Promise.allSettled(
-                batch.map(c => this.writeThroughBlob(cubeName, c, blobOpts))
+            // Aggregate caught chunk failures so we can rebuild a combined
+            // TM1pyWritePartialFailureException with merged statuses / errorLogFiles / attempts —
+            // mirrors tm1py's `itertools.chain(*[e.statuses ...])` / `sum(...)` aggregation
+            // (CellService.py:1047-1057).
+            const failures: (TM1pyWritePartialFailureException | TM1pyWriteFailureException)[] = [];
+            const otherFailures: unknown[] = [];
+            for (let i = 0; i < chunks.length; i += maxWorkers) {
+                const batch = chunks.slice(i, i + maxWorkers);
+                const results = await Promise.allSettled(
+                    batch.map(c => this.writeThroughBlob(cubeName, c, blobOpts))
+                );
+                for (const r of results) {
+                    if (r.status === 'rejected') {
+                        if (r.reason instanceof TM1pyWritePartialFailureException
+                            || r.reason instanceof TM1pyWriteFailureException) {
+                            failures.push(r.reason);
+                        } else {
+                            otherFailures.push(r.reason);
+                        }
+                    }
+                }
+            }
+
+            // Non-TM1pyWrite* exceptions don't fit the merge model — surface the first one as-is
+            // (no equivalent path in tm1py since its inner _write only catches the typed pair).
+            if (otherFailures.length) {
+                throw otherFailures[0];
+            }
+            if (failures.length === 0) {
+                return undefined;
+            }
+
+            const mergedStatuses = failures.flatMap(e => e.statuses);
+            const mergedLogFiles = failures.flatMap(e => e.errorLogFiles);
+            const mergedAttempts = failures.reduce(
+                (sum, e) => sum + (e instanceof TM1pyWritePartialFailureException ? e.attempts : 1),
+                0,
             );
-            for (const r of results) if (r.status === 'rejected') failures.push(r.reason);
+            throw new TM1pyWritePartialFailureException(mergedStatuses, mergedLogFiles, mergedAttempts);
+        } finally {
+            if (options.reactivate_transaction_log) {
+                await this.activateTransactionlog(cubeName);
+            }
         }
-        if (failures.length) {
-            const messages = failures.map(f => (f as { message?: string })?.message ?? String(f));
-            throw new TM1pyWritePartialFailureException(messages, [], chunks.length);
-        }
-        return undefined;
     }
 
     /**
