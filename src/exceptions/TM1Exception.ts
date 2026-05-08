@@ -40,6 +40,9 @@ export class TM1VersionDeprecationException extends TM1Exception {
 export class TM1pyWriteFailureException extends TM1Exception {
     public statuses: string[];
     public errorLogFiles: (string | null)[];
+    // Snake-case alias for callers porting code from tm1py (which exposes `error_log_files`).
+    // Points at the SAME array as `errorLogFiles` so mutations stay in sync.
+    public error_log_files: (string | null)[];
 
     constructor(statuses: string[], errorLogFiles: (string | null)[]) {
         super(
@@ -49,12 +52,15 @@ export class TM1pyWriteFailureException extends TM1Exception {
         this.name = 'TM1pyWriteFailureException';
         this.statuses = statuses;
         this.errorLogFiles = errorLogFiles;
+        this.error_log_files = errorLogFiles;
     }
 }
 
 export class TM1pyWritePartialFailureException extends TM1Exception {
     public statuses: string[];
     public errorLogFiles: (string | null)[];
+    // Snake-case alias for tm1py compatibility (see TM1pyWriteFailureException above).
+    public error_log_files: (string | null)[];
     public attempts: number;
 
     constructor(statuses: string[], errorLogFiles: (string | null)[], attempts: number) {
@@ -65,6 +71,7 @@ export class TM1pyWritePartialFailureException extends TM1Exception {
         this.name = 'TM1pyWritePartialFailureException';
         this.statuses = statuses;
         this.errorLogFiles = errorLogFiles;
+        this.error_log_files = errorLogFiles;
         this.attempts = attempts;
     }
 }

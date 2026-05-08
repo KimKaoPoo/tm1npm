@@ -189,6 +189,10 @@ export interface WriteOptions {
     remove_blob?: boolean;
     clear_view?: string;
     is_attribute_cube?: boolean;
+    // tm1py write() takes `dimensions` as a top-level param (CellService.py:1177); on the
+    // tm1npm options-only API we expose it on WriteOptions so new callers can forward it.
+    // The legacy 4-arg `write(cube, cells, dims, opts)` form still works (sniffed at runtime).
+    dimensions?: string[];
 }
 
 export interface MDXViewOptions {
@@ -416,7 +420,9 @@ export class CellService {
     ): Promise<any> {
         const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
         let url = formatUrl("/Cubes('{}')/tm1.Update", cubeName);
-        if (sandboxName) url += `?!sandbox=${encodeURIComponent(sandboxName)}`;
+        // tm1py add_url_parameters (Utils.py:1011-1030) only doubles single quotes; it does NOT
+        // percent-encode the value. Match that exactly so the wire request is byte-identical.
+        if (sandboxName) url += `?!sandbox=${escapeODataValue(sandboxName)}`;
         const body: Record<string, unknown> = {
             Cells: [{
                 'Tuple@odata.bind': dims.map((d, i) =>
@@ -475,6 +481,8 @@ export class CellService {
             // Legacy 4-arg shape `write(cube, cells, undefined, opts)`.
             options = legacyOptions;
         }
+        // Honor options.dimensions when the legacy positional dims arg wasn't supplied.
+        if (dimensions === undefined) dimensions = options.dimensions;
 
         if (options.clear_view && !options.use_blob) {
             throw new Error("'clear_view' can only be used in conjunction with 'use_blob'");
