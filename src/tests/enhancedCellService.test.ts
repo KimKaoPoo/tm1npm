@@ -147,12 +147,15 @@ describe('Enhanced CellService Tests', () => {
         });
 
         test('writeThroughUnboundProcess emits CellPutN statements via Process body', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { CaseAndSpaceInsensitiveDict } = require('../utils/Utils');
             const cellset = { '2024,Actual,London': 100 };
 
             // Stub out the auto-fetch of measure dimension element types so the test stays
-            // hermetic. The private helper looks up the measure dim then queries element types;
-            // returning an empty map is fine — the statement builder defaults to 'Numeric'.
-            jest.spyOn(cellService as any, '_fetchMeasureDimensionElementTypes').mockResolvedValue({});
+            // hermetic. The helper returns a CaseAndSpaceInsensitiveDict; an empty one is fine —
+            // the statement builder defaults to 'Numeric' for unknown measures.
+            jest.spyOn(cellService as any, '_fetchMeasureDimensionElementTypes')
+                .mockResolvedValue(new CaseAndSpaceInsensitiveDict());
 
             mockRestService.post.mockResolvedValue(createMockResponse({
                 ProcessExecuteStatusCode: 'CompletedSuccessfully',

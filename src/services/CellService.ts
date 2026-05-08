@@ -15,6 +15,7 @@ import { Process } from '../objects/Process';
 import { TM1Exception, TM1pyWriteFailureException, TM1pyWritePartialFailureException } from '../exceptions/TM1Exception';
 import {
     formatUrl, escapeODataValue, lowerAndDropSpaces, extractCompactJsonCellset, resemblesMdx, getCube,
+    CaseAndSpaceInsensitiveDict,
     CaseAndSpaceInsensitiveTuplesDict,
     RawCellsetDict,
     buildContentFromCellsetDict,
@@ -212,6 +213,20 @@ export interface MDXViewOptions {
      */
     use_compact_json?: boolean;
     mdx_headers?: boolean;
+}
+
+// tm1py uses CaseAndSpaceInsensitiveDict for measure-element lookups so callers can pass
+// "Comment" / "comment" / "Net Sales" / "netsales" interchangeably (matching how TM1 dimension
+// elements are referenced). Internal callers receive the case-insensitive dict; users of the
+// public WriteOptions surface may also supply a plain object — wrap it via toCaseInsensitiveDict
+// before any lookup.
+type MeasureDimensionElementsMap = CaseAndSpaceInsensitiveDict<string> | Record<string, string>;
+
+function toCaseInsensitiveDict(map: MeasureDimensionElementsMap): CaseAndSpaceInsensitiveDict<string> {
+    if (map instanceof CaseAndSpaceInsensitiveDict) return map;
+    const dict = new CaseAndSpaceInsensitiveDict<string>();
+    for (const [k, v] of Object.entries(map)) dict.set(k, v);
+    return dict;
 }
 
 export class CellService {
@@ -1108,9 +1123,15 @@ export class CellService {
     public async writeAsync(
         cubeName: string,
         cellsetAsDict: CellsetDict,
+        // tm1py write_async signature (CellService.py:970-984) exposes both `precision` and
+        // `measure_dimension_elements`. tm1py forwards them through write(use_blob=True) to
+        // write_through_blob via **kwargs, where they are silently dropped (the blob TI process
+        // doesn't honor them). We expose the same fields for API parity / mechanical port-ability,
+        // and likewise drop them in the blob path.
         options: Pick<WriteOptions,
             'sandbox_name' | 'increment' | 'deactivate_transaction_log' |
-            'reactivate_transaction_log' | 'skip_non_updateable' | 'allow_spread' | 'remove_blob'>
+            'reactivate_transaction_log' | 'skip_non_updateable' | 'allow_spread' | 'remove_blob' |
+            'precision' | 'measure_dimension_elements'>
             & { slice_size?: number; max_workers?: number; dimensions?: string[] } = {}
     ): Promise<string | undefined> {
         const sliceSize = options.slice_size ?? 250_000;
@@ -1227,8 +1248,13 @@ export class CellService {
                 ?? cubeName.toLowerCase().startsWith('}elementattributes_');
             const enableSandbox = await this.generateEnableSandboxTi(options.sandbox_name);
 
-            let measureDimensionElements: Record<string, string> | undefined = options.measure_dimension_elements;
-            if (!measureDimensionElements) {
+            // Lookups against the user's raw element-name coordinates need to be case-and-space
+            // insensitive (TM1 element names are matched that way). Wrap any user-supplied plain
+            // object so the dict's normalize-on-get behavior applies uniformly.
+            let measureDimensionElements: CaseAndSpaceInsensitiveDict<string>;
+            if (options.measure_dimension_elements) {
+                measureDimensionElements = toCaseInsensitiveDict(options.measure_dimension_elements);
+            } else {
                 // tm1py CellService.py:1906-1914: resolve measure dimension via CubeService, then
                 // fetch the {elementName: actualType} dict from ElementService — preserving real
                 // element types (Numeric/String/Consolidated) so _buildCellUpdateStatements emits
@@ -1247,13 +1273,13 @@ export class CellService {
                     cellsetAsDict,
                     precision: options.precision,
                     skipNonUpdateable: options.skip_non_updateable ?? false,
-                    measureDimensionElements: measureDimensionElements ?? {},
+                    measureDimensionElements,
                 })
                 : CellService._buildCellUpdateStatements({
                     cubeName,
                     cellsetAsDict,
                     increment: options.increment ?? false,
-                    measureDimensionElements: measureDimensionElements ?? {},
+                    measureDimensionElements,
                     precision: options.precision,
                     skipNonUpdateable: options.skip_non_updateable ?? false,
                     dimensions: dims,
@@ -1313,7 +1339,7 @@ export class CellService {
         cubeName: string;
         cellsetAsDict: CellsetDict;
         increment: boolean;
-        measureDimensionElements: Record<string, string>;
+        measureDimensionElements: CaseAndSpaceInsensitiveDict<string>;
         precision?: number;
         skipNonUpdateable: boolean;
         dimensions?: string[];
@@ -1323,11 +1349,11 @@ export class CellService {
         for (const [coordKey, value] of Object.entries(args.cellsetAsDict)) {
             const coordinates = coordKey.split(',');
             let measureElement = coordinates[coordinates.length - 1];
-            let elementType = args.measureDimensionElements[measureElement];
+            let elementType = args.measureDimensionElements.get(measureElement);
             if (elementType === undefined) {
                 if (measureElement.includes(':')) {
                     measureElement = measureElement.split(':')[1];
-                    elementType = args.measureDimensionElements[measureElement] ?? 'Numeric';
+                    elementType = args.measureDimensionElements.get(measureElement) ?? 'Numeric';
                 } else {
                     elementType = 'Numeric';
                 }
@@ -1419,7 +1445,7 @@ export class CellService {
         cellsetAsDict: CellsetDict;
         precision?: number;
         skipNonUpdateable: boolean;
-        measureDimensionElements: Record<string, string>;
+        measureDimensionElements: CaseAndSpaceInsensitiveDict<string>;
     }): string[] {
         const dimensionName = args.cubeName.slice(19); // length of "}ElementAttributes_"
         const statements: string[] = [];
@@ -1439,11 +1465,11 @@ export class CellService {
             }
             let attributeName = coordinates[coordinates.length - 1];
 
-            let attributeType: string | undefined = args.measureDimensionElements[attributeName];
+            let attributeType: string | undefined = args.measureDimensionElements.get(attributeName);
             if (attributeType === undefined) {
                 if (attributeName.includes(':')) {
                     attributeName = attributeName.split(':')[1];
-                    attributeType = args.measureDimensionElements[attributeName] ?? 'String';
+                    attributeType = args.measureDimensionElements.get(attributeName) ?? 'String';
                 } else {
                     attributeType = 'String';
                 }
@@ -3042,7 +3068,7 @@ export class CellService {
      * (CellService.py:1906-1914) — returns the real element type per element so callers can
      * dispatch CellPutN vs CellPutS correctly.
      */
-    private async _fetchMeasureDimensionElementTypes(cubeName: string): Promise<Record<string, string>> {
+    private async _fetchMeasureDimensionElementTypes(cubeName: string): Promise<CaseAndSpaceInsensitiveDict<string>> {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const { CubeService } = require('./CubeService');
         // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -3050,13 +3076,11 @@ export class CellService {
         const cubeService = new CubeService(this.rest);
         const elementService = new ElementService(this.rest);
         const measureDimension: string = await cubeService.getMeasureDimension(cubeName);
-        const typesMap = await elementService.getElementTypesFromAllHierarchies(measureDimension);
-        const result: Record<string, string> = {};
-        // CaseAndSpaceInsensitiveDict exposes entries() like a Map; flatten to a plain object.
-        for (const [name, type] of typesMap.entries()) {
-            result[name] = type;
-        }
-        return result;
+        // tm1py returns a CaseAndSpaceInsensitiveDict so callers' element-name lookups work
+        // regardless of casing/spaces. Returning the dict directly preserves that semantics —
+        // the prior implementation flattened to a plain object using the dict's normalized keys,
+        // which then missed every lookup using the raw element name from the user's coordinate.
+        return await elementService.getElementTypesFromAllHierarchies(measureDimension);
     }
 
     /**
