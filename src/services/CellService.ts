@@ -490,11 +490,34 @@ export class CellService {
         // tm1py write() returns Optional[str] — the changeset id from the underlying call (or None).
         // Forward whatever the routed method returns so future changeset wiring (notably in
         // writeThroughCellset, which is intentionally out of scope for #62) propagates through.
+        // Mirror tm1py's selective kwarg forwarding (CellService.py:1226-1268) instead of spreading
+        // the whole WriteOptions — keeps each inner method's API surface minimal and explicit.
         if (options.use_ti) {
-            return await this.writeThroughUnboundProcess(cubeName, cellsetAsDict, { ...options, dimensions });
+            return await this.writeThroughUnboundProcess(cubeName, cellsetAsDict, {
+                increment: options.increment,
+                sandbox_name: options.sandbox_name,
+                deactivate_transaction_log: options.deactivate_transaction_log,
+                reactivate_transaction_log: options.reactivate_transaction_log,
+                precision: options.precision,
+                skip_non_updateable: options.skip_non_updateable,
+                measure_dimension_elements: options.measure_dimension_elements,
+                is_attribute_cube: options.is_attribute_cube,
+                dimensions,
+                allow_spread: options.allow_spread,
+            });
         }
         if (options.use_blob) {
-            return await this.writeThroughBlob(cubeName, cellsetAsDict, { ...options, dimensions });
+            return await this.writeThroughBlob(cubeName, cellsetAsDict, {
+                increment: options.increment,
+                sandbox_name: options.sandbox_name,
+                deactivate_transaction_log: options.deactivate_transaction_log,
+                reactivate_transaction_log: options.reactivate_transaction_log,
+                skip_non_updateable: options.skip_non_updateable,
+                dimensions,
+                remove_blob: options.remove_blob,
+                allow_spread: options.allow_spread,
+                clear_view: options.clear_view,
+            });
         }
         return await this.writeThroughCellset(cubeName, cellsetAsDict, dimensions, options);
     }
