@@ -479,16 +479,16 @@ export class CellService {
         if (options.clear_view && !options.use_blob) {
             throw new Error("'clear_view' can only be used in conjunction with 'use_blob'");
         }
+        // tm1py write() returns Optional[str] — the changeset id from the underlying call (or None).
+        // Forward whatever the routed method returns so future changeset wiring (notably in
+        // writeThroughCellset, which is intentionally out of scope for #62) propagates through.
         if (options.use_ti) {
-            await this.writeThroughUnboundProcess(cubeName, cellsetAsDict, { ...options, dimensions });
-            return undefined;
+            return await this.writeThroughUnboundProcess(cubeName, cellsetAsDict, { ...options, dimensions });
         }
         if (options.use_blob) {
-            await this.writeThroughBlob(cubeName, cellsetAsDict, { ...options, dimensions });
-            return undefined;
+            return await this.writeThroughBlob(cubeName, cellsetAsDict, { ...options, dimensions });
         }
-        await this.writeThroughCellset(cubeName, cellsetAsDict, dimensions, options);
-        return undefined;
+        return await this.writeThroughCellset(cubeName, cellsetAsDict, dimensions, options);
     }
 
     private async writeThroughCellset(
@@ -496,7 +496,7 @@ export class CellService {
         cellsetAsDict: CellsetDict,
         dimensions?: string[],
         options: WriteOptions = {}
-    ): Promise<void> {
+    ): Promise<string | undefined> {
         const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
         const cells = Object.entries(cellsetAsDict).map(([coordinates, value]) => {
             const elementArray = coordinates.split(',').map(s => s.trim());
@@ -519,6 +519,11 @@ export class CellService {
         if (options.allow_spread) body.AllowSpread = true;
 
         await this.rest.post(url, JSON.stringify(body));
+        // tm1py write_through_cellset returns the changeset string from write_values_through_cellset
+        // (CellService.py:1292). The current tm1npm impl POSTs directly to /tm1.Update without
+        // beginning a changeset; surface undefined and rely on a follow-up to refactor through
+        // writeValuesThroughCellset. Out of scope for #62.
+        return undefined;
     }
 
     /**
@@ -826,7 +831,7 @@ export class CellService {
             deactivate_transaction_log?: boolean;
             reactivate_transaction_log?: boolean;
         } = {}
-    ): Promise<void> {
+    ): Promise<string | undefined> {
         const removeBlob = options.remove_blob ?? true;
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const { FileService } = require('./FileService');
@@ -900,6 +905,9 @@ export class CellService {
                 await this.activateTransactionlog(cubeName);
             }
         }
+        // tm1py write_through_blob returns None implicitly. Returning undefined so write() can
+        // route through `return await` consistently across all three write strategies.
+        return undefined;
     }
 
     /**
@@ -1083,6 +1091,11 @@ export class CellService {
             chunks.push(Object.fromEntries(entries.slice(i, i + sliceSize)));
         }
 
+        // Mirror tm1py write_async (CellService.py:1004-1005): prefetch dimensions ONCE before the
+        // chunk loop so each parallel writeThroughBlob call doesn't independently re-fetch the
+        // cube's dimension list (would be N HTTP GETs for N chunks).
+        const dims = options.dimensions ?? await this.getDimensionNamesForWriting(cubeName);
+
         const blobOpts = {
             sandbox_name: options.sandbox_name,
             increment: options.increment,
@@ -1091,7 +1104,7 @@ export class CellService {
             skip_non_updateable: options.skip_non_updateable,
             allow_spread: options.allow_spread,
             remove_blob: options.remove_blob,
-            dimensions: options.dimensions,
+            dimensions: dims,
         };
 
         const failures: unknown[] = [];
@@ -1133,7 +1146,7 @@ export class CellService {
             deactivate_transaction_log?: boolean;
             reactivate_transaction_log?: boolean;
         } = {}
-    ): Promise<void> {
+    ): Promise<string | undefined> {
         // tm1py's @manage_transaction_log decorator wraps the WHOLE function body — deactivate
         // before any helper fetches, reactivate in the outer finally regardless of failure path.
         if (options.deactivate_transaction_log) {
@@ -1211,6 +1224,9 @@ export class CellService {
                 await this.activateTransactionlog(cubeName);
             }
         }
+        // tm1py write_through_unbound_process returns None implicitly. Returning undefined so
+        // write() can route through `return await` consistently across all three write strategies.
+        return undefined;
     }
 
     /**
