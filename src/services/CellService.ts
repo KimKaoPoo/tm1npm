@@ -838,57 +838,64 @@ export class CellService {
         const uniqueName = `tm1py_${crypto.randomBytes(6).toString('hex')}`;
         const fileName = `${uniqueName}.csv`;
 
-        // CSV: tm1py uses csv.writer(QUOTE_ALL, delimiter=','). Quote every field; double internal
-        // quotes; replace \r/\n in string values with empty (mirrors tm1py:1463 cleanup).
-        const csvLines: string[] = [];
-        for (const [coordKey, value] of Object.entries(cellsetAsDict)) {
-            const elements = coordKey.split(',');
-            const cleanedValue = typeof value === 'string'
-                ? value.replace(/[\r\n]/g, '')
-                : (value === null || value === undefined ? '' : String(value));
-            const fields = [...elements, cleanedValue].map(s =>
-                `"${String(s).replace(/"/g, '""')}"`
-            );
-            csvLines.push(fields.join(','));
-        }
-        // Python csv.writer defaults to lineterminator='\r\n' AND writes a terminator after every
-        // row (including the last). Matching exactly so the bytes-on-wire are identical to tm1py.
-        const csvBody = csvLines.length > 0 ? csvLines.join('\r\n') + '\r\n' : '';
-        await fileService.create(fileName, Buffer.from(csvBody, 'utf-8'));
-
+        // tm1py's @manage_transaction_log decorator wraps the WHOLE function body, including the
+        // CSV upload. Deactivate before any I/O so a deactivate failure aborts upload+execute,
+        // and put reactivate in the outer finally so it always runs (mirrors decorator semantics).
         if (options.deactivate_transaction_log) {
             await this.deactivateTransactionlog(cubeName);
         }
         try {
-            const proc = await this._buildBlobToCubeProcess({
-                cubeName,
-                processName: uniqueName,
-                blobFilename: fileName,
-                dimensions: dims,
-                increment: options.increment ?? false,
-                skipNonUpdateable: options.skip_non_updateable ?? false,
-                sandboxName: options.sandbox_name,
-                allowSpread: options.allow_spread ?? false,
-                clearView: options.clear_view,
-            });
-            const response = await this.rest.post(
-                '/ExecuteProcessWithReturn?$expand=*',
-                JSON.stringify({ Process: proc.bodyAsDict })
-            );
-            const status: string = response?.data?.ProcessExecuteStatusCode ?? 'Unknown';
-            if (status !== 'CompletedSuccessfully') {
-                const logFile = response?.data?.ErrorLogFile?.Filename ?? null;
-                if (status === 'HasMinorErrors') {
-                    throw new TM1pyWritePartialFailureException([status], [logFile], 1);
+            // CSV: tm1py uses csv.writer(QUOTE_ALL, delimiter=','). Quote every field; double
+            // internal quotes; replace \r/\n in string values with empty (mirrors tm1py:1463
+            // cleanup). Python csv.writer defaults to lineterminator='\r\n' AND writes a
+            // terminator after every row (including the last) — match exactly.
+            const csvLines: string[] = [];
+            for (const [coordKey, value] of Object.entries(cellsetAsDict)) {
+                const elements = coordKey.split(',');
+                const cleanedValue = typeof value === 'string'
+                    ? value.replace(/[\r\n]/g, '')
+                    : (value === null || value === undefined ? '' : String(value));
+                const fields = [...elements, cleanedValue].map(s =>
+                    `"${String(s).replace(/"/g, '""')}"`
+                );
+                csvLines.push(fields.join(','));
+            }
+            const csvBody = csvLines.length > 0 ? csvLines.join('\r\n') + '\r\n' : '';
+            await fileService.create(fileName, Buffer.from(csvBody, 'utf-8'));
+
+            try {
+                const proc = await this._buildBlobToCubeProcess({
+                    cubeName,
+                    processName: uniqueName,
+                    blobFilename: fileName,
+                    dimensions: dims,
+                    increment: options.increment ?? false,
+                    skipNonUpdateable: options.skip_non_updateable ?? false,
+                    sandboxName: options.sandbox_name,
+                    allowSpread: options.allow_spread ?? false,
+                    clearView: options.clear_view,
+                });
+                const response = await this.rest.post(
+                    '/ExecuteProcessWithReturn?$expand=*',
+                    JSON.stringify({ Process: proc.bodyAsDict })
+                );
+                const status: string = response?.data?.ProcessExecuteStatusCode ?? 'Unknown';
+                if (status !== 'CompletedSuccessfully') {
+                    const logFile = response?.data?.ErrorLogFile?.Filename ?? null;
+                    if (status === 'HasMinorErrors') {
+                        throw new TM1pyWritePartialFailureException([status], [logFile], 1);
+                    }
+                    throw new TM1pyWriteFailureException([status], [logFile]);
                 }
-                throw new TM1pyWriteFailureException([status], [logFile]);
+            } finally {
+                // Mirror tm1py CellService.py:1491-1493: bare `finally` deletes the blob; a
+                // delete failure surfaces (and may overwrite the original write error). Per
+                // CLAUDE.md's strict parity rule, do NOT suppress.
+                if (removeBlob) {
+                    await fileService.delete(fileName);
+                }
             }
         } finally {
-            if (removeBlob) {
-                // tm1py does not suppress; we tolerate cleanup failures so that the original error
-                // (if any) propagates instead of being masked by a delete failure.
-                try { await fileService.delete(fileName); } catch { /* ignore */ }
-            }
             if (options.reactivate_transaction_log) {
                 await this.activateTransactionlog(cubeName);
             }
@@ -1127,50 +1134,49 @@ export class CellService {
             reactivate_transaction_log?: boolean;
         } = {}
     ): Promise<void> {
-        const isAttributeCube = options.is_attribute_cube
-            ?? cubeName.toLowerCase().startsWith('}elementattributes_');
-        const enableSandbox = await this.generateEnableSandboxTi(options.sandbox_name);
-
-        let measureDimensionElements: Record<string, string> | undefined = options.measure_dimension_elements;
-        if (!measureDimensionElements) {
-            // tm1py returns a flat dict {elementName: type}. The existing tm1npm helper returns
-            // {dimension: string[]}, so flatten it (every measure element treated as Numeric,
-            // matching tm1py's element_service.get_element_types_from_all_hierarchies fallback).
-            const fetched = await this.getElementsFromAllMeasureHierarchies(cubeName);
-            measureDimensionElements = {};
-            for (const elements of Object.values(fetched)) {
-                for (const e of elements) measureDimensionElements[e] = 'Numeric';
-            }
-        }
-
-        let dims = options.dimensions;
-        if (!isAttributeCube && !dims && options.allow_spread) {
-            dims = await this.getDimensionNamesForWriting(cubeName);
-        }
-
-        const statements = isAttributeCube
-            ? CellService._buildAttributeUpdateStatements({
-                cubeName,
-                cellsetAsDict,
-                precision: options.precision,
-                skipNonUpdateable: options.skip_non_updateable ?? false,
-                measureDimensionElements: measureDimensionElements ?? {},
-            })
-            : CellService._buildCellUpdateStatements({
-                cubeName,
-                cellsetAsDict,
-                increment: options.increment ?? false,
-                measureDimensionElements: measureDimensionElements ?? {},
-                precision: options.precision,
-                skipNonUpdateable: options.skip_non_updateable ?? false,
-                dimensions: dims,
-                allowSpread: options.allow_spread ?? false,
-            });
-
+        // tm1py's @manage_transaction_log decorator wraps the WHOLE function body — deactivate
+        // before any helper fetches, reactivate in the outer finally regardless of failure path.
         if (options.deactivate_transaction_log) {
             await this.deactivateTransactionlog(cubeName);
         }
         try {
+            const isAttributeCube = options.is_attribute_cube
+                ?? cubeName.toLowerCase().startsWith('}elementattributes_');
+            const enableSandbox = await this.generateEnableSandboxTi(options.sandbox_name);
+
+            let measureDimensionElements: Record<string, string> | undefined = options.measure_dimension_elements;
+            if (!measureDimensionElements) {
+                // tm1py CellService.py:1906-1914: resolve measure dimension via CubeService, then
+                // fetch the {elementName: actualType} dict from ElementService — preserving real
+                // element types (Numeric/String/Consolidated) so _buildCellUpdateStatements emits
+                // CellPutS for string measures instead of falling through to CellPutN.
+                measureDimensionElements = await this._fetchMeasureDimensionElementTypes(cubeName);
+            }
+
+            let dims = options.dimensions;
+            if (!isAttributeCube && !dims && options.allow_spread) {
+                dims = await this.getDimensionNamesForWriting(cubeName);
+            }
+
+            const statements = isAttributeCube
+                ? CellService._buildAttributeUpdateStatements({
+                    cubeName,
+                    cellsetAsDict,
+                    precision: options.precision,
+                    skipNonUpdateable: options.skip_non_updateable ?? false,
+                    measureDimensionElements: measureDimensionElements ?? {},
+                })
+                : CellService._buildCellUpdateStatements({
+                    cubeName,
+                    cellsetAsDict,
+                    increment: options.increment ?? false,
+                    measureDimensionElements: measureDimensionElements ?? {},
+                    precision: options.precision,
+                    skipNonUpdateable: options.skip_non_updateable ?? false,
+                    dimensions: dims,
+                    allowSpread: options.allow_spread ?? false,
+                });
+
             const version = this.rest.version ?? "11.8.0";
             const maxStmts = Process.maxStatements(version);
             const successes: boolean[] = [];
@@ -2941,6 +2947,29 @@ export class CellService {
             return cellsetAsDict;
         }
 
+        return result;
+    }
+
+    /**
+     * Resolve the measure dimension for a cube, then return the {elementName: type} map across
+     * all hierarchies. Mirrors tm1py CellService.get_elements_from_all_measure_hierarchies
+     * (CellService.py:1906-1914) — returns the real element type per element so callers can
+     * dispatch CellPutN vs CellPutS correctly.
+     */
+    private async _fetchMeasureDimensionElementTypes(cubeName: string): Promise<Record<string, string>> {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { CubeService } = require('./CubeService');
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const { ElementService } = require('./ElementService');
+        const cubeService = new CubeService(this.rest);
+        const elementService = new ElementService(this.rest);
+        const measureDimension: string = await cubeService.getMeasureDimension(cubeName);
+        const typesMap = await elementService.getElementTypesFromAllHierarchies(measureDimension);
+        const result: Record<string, string> = {};
+        // CaseAndSpaceInsensitiveDict exposes entries() like a Map; flatten to a plain object.
+        for (const [name, type] of typesMap.entries()) {
+            result[name] = type;
+        }
         return result;
     }
 

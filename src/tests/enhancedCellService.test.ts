@@ -113,8 +113,10 @@ describe('Enhanced CellService Tests', () => {
         test('writeThroughUnboundProcess emits CellPutN statements via Process body', async () => {
             const cellset = { '2024,Actual,London': 100 };
 
-            // Stub out the auto-fetch of measure dimension elements so the test stays hermetic.
-            jest.spyOn(cellService, 'getElementsFromAllMeasureHierarchies').mockResolvedValue({});
+            // Stub out the auto-fetch of measure dimension element types so the test stays
+            // hermetic. The private helper looks up the measure dim then queries element types;
+            // returning an empty map is fine — the statement builder defaults to 'Numeric'.
+            jest.spyOn(cellService as any, '_fetchMeasureDimensionElementTypes').mockResolvedValue({});
 
             mockRestService.post.mockResolvedValue(createMockResponse({
                 ProcessExecuteStatusCode: 'CompletedSuccessfully',
