@@ -219,7 +219,9 @@ describe('HierarchyService — Issue #38 new methods', () => {
             // The cube name '}HierarchyProperties' gets URL-encoded as '%7DHierarchyProperties'
             expect(url).toContain('HierarchyProperties');
             const parsed = JSON.parse(body);
-            expect(parsed.Cells[0].Value).toBe('RootMember');
+            // tm1py writeValue puts Value at the top level of the body (not in Cells[0]); see
+            // tm1py CellService.py:1169 (`body_as_dict["Value"] = ...`).
+            expect(parsed.Value).toBe('RootMember');
         });
 
         test('should clear default member when memberName is empty string (API approach)', async () => {

@@ -12,7 +12,7 @@ import { SandboxService } from './SandboxService';
 import { OperationStatus, OperationType } from './AsyncOperationService';
 import { MDXView } from '../objects/MDXView';
 import { Process } from '../objects/Process';
-import { TM1Exception } from '../exceptions/TM1Exception';
+import { TM1Exception, TM1pyWriteFailureException, TM1pyWritePartialFailureException } from '../exceptions/TM1Exception';
 import {
     formatUrl, escapeODataValue, lowerAndDropSpaces, extractCompactJsonCellset, resemblesMdx, getCube,
     CaseAndSpaceInsensitiveTuplesDict,
@@ -22,6 +22,8 @@ import {
     csvRowToString,
     dimensionNamesFromElementUniqueNames,
     CsvDialect,
+    frameToSignificantDigits,
+    verifyVersion,
 } from '../utils/Utils';
 
 // ─── Public interface types for CellService extract methods ───────────────
@@ -184,6 +186,9 @@ export interface WriteOptions {
     deactivate_transaction_log?: boolean;
     reactivate_transaction_log?: boolean;
     use_changeset?: boolean;
+    remove_blob?: boolean;
+    clear_view?: string;
+    is_attribute_cube?: boolean;
 }
 
 export interface MDXViewOptions {
@@ -397,27 +402,31 @@ export class CellService {
     }
 
     /**
-     * Write a single cell value to a cube
+     * Write a single cell value to a cube. Mirrors tm1py write_value (CellService.py:1142-1171):
+     * value is the FIRST positional argument; the body's Value lives at the top level (not nested
+     * inside Cells[0]); the sandbox is appended via the !sandbox= write-side query parameter; and
+     * Python's truthiness rule (`str(value) if value else ""`) collapses 0/null/'' to ''.
      */
     public async writeValue(
-        cubeName: string,
-        coordinates: string[],
         value: any,
+        cubeName: string,
+        elementTuple: string[],
         dimensions?: string[],
-        sandbox_name?: string
-    ): Promise<void> {
+        sandboxName?: string
+    ): Promise<any> {
         const dims = dimensions || await this.getDimensionNamesForWriting(cubeName);
-        const url = formatUrl("/Cubes('{}')/tm1.Update", cubeName)
-            + (sandbox_name ? `?$sandbox=${sandbox_name}` : '');
-        const body = {
+        let url = formatUrl("/Cubes('{}')/tm1.Update", cubeName);
+        if (sandboxName) url += `?!sandbox=${encodeURIComponent(sandboxName)}`;
+        const body: Record<string, unknown> = {
             Cells: [{
                 'Tuple@odata.bind': dims.map((d, i) =>
-                    `Dimensions('${escapeODataValue(d)}')/Hierarchies('${escapeODataValue(d)}')/Elements('${escapeODataValue(coordinates[i])}')`
+                    formatUrl("Dimensions('{}')/Hierarchies('{}')/Elements('{}')",
+                        escapeODataValue(d), escapeODataValue(d), escapeODataValue(elementTuple[i]))
                 ),
-                Value: value
-            }]
+            }],
+            Value: value ? String(value) : '',
         };
-        await this.rest.post(url, JSON.stringify(body));
+        return await this.rest.post(url, JSON.stringify(body));
     }
 
     /**
@@ -443,16 +452,43 @@ export class CellService {
     }
 
     /**
-     * Write multiple cell values using dictionary format
-     * {coordinate_string: value} format for bulk writes
+     * Write multiple cell values. Mirrors tm1py write (CellService.py:1173-1269): routes to
+     * writeThroughUnboundProcess when use_ti=true, writeThroughBlob when use_blob=true, else
+     * writeThroughCellset. The third positional argument tolerates the legacy `dimensions[]`
+     * form so existing callers like `write(cube, cells, undefined, opts)` keep working; the
+     * tm1py-aligned shape is `write(cube, cells, options)`.
      */
     public async write(
         cubeName: string,
         cellsetAsDict: CellsetDict,
-        dimensions?: string[],
-        options: WriteOptions = {}
-    ): Promise<void> {
-        return this.writeThroughCellset(cubeName, cellsetAsDict, dimensions, options);
+        optionsOrDimensions?: WriteOptions | string[],
+        legacyOptions?: WriteOptions
+    ): Promise<string | undefined> {
+        let dimensions: string[] | undefined;
+        let options: WriteOptions = {};
+        if (Array.isArray(optionsOrDimensions)) {
+            dimensions = optionsOrDimensions;
+            options = legacyOptions ?? {};
+        } else if (optionsOrDimensions !== undefined) {
+            options = optionsOrDimensions;
+        } else if (legacyOptions !== undefined) {
+            // Legacy 4-arg shape `write(cube, cells, undefined, opts)`.
+            options = legacyOptions;
+        }
+
+        if (options.clear_view && !options.use_blob) {
+            throw new Error("'clear_view' can only be used in conjunction with 'use_blob'");
+        }
+        if (options.use_ti) {
+            await this.writeThroughUnboundProcess(cubeName, cellsetAsDict, { ...options, dimensions });
+            return undefined;
+        }
+        if (options.use_blob) {
+            await this.writeThroughBlob(cubeName, cellsetAsDict, { ...options, dimensions });
+            return undefined;
+        }
+        await this.writeThroughCellset(cubeName, cellsetAsDict, dimensions, options);
+        return undefined;
     }
 
     private async writeThroughCellset(
@@ -769,114 +805,268 @@ export class CellService {
     }
 
     /**
-     * Write data through blob file (fastest method for large datasets)
+     * Write data via an uploaded CSV blob + unbound TI process. Mirrors tm1py write_through_blob
+     * (CellService.py:1425-1493). The CSV is written with QUOTE_ALL semantics and `\r\n`
+     * terminators (Python `csv.writer` defaults); the TI process built by `_buildBlobToCubeProcess`
+     * reads it via an ASCII data source and dispatches CellPutN / CellIncrementN /
+     * CellPutProportionalSpread / CellPutS based on the measure element's type. Transaction-log
+     * toggles wrap the work to mirror tm1py's @manage_transaction_log decorator.
      */
     public async writeThroughBlob(
         cubeName: string,
         cellsetAsDict: CellsetDict,
-        options: WriteOptions = {}
+        options: {
+            increment?: boolean;
+            sandbox_name?: string;
+            skip_non_updateable?: boolean;
+            remove_blob?: boolean;
+            dimensions?: string[];
+            allow_spread?: boolean;
+            clear_view?: string;
+            deactivate_transaction_log?: boolean;
+            reactivate_transaction_log?: boolean;
+        } = {}
     ): Promise<void> {
-        /** Write data using blob files for maximum performance
-         * Recommended for datasets > 1M cells
-         *
-         * :param cube_name: Name of the cube
-         * :param cellset_as_dict: Dictionary of coordinates and values
-         * :param options: Write options
-         */
-
-        // Import FileService to avoid circular dependency
+        const removeBlob = options.remove_blob ?? true;
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         const { FileService } = require('./FileService');
         const fileService = new FileService(this.rest);
+        const dims = options.dimensions ?? await this.getDimensionNamesForWriting(cubeName);
 
-        try {
-            // Convert cellset to CSV format for blob upload
-            const csvContent = this.cellsetToCsv(cellsetAsDict);
-            const blobFileName = `tm1npm_blob_${Date.now()}.csv`;
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const crypto = require('crypto');
+        const uniqueName = `tm1py_${crypto.randomBytes(6).toString('hex')}`;
+        const fileName = `${uniqueName}.csv`;
 
-            // Upload blob file
-            await fileService.create(blobFileName, csvContent);
-
-            // Create TI process to import blob data
-            if (!this.processService) {
-                throw new Error('ProcessService is required for blob operations');
-            }
-
-            const processName = `}tm1npm_blob_import_${Date.now()}`;
-            const tiCode = this.generateBlobImportTiCode(
-                cubeName,
-                blobFileName,
-                Object.keys(cellsetAsDict)[0]?.split(',') || [],
-                options
+        // CSV: tm1py uses csv.writer(QUOTE_ALL, delimiter=','). Quote every field; double internal
+        // quotes; replace \r/\n in string values with empty (mirrors tm1py:1463 cleanup).
+        const csvLines: string[] = [];
+        for (const [coordKey, value] of Object.entries(cellsetAsDict)) {
+            const elements = coordKey.split(',');
+            const cleanedValue = typeof value === 'string'
+                ? value.replace(/[\r\n]/g, '')
+                : (value === null || value === undefined ? '' : String(value));
+            const fields = [...elements, cleanedValue].map(s =>
+                `"${String(s).replace(/"/g, '""')}"`
             );
+            csvLines.push(fields.join(','));
+        }
+        // Python csv.writer defaults to lineterminator='\r\n' AND writes a terminator after every
+        // row (including the last). Matching exactly so the bytes-on-wire are identical to tm1py.
+        const csvBody = csvLines.length > 0 ? csvLines.join('\r\n') + '\r\n' : '';
+        await fileService.create(fileName, Buffer.from(csvBody, 'utf-8'));
 
-            const processBody = {
-                Name: processName,
-                PrologProcedure: tiCode,
-                MetadataProcedure: '',
-                DataProcedure: '',
-                EpilogProcedure: `DeleteFile('${blobFileName}');`
-            };
-
-            // Execute import process
-            await this.rest.post('/Processes', processBody);
-            await this.rest.post(`/Processes('${processName}')/tm1.ExecuteProcess`, {});
-
-            // Cleanup
-            await this.rest.delete(`/Processes('${processName}')`);
-
-        } catch (error) {
-            throw new Error(`Blob write operation failed: ${error}`);
+        if (options.deactivate_transaction_log) {
+            await this.deactivateTransactionlog(cubeName);
+        }
+        try {
+            const proc = await this._buildBlobToCubeProcess({
+                cubeName,
+                processName: uniqueName,
+                blobFilename: fileName,
+                dimensions: dims,
+                increment: options.increment ?? false,
+                skipNonUpdateable: options.skip_non_updateable ?? false,
+                sandboxName: options.sandbox_name,
+                allowSpread: options.allow_spread ?? false,
+                clearView: options.clear_view,
+            });
+            const response = await this.rest.post(
+                '/ExecuteProcessWithReturn?$expand=*',
+                JSON.stringify({ Process: proc.bodyAsDict })
+            );
+            const status: string = response?.data?.ProcessExecuteStatusCode ?? 'Unknown';
+            if (status !== 'CompletedSuccessfully') {
+                const logFile = response?.data?.ErrorLogFile?.Filename ?? null;
+                if (status === 'HasMinorErrors') {
+                    throw new TM1pyWritePartialFailureException([status], [logFile], 1);
+                }
+                throw new TM1pyWriteFailureException([status], [logFile]);
+            }
+        } finally {
+            if (removeBlob) {
+                // tm1py does not suppress; we tolerate cleanup failures so that the original error
+                // (if any) propagates instead of being masked by a delete failure.
+                try { await fileService.delete(fileName); } catch { /* ignore */ }
+            }
+            if (options.reactivate_transaction_log) {
+                await this.activateTransactionlog(cubeName);
+            }
         }
     }
 
     /**
-     * Write data through DataFrame format
+     * Build the unbound TI Process that loads a CSV blob into a cube. Mirrors tm1py
+     * _build_blob_to_cube_process (CellService.py:1495-1608) including the `% \n` line
+     * continuation between alternative ElementType checks and the v11 `.blb` filename suffix.
+     */
+    private async _buildBlobToCubeProcess(args: {
+        cubeName: string;
+        processName: string;
+        blobFilename: string;
+        dimensions: string[];
+        increment: boolean;
+        skipNonUpdateable: boolean;
+        sandboxName?: string;
+        allowSpread: boolean;
+        clearView?: string;
+    }): Promise<Process> {
+        const version = this.rest.version ?? '11.8.0';
+        let blobFilename = args.blobFilename;
+        // verifyVersion takes (actualVersion, requiredVersion). For pre-v12 servers (i.e. v11)
+        // TM1 auto-appends `.blb` to documents created via the contents API, so we must include
+        // it in the data source name (mirrors tm1py CellService.py:1509).
+        if (!verifyVersion(version, '12')) {
+            blobFilename += '.blb';
+        }
+        const proc = new Process(
+            args.processName,
+            false,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            '', '', '', '',
+            'ASCII',         // datasourceType
+            '.', ',', 'Character', 0, '"', '',
+            blobFilename,    // datasourceDataSourceNameForClient
+            blobFilename,    // datasourceDataSourceNameForServer
+        );
+
+        // tm1py CellService.py:1527 calls self.generate_enable_sandbox_ti(sandbox_name) here,
+        // which validates the sandbox exists (raises ValueError otherwise) — preserve that check.
+        const enableSandboxLine = await this.generateEnableSandboxTi(args.sandboxName);
+
+        let prolog = `\n        SetInputCharacterSet('TM1CS_UTF8');\n        ${enableSandboxLine}\n        `;
+        if (args.clearView) {
+            prolog += `\rViewZeroOut('${args.cubeName}', '${args.clearView}');\r`;
+        }
+        proc.prologProcedure = prolog;
+
+        const dimVars = args.dimensions.map((_, n) => `v${n + 1}`);
+        for (const v of dimVars) proc.addVariable(v, 'String');
+        const cubeMeasureVar = dimVars[dimVars.length - 1];
+        const commaSepVars = dimVars.join(',');
+        const valueVar = 'vValue';
+        proc.addVariable(valueVar, 'String');
+
+        const cellIsUpdateablePre = args.skipNonUpdateable
+            ? `If( CellIsUpdateable('${args.cubeName}',${commaSepVars}) = 1 );`
+            : '';
+        const cellIsUpdateablePost = args.skipNonUpdateable
+            ? `\rElse;\r   ItemSkip;\rEndIf;\r`
+            : '';
+
+        const numericFn = args.cubeName.toLowerCase().startsWith('}elementattributes_')
+            ? 'CellPutN'
+            : (args.increment ? 'CellIncrementN' : 'CellPutN');
+
+        const cubeMeasure = args.dimensions[args.dimensions.length - 1];
+        const measureTypeEq = `ElementType('${cubeMeasure}', '', ${cubeMeasureVar}) @= `;
+        const numericWriteCondition = ["'N'", "'AN'", "'C'", "''"]
+            .map(t => measureTypeEq + t).join('% \n');
+        const anyCElementInWrite = args.dimensions.map(
+            (dim, i) => `ElementType('${dim}', '', ${dimVars[i]}) @= 'C'`
+        ).join('% \n');
+
+        const numericWithSpread = `\n            nValue = StringToNumber(${valueVar});\n            IF(${anyCElementInWrite});\n                CellPutProportionalSpread(nValue,'${args.cubeName}',${commaSepVars});\n            ELSE;\n                ${numericFn}(nValue,'${args.cubeName}',${commaSepVars});\n            ENDIF;\n            `;
+        const numericWithoutSpread = `\n            nValue = StringToNumber(${valueVar});\n            ${numericFn}(nValue,'${args.cubeName}',${commaSepVars});\n            `;
+        const stringCondition = `\n            ElementType('${cubeMeasure}', '', ${cubeMeasureVar}) @= 'S' % \n            ElementType('${cubeMeasure}', '', ${cubeMeasureVar}) @= 'AS' % \n            ElementType('${cubeMeasure}', '', ${cubeMeasureVar}) @= 'AA'\n            `;
+        const stringWrite = `\n            sValue = ${valueVar};\n            CellPutS(sValue,'${args.cubeName}',${commaSepVars}); \n            `;
+
+        const inputStatement = `\n        If(${numericWriteCondition});\n            ${args.allowSpread ? numericWithSpread : numericWithoutSpread}\n        ElseIf(${stringCondition});\n            ${stringWrite}\n        EndIf;`;
+
+        proc.dataProcedure = cellIsUpdateablePre + inputStatement + cellIsUpdateablePost;
+        return proc;
+    }
+
+    /**
+     * Write data through a chunked DataFrame. Mirrors tm1py write_dataframe (CellService.py:860):
+     * accepts either a `DataFrame` ({columns, data}) or a plain 2D array; supports
+     * `static_dimension_elements` and `infer_column_order`; aggregates duplicate intersections
+     * for numeric values when `sum_numeric_duplicates` is true; delegates to `write()` for
+     * routing to writeThroughUnboundProcess / writeThroughBlob / writeThroughCellset.
      */
     public async writeDataframe(
-        cubeName: string, 
-        dataFrame: any[][],  // Array of arrays representing tabular data
-        dimensions: string[],
-        options: WriteOptions = {}
-    ): Promise<void> {
-        const cells = dataFrame.map(row => ({
-            Coordinates: row.slice(0, dimensions.length).map(coord => ({ Name: coord })),
-            Value: row[dimensions.length] // Last column is the value
-        }));
+        cubeName: string,
+        data: DataFrame | (string | number | null)[][],
+        options: WriteOptions & {
+            dimensions?: string[];
+            sum_numeric_duplicates?: boolean;
+            static_dimension_elements?: Record<string, string>;
+            infer_column_order?: boolean;
+        } = {}
+    ): Promise<string | undefined> {
+        const dims = options.dimensions ?? await this.getDimensionNamesForWriting(cubeName);
+        const lc = (s: string) => s.toLowerCase().replace(/\s+/g, '');
 
-        let url = `/Cubes('${cubeName}')/tm1.Update`;
-        
-        if (options.sandbox_name) {
-            url += `?$sandbox=${options.sandbox_name}`;
+        let columns: string[];
+        let rows: (string | number | null)[][];
+        if (Array.isArray(data)) {
+            columns = [...dims, '__value__'];
+            rows = data.map(r => [...r]);
+        } else {
+            columns = [...data.columns];
+            rows = data.data.map(r => [...r]);
         }
 
-        const body = {
-            Cells: cells,
-            ...(options.increment && { Increment: true }),
-            ...(options.allow_spread && { AllowSpread: true })
-        };
+        if (options.static_dimension_elements) {
+            const lcCols = columns.map(lc);
+            for (const [dim, elem] of Object.entries(options.static_dimension_elements)) {
+                if (lcCols.includes(lc(dim))) {
+                    throw new Error(
+                        `static_dimension_elements conflict: '${dim}' is also a dataframe column. ` +
+                        `Either remove the key/value pair or omit the column from the dataframe.`
+                    );
+                }
+                columns.push(dim);
+                lcCols.push(lc(dim));
+                rows = rows.map(r => [...r, elem]);
+            }
+        }
 
-        await this.rest.patch(url, body);
+        const inferOrder = options.static_dimension_elements ? true : (options.infer_column_order ?? false);
+        if (inferOrder) {
+            const lcCols = columns.map(lc);
+            const lcDims = dims.map(lc);
+            const remaining = lcCols.filter(c => !lcDims.includes(c));
+            const finalLc = [...lcDims, ...remaining];
+            const indexMap = finalLc.map(c => lcCols.indexOf(c));
+            rows = rows.map(r => indexMap.map(i => r[i]));
+            columns = indexMap.map(i => columns[i]);
+        }
+
+        if (rows.length > 0 && rows[0].length !== dims.length + 1) {
+            throw new Error("Number of columns in 'data' must equal number of dimensions in cube + 1");
+        }
+
+        const cells: CellsetDict = {};
+        const sumDup = options.sum_numeric_duplicates ?? true;
+        for (const row of rows) {
+            const elems = row.slice(0, -1).map(v => String(v ?? '')).join(',');
+            const v = row[row.length - 1];
+            if (sumDup && elems in cells && typeof v === 'number' && typeof cells[elems] === 'number') {
+                cells[elems] = (cells[elems] as number) + v;
+            } else {
+                cells[elems] = v as any;
+            }
+        }
+        // Forward routing flags (use_ti, use_blob, etc.) and write-side options to write().
+        return this.write(cubeName, cells, options);
     }
 
     /**
-     * Write data asynchronously by chunking and dispatching to writeThroughBlob
-     * (parity with tm1py.write_async, which uses ThreadPoolExecutor + write(use_blob=True)).
-     *
-     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
-     * - Only options honored by the underlying writeThroughBlob (sandbox_name, increment,
-     *   deactivate/reactivate_transaction_log, use_blob, use_changeset) flow through. tm1py's
-     *   `dimensions`, `precision`, `measure_dimension_elements`, `skip_non_updateable`, and
-     *   transaction-log toggles are not yet wired through writeThroughBlob and are deliberately
-     *   omitted from this signature so misuse is caught at compile time.
-     * - Per-chunk failures aggregate into a TM1Exception with chunk count (tm1py raises a
-     *   structured TM1pyWritePartialFailureException; that exception type is not yet ported).
+     * Write asynchronously by chunking and dispatching to writeThroughBlob in parallel.
+     * Mirrors the spirit of tm1py.write_async (which uses ThreadPoolExecutor + write_through_blob);
+     * partial failures aggregate into a TM1pyWritePartialFailureException.
      */
     public async writeAsync(
         cubeName: string,
         cellsetAsDict: CellsetDict,
-        options: Pick<WriteOptions, 'sandbox_name' | 'increment' | 'deactivate_transaction_log' | 'reactivate_transaction_log' | 'use_changeset'>
-            & { slice_size?: number; max_workers?: number } = {}
+        options: Pick<WriteOptions,
+            'sandbox_name' | 'increment' | 'deactivate_transaction_log' |
+            'reactivate_transaction_log' | 'skip_non_updateable' | 'allow_spread' | 'remove_blob'>
+            & { slice_size?: number; max_workers?: number; dimensions?: string[] } = {}
     ): Promise<string | undefined> {
         const sliceSize = options.slice_size ?? 250_000;
         const maxWorkers = options.max_workers ?? 8;
@@ -886,51 +1076,358 @@ export class CellService {
             chunks.push(Object.fromEntries(entries.slice(i, i + sliceSize)));
         }
 
-        const failures: any[] = [];
+        const blobOpts = {
+            sandbox_name: options.sandbox_name,
+            increment: options.increment,
+            deactivate_transaction_log: options.deactivate_transaction_log,
+            reactivate_transaction_log: options.reactivate_transaction_log,
+            skip_non_updateable: options.skip_non_updateable,
+            allow_spread: options.allow_spread,
+            remove_blob: options.remove_blob,
+            dimensions: options.dimensions,
+        };
+
+        const failures: unknown[] = [];
         for (let i = 0; i < chunks.length; i += maxWorkers) {
             const batch = chunks.slice(i, i + maxWorkers);
             const results = await Promise.allSettled(
-                batch.map(c => this.writeThroughBlob(cubeName, c, { ...options, use_blob: true }))
+                batch.map(c => this.writeThroughBlob(cubeName, c, blobOpts))
             );
             for (const r of results) if (r.status === 'rejected') failures.push(r.reason);
         }
         if (failures.length) {
-            throw new TM1Exception(
-                `writeAsync partial failure: ${failures.length}/${chunks.length} chunks failed: ` +
-                failures.map(f => f?.message || String(f)).join('; ')
-            );
+            const messages = failures.map(f => (f as { message?: string })?.message ?? String(f));
+            throw new TM1pyWritePartialFailureException(messages, [], chunks.length);
         }
         return undefined;
     }
 
     /**
-     * Write through unbound process (TI-based writing)
+     * Write data via an unbound TI process whose Prolog/Epilog contain CellPutN/CellPutS
+     * statements. Mirrors tm1py write_through_unbound_process (CellService.py:1328-1419).
+     * Routes attribute cubes (`}ElementAttributes_*`) through _buildAttributeUpdateStatements;
+     * regular cubes through _buildCellUpdateStatements. Statements are chunked at every
+     * 2*Process.maxStatements(version) boundary, mirroring tm1py's loop precisely
+     * (`if n > 0 and n % (max_statements * 2) == 0`). Transaction-log toggles wrap the work
+     * to mirror tm1py's @manage_transaction_log decorator.
      */
     public async writeThroughUnboundProcess(
         cubeName: string,
         cellsetAsDict: CellsetDict,
-        processName?: string,
-        options: WriteOptions = {}
-    ): Promise<any> {
-        // Create TI statements for bulk writing
-        let tiStatements = '';
-        
-        for (const [coordinates, value] of Object.entries(cellsetAsDict)) {
-            const coords = coordinates.split(',').map(s => `'${s.trim()}'`).join(',');
-            tiStatements += `CubeDataSet('${cubeName}', ${coords}, ${value});\n`;
+        options: {
+            increment?: boolean;
+            sandbox_name?: string;
+            precision?: number;
+            skip_non_updateable?: boolean;
+            measure_dimension_elements?: Record<string, string>;
+            is_attribute_cube?: boolean;
+            dimensions?: string[];
+            allow_spread?: boolean;
+            deactivate_transaction_log?: boolean;
+            reactivate_transaction_log?: boolean;
+        } = {}
+    ): Promise<void> {
+        const isAttributeCube = options.is_attribute_cube
+            ?? cubeName.toLowerCase().startsWith('}elementattributes_');
+        const enableSandbox = await this.generateEnableSandboxTi(options.sandbox_name);
+
+        let measureDimensionElements: Record<string, string> | undefined = options.measure_dimension_elements;
+        if (!measureDimensionElements) {
+            // tm1py returns a flat dict {elementName: type}. The existing tm1npm helper returns
+            // {dimension: string[]}, so flatten it (every measure element treated as Numeric,
+            // matching tm1py's element_service.get_element_types_from_all_hierarchies fallback).
+            const fetched = await this.getElementsFromAllMeasureHierarchies(cubeName);
+            measureDimensionElements = {};
+            for (const elements of Object.values(fetched)) {
+                for (const e of elements) measureDimensionElements[e] = 'Numeric';
+            }
         }
 
-        const tempProcessName = processName || `tm1npm_write_${Date.now()}`;
-        
-        // Execute TI code directly
-        const url = "/ExecuteProcessWithReturn";
-        const body = {
-            Name: tempProcessName,
-            PrologProcedure: tiStatements,
-            ...(options.sandbox_name && { Sandbox: options.sandbox_name })
-        };
+        let dims = options.dimensions;
+        if (!isAttributeCube && !dims && options.allow_spread) {
+            dims = await this.getDimensionNamesForWriting(cubeName);
+        }
 
-        return await this.rest.post(url, body);
+        const statements = isAttributeCube
+            ? CellService._buildAttributeUpdateStatements({
+                cubeName,
+                cellsetAsDict,
+                precision: options.precision,
+                skipNonUpdateable: options.skip_non_updateable ?? false,
+                measureDimensionElements: measureDimensionElements ?? {},
+            })
+            : CellService._buildCellUpdateStatements({
+                cubeName,
+                cellsetAsDict,
+                increment: options.increment ?? false,
+                measureDimensionElements: measureDimensionElements ?? {},
+                precision: options.precision,
+                skipNonUpdateable: options.skip_non_updateable ?? false,
+                dimensions: dims,
+                allowSpread: options.allow_spread ?? false,
+            });
+
+        if (options.deactivate_transaction_log) {
+            await this.deactivateTransactionlog(cubeName);
+        }
+        try {
+            const version = this.rest.version ?? "11.8.0";
+            const maxStmts = Process.maxStatements(version);
+            const successes: boolean[] = [];
+            const statuses: string[] = [];
+            const logFiles: (string | null)[] = [];
+            let chunk: string[] = [];
+
+            for (let n = 0; n < statements.length; n++) {
+                chunk.push(statements[n]);
+                if (n > 0 && n % (maxStmts * 2) === 0) {
+                    const [s, st, lf] = await this._executeWriteStatements(chunk, enableSandbox);
+                    successes.push(s);
+                    if (!s) { statuses.push(st); logFiles.push(lf); }
+                    chunk = [];
+                }
+            }
+            const [s, st, lf] = await this._executeWriteStatements(chunk, enableSandbox);
+            successes.push(s);
+            if (!s) { statuses.push(st); logFiles.push(lf); }
+
+            if (!successes.some(x => x)) {
+                if (statuses.includes('HasMinorErrors')) {
+                    throw new TM1pyWritePartialFailureException(statuses, logFiles, successes.length);
+                }
+                throw new TM1pyWriteFailureException(statuses, logFiles);
+            }
+            if (!successes.every(x => x)) {
+                throw new TM1pyWritePartialFailureException(statuses, logFiles, successes.length);
+            }
+        } finally {
+            if (options.reactivate_transaction_log) {
+                await this.activateTransactionlog(cubeName);
+            }
+        }
+    }
+
+    /**
+     * Build TI CellPutN/CellPutS statements for a cellset. Mirrors tm1py
+     * _build_cell_update_statements (CellService.py:1799-1890) character-for-character:
+     * - Element-type lookup defaults to 'Numeric' (so unknown measures trigger TI minor errors).
+     * - String values: escape `'`→`''`, strip CR/LF, single-quote wrap.
+     * - Numeric values: frameToSignificantDigits or precision-formatted toFixed; unparseable
+     *   strings pass through raw; null/undefined → '0'.
+     * - skipNonUpdateable wraps each statement in `IF(CellIsUpdateable(...)=1, <stmt>, 0);`.
+     * - allowSpread wraps with `IF(<any C>); CellPutProportionalSpread(...); ELSE; <stmt>; ENDIF;`.
+     */
+    private static _buildCellUpdateStatements(args: {
+        cubeName: string;
+        cellsetAsDict: CellsetDict;
+        increment: boolean;
+        measureDimensionElements: Record<string, string>;
+        precision?: number;
+        skipNonUpdateable: boolean;
+        dimensions?: string[];
+        allowSpread: boolean;
+    }): string[] {
+        const statements: string[] = [];
+        for (const [coordKey, value] of Object.entries(args.cellsetAsDict)) {
+            const coordinates = coordKey.split(',');
+            let measureElement = coordinates[coordinates.length - 1];
+            let elementType = args.measureDimensionElements[measureElement];
+            if (elementType === undefined) {
+                if (measureElement.includes(':')) {
+                    measureElement = measureElement.split(':')[1];
+                    elementType = args.measureDimensionElements[measureElement] ?? 'Numeric';
+                } else {
+                    elementType = 'Numeric';
+                }
+            }
+
+            let functionStr: string;
+            let valueStr: string;
+            if (elementType === 'String') {
+                functionStr = 'CellPutS(';
+                const cleaned = String(value)
+                    .replace(/'/g, "''")
+                    .replace(/[\r\n]/g, '');
+                valueStr = `'${cleaned}'`;
+            } else {
+                functionStr = args.increment ? 'CellIncrementN(' : 'CellPutN(';
+                if (typeof value === 'string') {
+                    // Python's float() rejects strings with non-numeric tails ("123abc" → ValueError);
+                    // tm1py catches and falls through to raw passthrough. JS parseFloat is permissive,
+                    // so we use Number() (strict end-to-end parse) plus an empty-string guard.
+                    const trimmed = value.trim();
+                    const parsed = trimmed === '' ? NaN : Number(trimmed);
+                    if (Number.isNaN(parsed)) {
+                        valueStr = String(value);
+                    } else if (args.precision === undefined) {
+                        valueStr = frameToSignificantDigits(parsed);
+                    } else {
+                        valueStr = parsed.toFixed(args.precision);
+                    }
+                } else if (value === null || value === undefined) {
+                    valueStr = '0';
+                } else {
+                    if (args.precision === undefined) {
+                        valueStr = frameToSignificantDigits(Number(value));
+                    } else {
+                        valueStr = Number(value).toFixed(args.precision);
+                    }
+                }
+            }
+
+            const commaSeparatedElements = coordinates
+                .map(e => `'${e.replace(/'/g, "''")}'`)
+                .join(',');
+
+            let cellIsUpdateablePre = '';
+            let cellIsUpdateablePost = ';';
+            if (args.skipNonUpdateable) {
+                cellIsUpdateablePre = `IF(CellIsUpdateable('${args.cubeName}', ${commaSeparatedElements})=1,`;
+                cellIsUpdateablePost = ',0);';
+            }
+
+            let consolidatedSpreadCheckStart = '';
+            let consolidatedSpreadCheckEnd = '';
+            if (args.allowSpread) {
+                const dimsForSpread = args.dimensions ?? [];
+                const anyCElement = dimsForSpread
+                    .map((dim, i) => `ElementType('${dim}', '', '${coordinates[i] ?? ''}') @= 'C'`)
+                    .join('% \n');
+                consolidatedSpreadCheckStart =
+                    `\n                    IF(${anyCElement});\n` +
+                    `                        CellPutProportionalSpread(${valueStr},'${args.cubeName}',${commaSeparatedElements});\n` +
+                    `                    ELSE;\n                    `;
+                consolidatedSpreadCheckEnd = 'ENDIF;';
+            }
+
+            const statement =
+                cellIsUpdateablePre +
+                consolidatedSpreadCheckStart +
+                functionStr +
+                valueStr +
+                `,'${args.cubeName}',` +
+                commaSeparatedElements +
+                ')' +
+                cellIsUpdateablePost +
+                consolidatedSpreadCheckEnd;
+
+            statements.push(statement);
+        }
+        return statements;
+    }
+
+    /**
+     * Build TI ElementAttrPutN/ElementAttrPutS statements for an attribute cube. Mirrors tm1py
+     * _build_attribute_update_statements (CellService.py:1722-1798). The dimension name is
+     * derived from the cube name (slice off the `}ElementAttributes_` prefix). The first
+     * coordinate may carry a `hierarchy:element` form; the last coordinate is the attribute name.
+     */
+    private static _buildAttributeUpdateStatements(args: {
+        cubeName: string;
+        cellsetAsDict: CellsetDict;
+        precision?: number;
+        skipNonUpdateable: boolean;
+        measureDimensionElements: Record<string, string>;
+    }): string[] {
+        const dimensionName = args.cubeName.slice(19); // length of "}ElementAttributes_"
+        const statements: string[] = [];
+
+        for (const [coordKey, value] of Object.entries(args.cellsetAsDict)) {
+            const coordinates = coordKey.split(',');
+            const rawElementName = coordinates[0];
+            let hierarchyName: string;
+            let elementName: string;
+            if (rawElementName.includes(':')) {
+                const idx = rawElementName.indexOf(':');
+                hierarchyName = rawElementName.slice(0, idx);
+                elementName = rawElementName.slice(idx + 1);
+            } else {
+                elementName = rawElementName;
+                hierarchyName = dimensionName;
+            }
+            let attributeName = coordinates[coordinates.length - 1];
+
+            let attributeType: string | undefined = args.measureDimensionElements[attributeName];
+            if (attributeType === undefined) {
+                if (attributeName.includes(':')) {
+                    attributeName = attributeName.split(':')[1];
+                    attributeType = args.measureDimensionElements[attributeName] ?? 'String';
+                } else {
+                    attributeType = 'String';
+                }
+            }
+
+            let functionStr: string;
+            let valueStr: string;
+            if (attributeType === 'Numeric') {
+                functionStr = 'ElementAttrPutN(';
+                if (typeof value === 'string') {
+                    // tm1py CellService.py:1758 calls `format(float(value), f".{precision}f")`
+                    // unconditionally. With `precision is None`, that yields the invalid format spec
+                    // ".Nonef" → ValueError, caught → raw passthrough. With a numeric precision and
+                    // a non-numeric string, the inner `float()` raises → also raw passthrough.
+                    if (args.precision === undefined) {
+                        valueStr = String(value);
+                    } else {
+                        const trimmed = value.trim();
+                        const parsed = trimmed === '' ? NaN : Number(trimmed);
+                        valueStr = Number.isNaN(parsed)
+                            ? String(value)
+                            : parsed.toFixed(args.precision);
+                    }
+                } else if (value === null || value === undefined) {
+                    valueStr = '0';
+                } else {
+                    valueStr = args.precision === undefined
+                        ? frameToSignificantDigits(Number(value))
+                        : Number(value).toFixed(args.precision);
+                }
+            } else {
+                functionStr = 'ElementAttrPutS(';
+                const cleaned = escapeODataValue(String(value)).replace(/[\r\n]/g, '');
+                valueStr = `'${cleaned}'`;
+            }
+            valueStr += ',';
+
+            const commaArgs = [dimensionName, hierarchyName, elementName, attributeName]
+                .map(e => `'${e.replace(/'/g, "''")}'`)
+                .join(',');
+
+            let cellIsUpdateablePre = '';
+            let cellIsUpdateablePost = ';';
+            if (args.skipNonUpdateable) {
+                cellIsUpdateablePre = `IF(CellIsUpdateable('${args.cubeName}', '${rawElementName}', '${attributeName}')=1,`;
+                cellIsUpdateablePost = ',0);';
+            }
+
+            statements.push(
+                cellIsUpdateablePre + functionStr + valueStr + commaArgs + ')' + cellIsUpdateablePost
+            );
+        }
+        return statements;
+    }
+
+    /**
+     * Execute a list of TI statements through an unbound process. Mirrors tm1py
+     * _execute_write_statements (CellService.py:1916-1925): the first `maxStatements` go in
+     * Prolog (prefixed with the enable-sandbox snippet); the rest go in Epilog.
+     * Returns [success, status, errorLogFile].
+     */
+    private async _executeWriteStatements(
+        statements: string[],
+        enableSandbox: string
+    ): Promise<[boolean, string, string | null]> {
+        if (statements.length === 0) return [true, 'CompletedSuccessfully', null];
+        const version = this.rest.version ?? "11.8.0";
+        const maxStmts = Process.maxStatements(version);
+        const proc = new Process('');
+        proc.prologProcedure = enableSandbox + statements.slice(0, maxStmts).join('\r');
+        proc.epilogProcedure = statements.slice(maxStmts).join('\r');
+        const url = '/ExecuteProcessWithReturn?$expand=*';
+        const response = await this.rest.post(url, JSON.stringify({ Process: proc.bodyAsDict }));
+        const status: string = response?.data?.ProcessExecuteStatusCode ?? 'Unknown';
+        const logFile: string | null = response?.data?.ErrorLogFile?.Filename ?? null;
+        return [status === 'CompletedSuccessfully', status, logFile];
     }
 
 
@@ -2587,64 +3084,6 @@ export class CellService {
     private buildPivotDataFrameFromCellset(cellset: any): DataFrame {
         // For now, return regular DataFrame - full pivot implementation would be more complex
         return this.buildDataFrameFromCellset(cellset);
-    }
-
-    /**
-     * Convert cellset dictionary to CSV format for blob operations
-     */
-    private cellsetToCsv(cellsetAsDict: CellsetDict): string {
-        const rows: string[] = [];
-
-        for (const [coordinates, value] of Object.entries(cellsetAsDict)) {
-            const elements = coordinates.split(',').map(el => el.trim());
-            const csvRow = [...elements, value].map(item =>
-                typeof item === 'string' && item.includes(',') ? `"${item}"` : item
-            ).join(',');
-            rows.push(csvRow);
-        }
-
-        return rows.join('\n');
-    }
-
-    /**
-     * Generate TI code for blob import operations
-     */
-    private generateBlobImportTiCode(
-        cubeName: string,
-        fileName: string,
-        dimensions: string[],
-        options: WriteOptions = {}
-    ): string {
-        const dimensionVars = dimensions.map((_, index) => `v${index + 1}`).join(', ');
-        const elementAssignments = dimensions.map((dim) =>
-            `ItemReject('${cubeName}:${fileName}');
-             ${dim} = CellGetS('${cubeName}', ${dimensionVars});`
-        ).join('\n');
-
-        const incrementCode = options.increment ?
-            `IF(CellGetN('${cubeName}', ${dimensionVars}) <> 0);
-               CellPutN(CellGetN('${cubeName}', ${dimensionVars}) + value, '${cubeName}', ${dimensionVars});
-             ELSE;
-               CellPutN(value, '${cubeName}', ${dimensionVars});
-             ENDIF;` :
-            `CellPutN(value, '${cubeName}', ${dimensionVars});`;
-
-        return `
-# Generated blob import process
-DataSourceType = 'CHARACTERDELIMITED';
-DataSourceNameForServer = '${fileName}';
-DataSourceNameForClient = '${fileName}';
-
-# Variables for dimensions and value
-${dimensions.map((_, index) => `v${index + 1} = '';`).join('\n')}
-value = 0;
-
-# Main import logic
-WHILE(DataSourceType = 'CHARACTERDELIMITED');
-    ${elementAssignments}
-    ${incrementCode}
-END;
-        `.trim();
     }
 
     private formatForDygraph(cellset: any): any {

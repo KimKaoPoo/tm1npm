@@ -36,3 +36,35 @@ export class TM1VersionDeprecationException extends TM1Exception {
         this.name = 'TM1VersionDeprecationException';
     }
 }
+
+export class TM1pyWriteFailureException extends TM1Exception {
+    public statuses: string[];
+    public errorLogFiles: (string | null)[];
+
+    constructor(statuses: string[], errorLogFiles: (string | null)[]) {
+        super(
+            `TM1 write failed. Statuses: ${JSON.stringify(statuses)}. ` +
+            `ErrorLogFiles: ${JSON.stringify(errorLogFiles)}`
+        );
+        this.name = 'TM1pyWriteFailureException';
+        this.statuses = statuses;
+        this.errorLogFiles = errorLogFiles;
+    }
+}
+
+export class TM1pyWritePartialFailureException extends TM1Exception {
+    public statuses: string[];
+    public errorLogFiles: (string | null)[];
+    public attempts: number;
+
+    constructor(statuses: string[], errorLogFiles: (string | null)[], attempts: number) {
+        super(
+            `TM1 write partial failure (${statuses.length}/${attempts} chunks failed). ` +
+            `Statuses: ${JSON.stringify(statuses)}. ErrorLogFiles: ${JSON.stringify(errorLogFiles)}`
+        );
+        this.name = 'TM1pyWritePartialFailureException';
+        this.statuses = statuses;
+        this.errorLogFiles = errorLogFiles;
+        this.attempts = attempts;
+    }
+}

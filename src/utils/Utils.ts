@@ -116,6 +116,19 @@ export function lowerAndDropSpaces(str: string): string {
     return str.toLowerCase().replace(/\s+/g, '');
 }
 
+// Mirror tm1py Utils.frame_to_significant_digits (Utils.py:1766-1770).
+// Special floats follow Python's str() output: 'inf', '-inf', 'nan'. Zero stays '0'.
+export function frameToSignificantDigits(x: number, digits: number = 15): string {
+    if (Number.isNaN(x)) return 'nan';
+    if (x === Infinity) return 'inf';
+    if (x === -Infinity) return '-inf';
+    if (x === 0) return '0';
+    const adjusted = digits - Math.ceil(Math.log10(Math.abs(x)));
+    const factor = Math.pow(10, adjusted);
+    const rounded = Math.round(x * factor) / factor;
+    return String(rounded).replace('e+', 'E');
+}
+
 export function escapeODataValue(str: string): string {
     return str.replace(/'/g, "''");
 }

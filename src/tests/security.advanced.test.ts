@@ -172,7 +172,7 @@ describe('Advanced Security and Validation Tests', () => {
 
             for (const value of invalidValues) {
                 try {
-                    await cellService.writeValue('TestCube', ['Element1'], value);
+                    await cellService.writeValue(value, 'TestCube', ['Element1']);
                     console.log(`✅ Handled invalid numeric value: ${value}`);
                 } catch (error) {
                     console.log(`✅ Properly validated numeric value: ${value}`);
@@ -311,7 +311,7 @@ describe('Advanced Security and Validation Tests', () => {
             });
             
             try {
-                await cellService.writeValue('TestCube', ['Element1'], 1000);
+                await cellService.writeValue(1000, 'TestCube', ['Element1']);
             } catch (error: any) {
                 expect(error.response.status).toBe(409);
                 console.log('✅ Concurrent modification conflict handled properly');
