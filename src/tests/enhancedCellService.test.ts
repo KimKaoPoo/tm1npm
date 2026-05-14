@@ -46,34 +46,36 @@ describe('Enhanced CellService Tests', () => {
     });
 
     describe('Enhanced Data Writing Functions', () => {
-        test('writeDataframe should write tabular data to cube', async () => {
+        test('writeDataframe routes through write() with built CellsetDict (sums numeric duplicates)', async () => {
             const dataFrame = [
                 ['2024', 'Actual', 'London', 100],
-                ['2024', 'Forecast', 'Paris', 200]
+                ['2024', 'Actual', 'London', 50],     // duplicate intersection — should sum
+                ['2024', 'Forecast', 'Paris', 200],
             ];
-            const dimensions = ['Year', 'Version', 'Region'];
 
-            mockRestService.patch.mockResolvedValue(createMockResponse({}));
+            const writeSpy = jest.spyOn(cellService, 'write').mockResolvedValue(undefined);
 
-            await cellService.writeDataframe('SalesCube', dataFrame, dimensions);
+            await cellService.writeDataframe('SalesCube', dataFrame);
 
-            expect(mockRestService.patch).toHaveBeenCalledWith(
-                "/Cubes('SalesCube')/tm1.Update",
-                expect.objectContaining({
-                    Cells: expect.arrayContaining([
-                        expect.objectContaining({
-                            Coordinates: [
-                                { Name: '2024' },
-                                { Name: 'Actual' },
-                                { Name: 'London' }
-                            ],
-                            Value: 100
-                        })
-                    ])
-                })
-            );
-            
-            console.log('✅ writeDataframe test passed');
+            expect(writeSpy).toHaveBeenCalledTimes(1);
+            const [cube, cells, opts] = writeSpy.mock.calls[0];
+            expect(cube).toBe('SalesCube');
+            expect(cells).toEqual({
+                '2024,Actual,London': 150,
+                '2024,Forecast,Paris': 200,
+            });
+            expect(opts).toEqual({});
+
+            console.log('✅ writeDataframe routing test passed');
+        });
+
+        test('writeDataframe rejects rows with wrong column count', async () => {
+            const dataFrame = [
+                ['2024', 'Actual', 100],   // missing one dim column (3 dims expected → 4 cols)
+            ];
+
+            await expect(cellService.writeDataframe('SalesCube', dataFrame))
+                .rejects.toThrow(/Number of columns/);
         });
 
         test('writeAsync chunks the cellset and delegates to writeThroughBlob', async () => {
@@ -86,80 +88,171 @@ describe('Enhanced CellService Tests', () => {
             const result = await cellService.writeAsync('SalesCube', cellset, { slice_size: 1, max_workers: 2 });
 
             expect(result).toBeUndefined();
-            // Two entries with slice_size=1 → two chunks → two writeThroughBlob calls
+            // Two entries with slice_size=1 → two chunks → two writeThroughBlob calls.
+            // writeAsync calls writeThroughBlob directly (not through write()), so use_blob is not
+            // a meaningful flag on the underlying call; we just check the cube name and that the
+            // chunks are forwarded as-is.
             expect(writeThroughBlobSpy).toHaveBeenCalledTimes(2);
-            expect(writeThroughBlobSpy).toHaveBeenCalledWith(
-                'SalesCube',
-                expect.any(Object),
-                expect.objectContaining({ use_blob: true })
+            expect(writeThroughBlobSpy).toHaveBeenNthCalledWith(
+                1, 'SalesCube', expect.any(Object), expect.any(Object)
             );
         });
 
-        test('writeAsync aggregates per-chunk failures into a TM1Exception', async () => {
-            const cellset = { 'a,b,c': 1, 'd,e,f': 2 };
+        test('writeAsync aggregates TM1pyWriteFailureException chunks into TM1pyWritePartialFailureException with merged statuses/logs', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { TM1pyWriteFailureException, TM1pyWritePartialFailureException } =
+                require('../exceptions/TM1Exception');
+            const cellset = { 'a,b,c': 1, 'd,e,f': 2, 'g,h,i': 3 };
 
             jest.spyOn(cellService, 'writeThroughBlob')
-                .mockRejectedValueOnce(new Error('chunk1 failed'))
-                .mockResolvedValueOnce(undefined);
+                .mockRejectedValueOnce(new TM1pyWriteFailureException(['HasMinorErrors'], ['log1.log']))
+                .mockResolvedValueOnce(undefined)
+                .mockRejectedValueOnce(new TM1pyWritePartialFailureException(['Aborted'], ['log3.log'], 2));
 
-            await expect(
-                cellService.writeAsync('SalesCube', cellset, { slice_size: 1, max_workers: 2 })
-            ).rejects.toThrow(/writeAsync partial failure: 1\/2 chunks failed/);
+            try {
+                await cellService.writeAsync('SalesCube', cellset, { slice_size: 1, max_workers: 3 });
+                fail('expected writeAsync to throw');
+            } catch (err: any) {
+                expect(err).toBeInstanceOf(TM1pyWritePartialFailureException);
+                // Statuses + log files are concatenated across both failed chunks (tm1py-style merge).
+                expect(err.statuses).toEqual(['HasMinorErrors', 'Aborted']);
+                expect(err.errorLogFiles).toEqual(['log1.log', 'log3.log']);
+                // attempts: 1 (bare WriteFailure) + 2 (partial.attempts) = 3
+                expect(err.attempts).toBe(3);
+            }
         });
 
-        test('writeThroughUnboundProcess should execute TI statements', async () => {
+        test('writeAsync hoists transaction-log toggles around the whole job (does NOT forward to chunks)', async () => {
+            const cellset = { 'a,b,c': 1, 'd,e,f': 2 };
+            const deactivateSpy = jest.spyOn(cellService, 'deactivateTransactionlog').mockResolvedValue(undefined);
+            const activateSpy = jest.spyOn(cellService, 'activateTransactionlog').mockResolvedValue(undefined);
+            const blobSpy = jest.spyOn(cellService, 'writeThroughBlob').mockResolvedValue(undefined);
+
+            await cellService.writeAsync('SalesCube', cellset, {
+                slice_size: 1,
+                max_workers: 2,
+                deactivate_transaction_log: true,
+                reactivate_transaction_log: true,
+            });
+
+            // Only ONE deactivate / activate pair around the whole job, not one per chunk.
+            expect(deactivateSpy).toHaveBeenCalledTimes(1);
+            expect(activateSpy).toHaveBeenCalledTimes(1);
+            // Per-chunk options must NOT include transaction-log toggles (would race in parallel).
+            for (const call of blobSpy.mock.calls) {
+                const opts = call[2] as Record<string, unknown>;
+                expect(opts).not.toHaveProperty('deactivate_transaction_log');
+                expect(opts).not.toHaveProperty('reactivate_transaction_log');
+            }
+        });
+
+        test('writeThroughUnboundProcess emits CellPutN statements via Process body', async () => {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { CaseAndSpaceInsensitiveDict } = require('../utils/Utils');
             const cellset = { '2024,Actual,London': 100 };
 
+            // Stub out the auto-fetch of measure dimension element types so the test stays
+            // hermetic. The helper returns a CaseAndSpaceInsensitiveDict; an empty one is fine —
+            // the statement builder defaults to 'Numeric' for unknown measures.
+            jest.spyOn(cellService as any, '_fetchMeasureDimensionElementTypes')
+                .mockResolvedValue(new CaseAndSpaceInsensitiveDict());
+
             mockRestService.post.mockResolvedValue(createMockResponse({
-                ProcessExecuteStatusCode: 'CompletedSuccessfully'
+                ProcessExecuteStatusCode: 'CompletedSuccessfully',
             }));
 
             await cellService.writeThroughUnboundProcess('SalesCube', cellset);
 
             expect(mockRestService.post).toHaveBeenCalledWith(
-                '/ExecuteProcessWithReturn',
-                expect.objectContaining({
-                    PrologProcedure: expect.stringContaining("CubeDataSet('SalesCube'")
-                })
+                '/ExecuteProcessWithReturn?$expand=*',
+                expect.stringContaining("CellPutN(")
             );
+            // Confirm the emitted statement targets the right cube and coordinates.
+            const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
+            expect(body.Process.PrologProcedure).toContain("CellPutN(100,'SalesCube','2024','Actual','London');");
 
             console.log('✅ writeThroughUnboundProcess test passed');
         });
 
-        test('writeThroughBlob should upload CSV and load from blob', async () => {
+        test('writeThroughBlob uploads CSV and executes a TI process via /ExecuteProcessWithReturn', async () => {
             const cellsetData = {
-                'Year,Version,Region': 100
+                '2024,Actual,London': 100,
             };
 
-            // Mock the REST calls for process creation, execution, and deletion
-            mockRestService.post
-                .mockResolvedValueOnce(createMockResponse({})) // Process creation
-                .mockResolvedValueOnce(createMockResponse({})); // Process execution
+            // Capture the FileService factory mock created at module load time.
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { FileService } = require('../services/FileService');
+            const fsCreate = jest.fn().mockResolvedValue({});
+            const fsDelete = jest.fn().mockResolvedValue({});
+            (FileService as jest.Mock).mockImplementationOnce(() => ({
+                create: fsCreate,
+                delete: fsDelete,
+            }));
 
-            mockRestService.delete
-                .mockResolvedValueOnce(createMockResponse({})); // Process deletion
+            mockRestService.post.mockResolvedValue(createMockResponse({
+                ProcessExecuteStatusCode: 'CompletedSuccessfully',
+            }));
 
             await cellService.writeThroughBlob('SalesCube', cellsetData);
 
-            // Should create process, execute it, and delete it
-            expect(mockRestService.post).toHaveBeenCalledTimes(2);
-            expect(mockRestService.delete).toHaveBeenCalledTimes(1);
+            // CSV uploaded as a single file, then the TI process executed, then file deleted.
+            expect(fsCreate).toHaveBeenCalledTimes(1);
+            const [fname, content] = fsCreate.mock.calls[0];
+            expect(fname).toMatch(/^tm1py_[0-9a-f]+\.csv$/);
+            expect(Buffer.isBuffer(content)).toBe(true);
+            // tm1py csv.writer default: '\r\n' terminator after every row (including the last).
+            expect(content.toString('utf-8')).toBe('"2024","Actual","London","100"\r\n');
 
-            // Verify process creation call
-            expect(mockRestService.post).toHaveBeenNthCalledWith(1,
-                '/Processes',
-                expect.objectContaining({
-                    Name: expect.stringContaining('tm1npm_blob_import_')
-                })
+            expect(mockRestService.post).toHaveBeenCalledTimes(1);
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                '/ExecuteProcessWithReturn?$expand=*',
+                expect.any(String)
             );
 
-            // Verify process execution call
-            expect(mockRestService.post).toHaveBeenNthCalledWith(2,
-                expect.stringMatching(/\/Processes\(.*\)\/tm1\.ExecuteProcess/),
-                {}
-            );
+            expect(fsDelete).toHaveBeenCalledTimes(1);
+            expect(fsDelete).toHaveBeenCalledWith(fname);
 
             console.log('✅ writeThroughBlob test passed');
+        });
+
+        test('writeThroughBlob skips file delete when remove_blob is false', async () => {
+            const cellsetData = { '2024,Actual,London': 100 };
+
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const { FileService } = require('../services/FileService');
+            const fsCreate = jest.fn().mockResolvedValue({});
+            const fsDelete = jest.fn().mockResolvedValue({});
+            (FileService as jest.Mock).mockImplementationOnce(() => ({
+                create: fsCreate,
+                delete: fsDelete,
+            }));
+
+            mockRestService.post.mockResolvedValue(createMockResponse({
+                ProcessExecuteStatusCode: 'CompletedSuccessfully',
+            }));
+
+            await cellService.writeThroughBlob('SalesCube', cellsetData, { remove_blob: false });
+
+            expect(fsCreate).toHaveBeenCalledTimes(1);
+            expect(fsDelete).not.toHaveBeenCalled();
+        });
+
+        test('write throws when clear_view is set without use_blob', async () => {
+            await expect(
+                cellService.write('SalesCube', { 'a,b,c': 1 }, { clear_view: 'SomeView' })
+            ).rejects.toThrow(/clear_view.*use_blob/);
+        });
+
+        test('write routes to writeThroughUnboundProcess when use_ti=true', async () => {
+            const spy = jest.spyOn(cellService, 'writeThroughUnboundProcess').mockResolvedValue(undefined);
+            await cellService.write('SalesCube', { 'a,b,c': 1 }, { use_ti: true });
+            expect(spy).toHaveBeenCalledTimes(1);
+        });
+
+        test('write routes to writeThroughBlob when use_blob=true', async () => {
+            const spy = jest.spyOn(cellService, 'writeThroughBlob').mockResolvedValue(undefined);
+            await cellService.write('SalesCube', { 'a,b,c': 1 }, { use_blob: true });
+            expect(spy).toHaveBeenCalledTimes(1);
         });
     });
 

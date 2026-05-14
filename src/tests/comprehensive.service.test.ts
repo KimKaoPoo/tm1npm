@@ -322,7 +322,7 @@ describe('Comprehensive Service Tests with Mocking', () => {
 
             // Test writeValue via POST
             mockRestService.post.mockResolvedValueOnce(createMockResponse({}));
-            await cellService.writeValue('TestCube', ['Element1'], 2000);
+            await cellService.writeValue(2000, 'TestCube', ['Element1']);
             expect(mockRestService.post).toHaveBeenCalled();
 
             console.log('✅ All CellService operations working');

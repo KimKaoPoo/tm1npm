@@ -60,7 +60,7 @@ describe('CellService Tests', () => {
             mockRestService.post.mockResolvedValue(createMockResponse({}));
 
             const cellAddress = ['Jan', 'Revenue', 'Actual'];
-            await cellService.writeValue('SalesCube', cellAddress, 1500);
+            await cellService.writeValue(1500, 'SalesCube', cellAddress);
 
             expect(mockRestService.post).toHaveBeenCalledWith(
                 "/Cubes('SalesCube')/tm1.Update",
@@ -68,7 +68,8 @@ describe('CellService Tests', () => {
             );
 
             const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
-            expect(body.Cells[0].Value).toBe(1500);
+            // tm1py writes Value at the top level (not nested in Cells[0]); see CellService.py:1169.
+            expect(body.Value).toBe('1500');
             expect(body.Cells[0]['Tuple@odata.bind']).toHaveLength(3);
 
             console.log('✅ Single cell value written via POST');
@@ -79,11 +80,12 @@ describe('CellService Tests', () => {
             jest.spyOn(cellService, 'getDimensionNamesForWriting')
                 .mockResolvedValue(["O'Brien Dim", 'Measure', 'Version']);
 
-            await cellService.writeValue("O'Brien Dim", ["It's", 'Revenue', 'Actual'], 100, ["O'Brien Dim", 'Measure', 'Version']);
+            await cellService.writeValue(100, "O'Brien Dim", ["It's", 'Revenue', 'Actual'], ["O'Brien Dim", 'Measure', 'Version']);
 
             const body = JSON.parse(mockRestService.post.mock.calls[0][1]);
             const bindPath = body.Cells[0]['Tuple@odata.bind'][0];
-            expect(bindPath).toBe("Dimensions('O''Brien Dim')/Hierarchies('O''Brien Dim')/Elements('It''s')");
+            // formatUrl mirrors tm1py format_url: quote(..., safe="") — spaces become %20.
+            expect(bindPath).toBe("Dimensions('O''Brien%20Dim')/Hierarchies('O''Brien%20Dim')/Elements('It''s')");
         });
 
         test('should write multiple cell values', async () => {
@@ -318,7 +320,7 @@ describe('CellService Tests', () => {
                 response: { status: 401, statusText: 'Unauthorized' }
             });
 
-            await expect(cellService.writeValue('TestCube', ['Jan', 'Revenue', 'Actual'], 1000))
+            await expect(cellService.writeValue(1000, 'TestCube', ['Jan', 'Revenue', 'Actual']))
                 .rejects.toMatchObject({
                     response: { status: 401 }
                 });
@@ -344,19 +346,19 @@ describe('CellService Tests', () => {
         test('should handle zero and null values', async () => {
             mockRestService.patch.mockResolvedValue(createMockResponse({}));
 
-            // Test zero value
+            // Test zero value: tm1py serializes falsy values to '' (str(value) if value else "").
             mockRestService.post.mockResolvedValue(createMockResponse({}));
 
-            await cellService.writeValue('TestCube', ['Jan', 'Revenue', 'Actual'], 0);
+            await cellService.writeValue(0, 'TestCube', ['Jan', 'Revenue', 'Actual']);
 
             let body = JSON.parse(mockRestService.post.mock.calls[0][1]);
-            expect(body.Cells[0].Value).toBe(0);
+            expect(body.Value).toBe('');
 
             // Test null value
-            await cellService.writeValue('TestCube', ['Jan', 'Revenue', 'Actual'], null);
+            await cellService.writeValue(null, 'TestCube', ['Jan', 'Revenue', 'Actual']);
 
             body = JSON.parse(mockRestService.post.mock.calls[1][1]);
-            expect(body.Cells[0].Value).toBeNull();
+            expect(body.Value).toBe('');
 
             console.log('✅ Zero and null values handled correctly');
         });
@@ -391,7 +393,7 @@ describe('CellService Tests', () => {
 
             const operations = [
                 cellService.getValue('TestCube', ['Jan', 'Revenue', 'Actual']),
-                cellService.writeValue('TestCube', ['Feb', 'Revenue', 'Actual'], 2000),
+                cellService.writeValue(2000, 'TestCube', ['Feb', 'Revenue', 'Actual']),
                 cellService.getValue('TestCube', ['Mar', 'Revenue', 'Actual'])
             ];
 
@@ -420,7 +422,7 @@ describe('CellService Tests', () => {
             expect(initialValue).toBe(1000);
 
             // Write new value
-            await cellService.writeValue('TestCube', coordinates, 1500);
+            await cellService.writeValue(1500, 'TestCube', coordinates);
 
             // Read updated value
             const updatedValue = await cellService.getValue('TestCube', coordinates);

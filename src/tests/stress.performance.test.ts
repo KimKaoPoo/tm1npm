@@ -271,7 +271,7 @@ describe('Stress Testing and Performance Tests', () => {
                 } else if (i % 3 === 1) {
                     // Write operation
                     concurrentOperations.push(
-                        cellService.writeValue('TestCube', [`Element${i}`], Math.random() * 1000)
+                        cellService.writeValue(Math.random() * 1000, 'TestCube', [`Element${i}`])
                     );
                 } else {
                     // View operation - mock both calls ViewService makes
@@ -334,7 +334,7 @@ describe('Stress Testing and Performance Tests', () => {
                 // Execute all operations in the transaction
                 const transactionOps = scenario.operations.map(op => {
                     const [dimension, account] = op.account.split(':');
-                    return cellService.writeValue('TransactionCube', [dimension, account], op.amount);
+                    return cellService.writeValue(op.amount, 'TransactionCube', [dimension, account]);
                 });
                 
                 const results = await Promise.allSettled(transactionOps);

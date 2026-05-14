@@ -116,6 +116,41 @@ export function lowerAndDropSpaces(str: string): string {
     return str.toLowerCase().replace(/\s+/g, '');
 }
 
+// Python's built-in `round(value, ndigits)` uses banker's rounding (round-half-to-even).
+// JS `Math.round` rounds half away from zero (or toward +Infinity, depending on viewpoint),
+// so a direct port would diverge on tie cases like round(2.5) → 2 (Python) vs 3 (JS).
+function pythonRound(value: number, ndigits: number): number {
+    if (!Number.isFinite(value)) return value;
+    const factor = Math.pow(10, ndigits);
+    const scaled = value * factor;
+    const truncated = Math.trunc(scaled);
+    const diff = scaled - truncated;
+    let rounded: number;
+    // Tie detection at the working precision. Use a small tolerance so binary-float artefacts
+    // near a half don't get mis-classified as ties.
+    if (Math.abs(Math.abs(diff) - 0.5) < 1e-9) {
+        // Round to even: pick the integer whose absolute value is even.
+        const lower = truncated;
+        const upper = truncated + Math.sign(scaled || 1);
+        rounded = (lower % 2 === 0) ? lower : upper;
+    } else {
+        rounded = Math.round(scaled);
+    }
+    return rounded / factor;
+}
+
+// Mirror tm1py Utils.frame_to_significant_digits (Utils.py:1766-1770).
+// Special floats follow Python's str() output: 'inf', '-inf', 'nan'. Zero stays '0'.
+export function frameToSignificantDigits(x: number, digits: number = 15): string {
+    if (Number.isNaN(x)) return 'nan';
+    if (x === Infinity) return 'inf';
+    if (x === -Infinity) return '-inf';
+    if (x === 0) return '0';
+    const adjusted = digits - Math.ceil(Math.log10(Math.abs(x)));
+    const rounded = pythonRound(x, adjusted);
+    return String(rounded).replace('e+', 'E');
+}
+
 export function escapeODataValue(str: string): string {
     return str.replace(/'/g, "''");
 }

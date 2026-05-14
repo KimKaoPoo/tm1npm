@@ -186,9 +186,9 @@ export class HierarchyService extends ObjectService {
         const cellService = new CellService(this.rest);
         const value = memberName || '';
         await cellService.writeValue(
+            value,
             '}HierarchyProperties',
-            [dimensionName, hierarchyName, 'MEMBER_DEFAULT'],
-            value
+            [dimensionName, hierarchyName, 'MEMBER_DEFAULT']
         );
     }
 
@@ -426,7 +426,7 @@ export class HierarchyService extends ObjectService {
                 for (const [elementName, attrs] of attributeValues) {
                     for (const [attrName, value] of attrs) {
                         writePromises.push(
-                            cellService.writeValue(cubeName, [elementName, attrName], value)
+                            cellService.writeValue(value, cubeName, [elementName, attrName])
                                 .catch((e: any) => {
                                     // Expected: element may not exist in control dimension
                                     if (!(e instanceof TM1RestException && e.statusCode === 404)) {

@@ -240,7 +240,7 @@ describe('Advanced MDX and Calculation Tests', () => {
                 const allocatedAmount = totalAmount * driver.weight;
                 totalAllocated += allocatedAmount;
                 
-                await cellService.writeValue('AllocationCube', [driver.element], allocatedAmount);
+                await cellService.writeValue(allocatedAmount, 'AllocationCube', [driver.element]);
                 
                 expect(allocatedAmount).toBeGreaterThan(0);
                 console.log(`✅ Allocated ${allocatedAmount} to ${driver.element}`);
@@ -441,7 +441,7 @@ describe('Advanced MDX and Calculation Tests', () => {
                 }));
 
                 try {
-                    await cellService.writeValue('ExtremeCube', ['Test'], testCase.value);
+                    await cellService.writeValue(testCase.value, 'ExtremeCube', ['Test']);
                     console.log(`✅ Extreme value handled: ${testCase.name}`);
                 } catch (error) {
                     console.log(`✅ Extreme value properly rejected: ${testCase.name}`);
