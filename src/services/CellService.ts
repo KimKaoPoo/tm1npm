@@ -742,8 +742,8 @@ export class CellService {
      * tm1py CSV semantics (CellService.py:2567).
      *
      * useBlob validation gates match tm1py byte-for-byte (CellService.py:2602-2612).
-     * After all gates pass, throws "not yet ported" — see IMPLEMENTATION_PLAN.md
-     * for the documented parity gap (user-approved scope for #65).
+     * After all gates pass, throws "not yet ported" — documented parity gap
+     * approved for #65 scope; blob CSV path port is tracked as a follow-up.
      */
     public async executeMdxCsv(
         mdx: string,
@@ -813,8 +813,8 @@ export class CellService {
      *
      * useBlob validation gates match tm1py byte-for-byte
      * (CellService.py:2709-2719) including the `private=False` requirement.
-     * After all gates pass, throws "not yet ported" — see
-     * IMPLEMENTATION_PLAN.md for the documented parity gap.
+     * After all gates pass, throws "not yet ported" — documented parity gap
+     * approved for #65 scope; blob CSV path port is tracked as a follow-up.
      */
     public async executeViewCsv(
         cubeName: string,
@@ -2013,7 +2013,7 @@ export class CellService {
      * Execute view via cellset extraction (parity with tm1py.execute_view_async).
      * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
      *
-     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
+     * Documented parity gaps (tracked as follow-ups, not in scope of #65):
      * - tm1py uses extract_cellset_async with parallel-chunked retrieval. Not yet ported;
      *   this delegates to a serial extractCellset.
      * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
@@ -3864,7 +3864,7 @@ export class CellService {
      * Execute MDX via cellset extraction (parity with tm1py.execute_mdx_async).
      * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
      *
-     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
+     * Documented parity gaps (tracked as follow-ups, not in scope of #65):
      * - tm1py uses extract_cellset_async with parallel-chunked retrieval. That helper is not
      *   yet ported; this implementation delegates to a serial extractCellset.
      * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
