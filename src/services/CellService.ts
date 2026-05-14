@@ -2020,9 +2020,6 @@ export class CellService {
      *   not yet wired through extractCellset and are deliberately omitted from this signature
      *   so misuse is a compile-time error.
      * - Tuple-key parts are reordered by cube dimensions (parity with tm1py.sort_coordinates).
-     * - Calls createCellsetFromView, which is itself pre-existing on main and currently
-     *   targets a fabricated /tm1.CreateCellset endpoint (out of #69 scope; tracked
-     *   separately for a future fix to use /Cubes/{}/Views/{}/tm1.Execute per tm1py).
      */
     public async execute_view_async(
         cubeName: string,
@@ -2183,15 +2180,17 @@ export class CellService {
         isPrivate: boolean = false,
         sandbox_name?: string
     ): Promise<string> {
-        let url = `/Cubes('${cubeName}')/Views('${viewName}')/tm1.CreateCellset`;
-
-        const params = new URLSearchParams();
-        if (isPrivate) params.append('$private', 'true');
-        if (sandbox_name) params.append('$sandbox', sandbox_name);
-
-        if (params.toString()) {
-            url += `?${params.toString()}`;
-        }
+        // Mirror tm1py's create_cellset_from_view (CellService.py:4986-5005) exactly:
+        //   /Cubes('{cube}')/{PrivateViews|Views}('{view}')/tm1.Execute?!sandbox=...
+        // The public/private discriminator is a URL segment (not a $private query
+        // param), the action is `tm1.Execute` (not `tm1.CreateCellset`), and the
+        // sandbox parameter uses TM1's write-side `!sandbox=` form with quote
+        // doubling as the only escaping (Utils.py add_url_parameters).
+        const views = isPrivate ? 'PrivateViews' : 'Views';
+        const cube = escapeODataValue(cubeName);
+        const view = escapeODataValue(viewName);
+        let url = `/Cubes('${cube}')/${views}('${view}')/tm1.Execute`;
+        if (sandbox_name) url += `?!sandbox=${escapeODataValue(sandbox_name)}`;
 
         const response = await this.rest.post(url);
 
