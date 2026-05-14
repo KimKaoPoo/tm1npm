@@ -183,22 +183,23 @@ describe('ElementService — Issue #37: 13 missing methods', () => {
         test('should include alias values when alias attributes exist', async () => {
             jest.spyOn(elementService, 'getAliasElementAttributes').mockResolvedValue(['Alias1']);
 
-            // Mock ExecuteMDX response with axes and cells
-            mockRestService.post.mockResolvedValue(createMockResponse({
+            // executeMdxRowsAndValues now uses createCellset (POST) + extractCellsetRaw (GET) + delete.
+            const cellset = {
                 Axes: [
-                    { Tuples: [{ Members: [{ Name: 'Alias1' }] }] },  // column axis
-                    {
-                        Tuples: [
-                            { Members: [{ Name: 'Leaf1' }] },
-                            { Members: [{ Name: 'Leaf2' }] }
-                        ]
-                    }  // row axis
+                    { Tuples: [{ Members: [{ Name: 'Alias1' }] }] },
+                    { Tuples: [
+                        { Members: [{ Name: 'Leaf1' }] },
+                        { Members: [{ Name: 'Leaf2' }] }
+                    ] }
                 ],
                 Cells: [
                     { Value: 'Alias_Leaf1' },
                     { Value: 'Alias_Leaf2' }
                 ]
-            }));
+            };
+            mockRestService.post.mockResolvedValue(createMockResponse({ ID: 'cs1' }));
+            mockRestService.get.mockResolvedValue(createMockResponse(cellset));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));
 
             const result = await elementService.getAllLeafElementIdentifiers('Dim1', 'Hier1');
 
@@ -212,21 +213,24 @@ describe('ElementService — Issue #37: 13 missing methods', () => {
         test('should skip empty alias values', async () => {
             jest.spyOn(elementService, 'getAliasElementAttributes').mockResolvedValue(['Alias1']);
 
-            mockRestService.post.mockResolvedValue(createMockResponse({
+            const cellset = {
                 Axes: [
                     { Tuples: [{ Members: [{ Name: 'Alias1' }] }] },
                     { Tuples: [{ Members: [{ Name: 'Elem1' }] }] }
                 ],
                 Cells: [
-                    { Value: '' },  // empty alias
-                    { Value: null }  // null alias
+                    { Value: '' },
+                    { Value: null }
                 ]
-            }));
+            };
+            mockRestService.post.mockResolvedValue(createMockResponse({ ID: 'cs1' }));
+            mockRestService.get.mockResolvedValue(createMockResponse(cellset));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));
 
             const result = await elementService.getAllLeafElementIdentifiers('Dim1', 'Hier1');
 
             expect(result.has('Elem1')).toBe(true);
-            expect(result.size).toBe(1); // only the element name, no empty/null aliases
+            expect(result.size).toBe(1);
         });
     });
 
@@ -547,8 +551,10 @@ describe('ElementService — Issue #37: 13 missing methods', () => {
 
     describe('_retrieveMdxRowsAndCellValuesAsStringSet — additional edge cases', () => {
         test('should return empty set when Axes and Cells are missing', async () => {
-            // CellService.executeMdxRowsAndValues handles missing Axes/Cells
-            mockRestService.post.mockResolvedValue(createMockResponse({}));
+            // executeMdxRowsAndValues → executeMdxRaw → createCellset (POST) + extractCellsetRaw (GET) + delete.
+            mockRestService.post.mockResolvedValue(createMockResponse({ ID: 'cs1' }));
+            mockRestService.get.mockResolvedValue(createMockResponse({}));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));
 
             const retrieve = (elementService as any)._retrieveMdxRowsAndCellValuesAsStringSet.bind(elementService);
             const result = await retrieve('SELECT {} ON ROWS FROM [Cube]');

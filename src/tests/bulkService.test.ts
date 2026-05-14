@@ -339,7 +339,7 @@ invalid,line
 
         describe('exportDataToCSV', () => {
             it('should export data to CSV with header', async () => {
-                mockCellService.executeMdx = jest.fn().mockResolvedValue({
+                mockCellService.executeMdxRaw = jest.fn().mockResolvedValue({
                     Axes: [
                         { Hierarchies: [{ Name: 'Year' }, { Name: 'Quarter' }] }
                     ],
@@ -353,11 +353,11 @@ invalid,line
                 const csv = await bulkService.exportDataToCSV('Sales', mdx, { includeHeader: true });
 
                 expect(csv).toContain('Year,Quarter,Value');
-                expect(mockCellService.executeMdx).toHaveBeenCalledWith(mdx);
+                expect(mockCellService.executeMdxRaw).toHaveBeenCalledWith(mdx);
             });
 
             it('should skip zeros when option is set', async () => {
-                mockCellService.executeMdx = jest.fn().mockResolvedValue({
+                mockCellService.executeMdxRaw = jest.fn().mockResolvedValue({
                     Axes: [{ Hierarchies: [{ Name: 'Year' }] }],
                     Cells: [
                         { Value: 100, Consolidated: false, RuleDerived: false },
@@ -376,7 +376,7 @@ invalid,line
             });
 
             it('should skip consolidated cells when option is set', async () => {
-                mockCellService.executeMdx = jest.fn().mockResolvedValue({
+                mockCellService.executeMdxRaw = jest.fn().mockResolvedValue({
                     Axes: [{ Hierarchies: [{ Name: 'Year' }] }],
                     Cells: [
                         { Value: 100, Consolidated: false, RuleDerived: false },
@@ -395,7 +395,7 @@ invalid,line
             });
 
             it('should handle custom delimiter', async () => {
-                mockCellService.executeMdx = jest.fn().mockResolvedValue({
+                mockCellService.executeMdxRaw = jest.fn().mockResolvedValue({
                     Axes: [{ Hierarchies: [{ Name: 'Year' }] }],
                     Cells: [{ Value: 100, Consolidated: false, RuleDerived: false }]
                 });
@@ -482,7 +482,7 @@ invalid,line
 
         describe('exportDataToJSON', () => {
             it('should export data in compact format', async () => {
-                mockCellService.executeMdx = jest.fn().mockResolvedValue({
+                mockCellService.executeMdxRaw = jest.fn().mockResolvedValue({
                     Cells: [
                         { Value: 100, Ordinal: 0, RuleDerived: false, Updateable: true },
                         { Value: 200, Ordinal: 1, RuleDerived: false, Updateable: true }
@@ -499,7 +499,7 @@ invalid,line
             });
 
             it('should export data in full format', async () => {
-                mockCellService.executeMdx = jest.fn().mockResolvedValue({
+                mockCellService.executeMdxRaw = jest.fn().mockResolvedValue({
                     Cells: [
                         {
                             Value: 100,
@@ -522,7 +522,7 @@ invalid,line
             });
 
             it('should skip zeros when option is set', async () => {
-                mockCellService.executeMdx = jest.fn().mockResolvedValue({
+                mockCellService.executeMdxRaw = jest.fn().mockResolvedValue({
                     Cells: [
                         { Value: 100, RuleDerived: false, Consolidated: false },
                         { Value: 0, RuleDerived: false, Consolidated: false },
@@ -538,7 +538,7 @@ invalid,line
             });
 
             it('should skip rule derived cells when option is set', async () => {
-                mockCellService.executeMdx = jest.fn().mockResolvedValue({
+                mockCellService.executeMdxRaw = jest.fn().mockResolvedValue({
                     Cells: [
                         { Value: 100, RuleDerived: false, Consolidated: false },
                         { Value: 200, RuleDerived: true, Consolidated: false },

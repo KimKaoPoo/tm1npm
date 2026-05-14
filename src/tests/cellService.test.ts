@@ -111,8 +111,10 @@ describe('CellService Tests', () => {
     });
 
     describe('MDX Operations', () => {
+        // executeMdxRaw uses createCellset (POST) + extractCellsetRaw (GET) + delete (DELETE) per
+        // tm1py parity. Tests mock POST → cellset id, GET → raw cellset, DELETE → empty.
         test('should execute MDX query', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({
+            const rawCellset = {
                 Axes: [{
                     Tuples: [
                         { Members: [{ Name: 'Jan' }] },
@@ -123,35 +125,36 @@ describe('CellService Tests', () => {
                     { Ordinal: 0, Value: 1000, FormattedValue: '1,000' },
                     { Ordinal: 1, Value: 1200, FormattedValue: '1,200' }
                 ]
-            }));
+            };
+            mockRestService.post.mockResolvedValue(createMockResponse({ ID: 'cs1' }));
+            mockRestService.get.mockResolvedValue(createMockResponse(rawCellset));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));
 
             const mdxQuery = 'SELECT [Time].[Jan]:[Feb] ON 0 FROM [SalesCube]';
-            const result = await cellService.executeMdx(mdxQuery);
-            
+            const result = await cellService.executeMdxRaw(mdxQuery);
+
             expect(result.Axes).toBeDefined();
             expect(result.Cells).toBeDefined();
             expect(result.Cells.length).toBe(2);
             expect(result.Cells[0].Value).toBe(1000);
-            expect(mockRestService.post).toHaveBeenCalledWith('/ExecuteMDX', { MDX: mdxQuery });
-            
+            expect(mockRestService.post).toHaveBeenCalledWith(
+                '/ExecuteMDX', JSON.stringify({ MDX: mdxQuery })
+            );
+
             console.log('✅ MDX query executed successfully');
         });
 
         test('should handle complex MDX queries', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({
+            const rawCellset = {
                 Axes: [
-                    {
-                        Tuples: [
-                            { Members: [{ Name: 'Revenue' }] },
-                            { Members: [{ Name: 'Expenses' }] }
-                        ]
-                    },
-                    {
-                        Tuples: [
-                            { Members: [{ Name: 'Jan' }] },
-                            { Members: [{ Name: 'Feb' }] }
-                        ]
-                    }
+                    { Tuples: [
+                        { Members: [{ Name: 'Revenue' }] },
+                        { Members: [{ Name: 'Expenses' }] }
+                    ] },
+                    { Tuples: [
+                        { Members: [{ Name: 'Jan' }] },
+                        { Members: [{ Name: 'Feb' }] }
+                    ] }
                 ],
                 Cells: [
                     { Ordinal: 0, Value: 10000, FormattedValue: '10,000' },
@@ -159,14 +162,17 @@ describe('CellService Tests', () => {
                     { Ordinal: 2, Value: 8000, FormattedValue: '8,000' },
                     { Ordinal: 3, Value: 9000, FormattedValue: '9,000' }
                 ]
-            }));
+            };
+            mockRestService.post.mockResolvedValue(createMockResponse({ ID: 'cs1' }));
+            mockRestService.get.mockResolvedValue(createMockResponse(rawCellset));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));
 
             const complexMdx = 'SELECT {[Account].[Revenue], [Account].[Expenses]} ON 0, {[Time].[Jan], [Time].[Feb]} ON 1 FROM [SalesCube]';
-            const result = await cellService.executeMdx(complexMdx);
-            
-            expect(result.Axes.length).toBe(2); // 2 dimensions
-            expect(result.Cells.length).toBe(4); // 2x2 matrix
-            
+            const result = await cellService.executeMdxRaw(complexMdx);
+
+            expect(result.Axes.length).toBe(2);
+            expect(result.Cells.length).toBe(4);
+
             console.log('✅ Complex MDX query handled successfully');
         });
     });
@@ -459,7 +465,7 @@ describe('CellService Tests', () => {
         });
 
         test('should handle statistical calculations via MDX', async () => {
-            mockRestService.post.mockResolvedValue(createMockResponse({
+            const rawCellset = {
                 Axes: [{
                     Tuples: [
                         { Members: [{ Name: 'Average' }] },
@@ -468,11 +474,14 @@ describe('CellService Tests', () => {
                     ]
                 }],
                 Cells: [
-                    { Ordinal: 0, Value: 15000, FormattedValue: '15,000' }, // Average
-                    { Ordinal: 1, Value: 180000, FormattedValue: '180,000' }, // Sum
-                    { Ordinal: 2, Value: 12, FormattedValue: '12' } // Count
+                    { Ordinal: 0, Value: 15000, FormattedValue: '15,000' },
+                    { Ordinal: 1, Value: 180000, FormattedValue: '180,000' },
+                    { Ordinal: 2, Value: 12, FormattedValue: '12' }
                 ]
-            }));
+            };
+            mockRestService.post.mockResolvedValue(createMockResponse({ ID: 'cs1' }));
+            mockRestService.get.mockResolvedValue(createMockResponse(rawCellset));
+            mockRestService.delete.mockResolvedValue(createMockResponse({}));
 
             const statisticalMdx = `
                 WITH 
@@ -483,8 +492,8 @@ describe('CellService Tests', () => {
                 FROM [SalesCube]
             `;
             
-            const result = await cellService.executeMdx(statisticalMdx);
-            
+            const result = await cellService.executeMdxRaw(statisticalMdx);
+
             expect(result.Cells[0].Value).toBe(15000); // Average
             expect(result.Cells[1].Value).toBe(180000); // Sum
             expect(result.Cells[2].Value).toBe(12); // Count

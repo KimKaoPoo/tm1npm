@@ -484,10 +484,9 @@ export class BulkService {
             skip_rule_derived = false
         } = options;
 
-        // Execute MDX query
-        // Note: executeMdx currently doesn't support options parameter
-        // TODO: Enhance CellService.executeMdx to accept MDXViewOptions
-        const result = await this.cellService.executeMdx(mdx);
+        // Use executeMdxRaw for raw cellset shape (Axes/Cells); executeMdx now
+        // returns CaseAndSpaceInsensitiveTuplesDict per tm1py parity.
+        const result = await this.cellService.executeMdxRaw(mdx);
 
         // Convert to CSV
         const rows: string[] = [];
@@ -619,10 +618,9 @@ export class BulkService {
             format = 'compact'
         } = options;
 
-        // Execute MDX query
-        // Note: executeMdx currently doesn't support options parameter
-        // TODO: Enhance CellService.executeMdx to accept MDXViewOptions
-        const result = await this.cellService.executeMdx(mdx);
+        // Use executeMdxRaw for raw cellset shape (Axes/Cells); executeMdx now
+        // returns CaseAndSpaceInsensitiveTuplesDict per tm1py parity.
+        const result = await this.cellService.executeMdxRaw(mdx);
 
         const data: any[] = [];
 
