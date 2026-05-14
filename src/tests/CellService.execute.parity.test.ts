@@ -85,7 +85,7 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             }));
         });
 
-        test('maxWorkers > 1 dispatches to executeMdxAsync', async () => {
+        test('maxWorkers > 1 with supported-only options dispatches to executeMdxAsync', async () => {
             const asyncSpy = jest.spyOn(cellService, 'executeMdxAsync')
                 .mockResolvedValue(new Map<string, any>([['a', 1]]));
             const extractSpy = jest.spyOn(cellService, 'extractCellset');
@@ -97,6 +97,15 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             expect(asyncSpy).toHaveBeenCalledWith('SELECT 1 ON 0 FROM [c]', { sandbox_name: 'sb' });
             expect(extractSpy).not.toHaveBeenCalled();
             expect(result).toBeInstanceOf(CaseAndSpaceInsensitiveTuplesDict);
+        });
+
+        test('maxWorkers > 1 with unsupported options throws (no silent option drop)', async () => {
+            // tm1npm's executeMdxAsync currently only accepts {sandbox_name, cubeName};
+            // any other option set alongside maxWorkers>1 must fail loud.
+            await expect(cellService.executeMdx('SELECT 1 ON 0 FROM [c]', {
+                maxWorkers: 8,
+                cellProperties: ['Value'],
+            })).rejects.toThrow(/executeMdx maxWorkers>1 path does not yet forward/);
         });
 
         test('default skipZeros is false (parity with tm1py execute_mdx)', async () => {
@@ -176,7 +185,7 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             }));
         });
 
-        test('maxWorkers > 1 dispatches to execute_view_async with only {private, sandbox_name} (tm1py quirk parity)', async () => {
+        test('maxWorkers > 1 with supported-only options dispatches to execute_view_async', async () => {
             const asyncSpy = jest.spyOn(cellService, 'execute_view_async')
                 .mockResolvedValue(new Map());
             const extractSpy = jest.spyOn(cellService, 'extractCellset');
@@ -185,16 +194,21 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
                 maxWorkers: 8,
                 private: true,
                 sandboxName: 'sb',
-                cellProperties: ['Value'],  // tm1py drops this on async branch
-                useCompactJson: true,        // tm1py drops this too
             });
 
             expect(asyncSpy).toHaveBeenCalledWith('Cube', 'View', {
                 private: true, sandbox_name: 'sb',
             });
-            expect(asyncSpy).not.toHaveBeenCalledWith(expect.anything(), expect.anything(),
-                expect.objectContaining({ cellProperties: expect.anything() }));
             expect(extractSpy).not.toHaveBeenCalled();
+        });
+
+        test('maxWorkers > 1 with unsupported options throws (no silent option drop)', async () => {
+            // tm1npm's execute_view_async currently only accepts {private, sandbox_name};
+            // any other option set alongside maxWorkers>1 must fail loud.
+            await expect(cellService.executeView('Cube', 'View', {
+                maxWorkers: 8,
+                cellProperties: ['Value'],
+            })).rejects.toThrow(/executeView maxWorkers>1 path does not yet forward/);
         });
     });
 

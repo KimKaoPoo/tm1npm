@@ -353,7 +353,12 @@ invalid,line
                 const csv = await bulkService.exportDataToCSV('Sales', mdx, { includeHeader: true });
 
                 expect(csv).toContain('Year,Quarter,Value');
-                expect(mockCellService.executeMdxRaw).toHaveBeenCalledWith(mdx);
+                expect(mockCellService.executeMdxRaw).toHaveBeenCalledWith(mdx, expect.objectContaining({
+                    sandboxName: undefined,
+                    skipZeros: false,
+                    skipConsolidatedCells: false,
+                    skipRuleDerivedCells: false,
+                }));
             });
 
             it('should skip zeros when option is set', async () => {

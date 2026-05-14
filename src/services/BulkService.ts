@@ -484,9 +484,14 @@ export class BulkService {
             skip_rule_derived = false
         } = options;
 
-        // Use executeMdxRaw for raw cellset shape (Axes/Cells); executeMdx now
-        // returns CaseAndSpaceInsensitiveTuplesDict per tm1py parity.
-        const result = await this.cellService.executeMdxRaw(mdx);
+        // executeMdxRaw now accepts the full tm1py-parity option surface; forward
+        // the destructured options so server-side filters/sandbox actually apply.
+        const result = await this.cellService.executeMdxRaw(mdx, {
+            sandboxName: sandbox_name,
+            skipZeros: skip_zeros,
+            skipConsolidatedCells: skip_consolidated,
+            skipRuleDerivedCells: skip_rule_derived,
+        });
 
         // Convert to CSV
         const rows: string[] = [];
@@ -618,9 +623,14 @@ export class BulkService {
             format = 'compact'
         } = options;
 
-        // Use executeMdxRaw for raw cellset shape (Axes/Cells); executeMdx now
-        // returns CaseAndSpaceInsensitiveTuplesDict per tm1py parity.
-        const result = await this.cellService.executeMdxRaw(mdx);
+        // executeMdxRaw now accepts the full tm1py-parity option surface; forward
+        // the destructured options so server-side filters/sandbox actually apply.
+        const result = await this.cellService.executeMdxRaw(mdx, {
+            sandboxName: sandbox_name,
+            skipZeros: skip_zeros,
+            skipConsolidatedCells: skip_consolidated,
+            skipRuleDerivedCells: skip_rule_derived,
+        });
 
         const data: any[] = [];
 

@@ -665,7 +665,21 @@ export class CellService {
     ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
         const maxWorkers = options.maxWorkers ?? 1;
         if (maxWorkers > 1) {
-            // tm1py forwards only a subset of args to execute_view_async; match that.
+            // tm1py's execute_view forwards a broad subset (top/skip/skip_*/element_unique_names/
+            // skip_cell_properties/max_workers/async_axis) to execute_view_async, dropping
+            // cell_properties/use_compact_json. tm1npm's execute_view_async currently only
+            // accepts {private, sandbox_name}. Fail loud if the caller set anything else so
+            // option drop is never silent.
+            const unsupported = (Object.keys(options) as Array<keyof ExecuteViewOptions>).filter(
+                k => k !== 'maxWorkers' && k !== 'asyncAxis' && k !== 'sandboxName' && k !== 'private'
+                    && options[k] !== undefined
+            );
+            if (unsupported.length > 0) {
+                throw new Error(
+                    `executeView maxWorkers>1 path does not yet forward [${unsupported.join(', ')}] — ` +
+                    'tracked as a pre-existing execute_view_async parity gap'
+                );
+            }
             const asyncResult = await this.execute_view_async(cubeName, viewName, {
                 private: options.private,
                 sandbox_name: options.sandboxName,
@@ -3667,8 +3681,19 @@ export class CellService {
     ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
         const maxWorkers = options.maxWorkers ?? 1;
         if (maxWorkers > 1) {
-            // executeMdxAsync returns plain Map<string, any>; wrap into a TuplesDict to
-            // keep callers' return-type contract intact. Underlying values are unchanged.
+            // tm1py's execute_mdx forwards every option to execute_mdx_async; tm1npm's
+            // executeMdxAsync currently only accepts {sandbox_name, cubeName}. Fail loud
+            // if the caller set any other option in the async branch so option drop is
+            // never silent — mirrors the useBlob gate strategy.
+            const unsupported = (Object.keys(options) as Array<keyof ExecuteMdxOptions>).filter(
+                k => k !== 'maxWorkers' && k !== 'asyncAxis' && k !== 'sandboxName' && options[k] !== undefined
+            );
+            if (unsupported.length > 0) {
+                throw new Error(
+                    `executeMdx maxWorkers>1 path does not yet forward [${unsupported.join(', ')}] — ` +
+                    'tracked as a pre-existing executeMdxAsync parity gap'
+                );
+            }
             const asyncResult = await this.executeMdxAsync(mdx, { sandbox_name: options.sandboxName });
             const dict = new CaseAndSpaceInsensitiveTuplesDict<any>();
             for (const [k, v] of asyncResult) dict.set(k, v);
