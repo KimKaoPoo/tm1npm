@@ -486,11 +486,15 @@ export class BulkService {
 
         // executeMdxRaw now accepts the full tm1py-parity option surface; forward
         // the destructured options so server-side filters/sandbox actually apply.
+        // executeMdxRaw builds a curated $expand= URL: default cellProperties is
+        // ['Value'] and Hierarchies is omitted unless includeHierarchies=true. CSV
+        // export needs Hierarchies for the header row.
         const result = await this.cellService.executeMdxRaw(mdx, {
             sandboxName: sandbox_name,
             skipZeros: skip_zeros,
             skipConsolidatedCells: skip_consolidated,
             skipRuleDerivedCells: skip_rule_derived,
+            includeHierarchies: true,
         });
 
         // Convert to CSV
@@ -625,11 +629,17 @@ export class BulkService {
 
         // executeMdxRaw now accepts the full tm1py-parity option surface; forward
         // the destructured options so server-side filters/sandbox actually apply.
+        // The 'detailed' format below reads cell.Ordinal/RuleDerived/Updateable/
+        // Consolidated, so request those explicitly — executeMdxRaw defaults
+        // cellProperties to ['Value'] only.
         const result = await this.cellService.executeMdxRaw(mdx, {
             sandboxName: sandbox_name,
             skipZeros: skip_zeros,
             skipConsolidatedCells: skip_consolidated,
             skipRuleDerivedCells: skip_rule_derived,
+            cellProperties: format === 'full'
+                ? ['Value', 'Ordinal', 'Consolidated', 'RuleDerived', 'Updateable']
+                : undefined,
         });
 
         const data: any[] = [];

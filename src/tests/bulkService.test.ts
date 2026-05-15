@@ -353,11 +353,14 @@ invalid,line
                 const csv = await bulkService.exportDataToCSV('Sales', mdx, { includeHeader: true });
 
                 expect(csv).toContain('Year,Quarter,Value');
+                // executeMdxRaw's _buildCellsetRawUrl omits Hierarchies unless
+                // includeHierarchies=true is passed — required for CSV headers.
                 expect(mockCellService.executeMdxRaw).toHaveBeenCalledWith(mdx, expect.objectContaining({
                     sandboxName: undefined,
                     skipZeros: false,
                     skipConsolidatedCells: false,
                     skipRuleDerivedCells: false,
+                    includeHierarchies: true,
                 }));
             });
 
@@ -524,6 +527,21 @@ invalid,line
                 expect(data[0]).toHaveProperty('ordinal');
                 expect(data[0]).toHaveProperty('ruleDerived');
                 expect(data[0]).toHaveProperty('updateable');
+                // executeMdxRaw's _buildCellsetRawUrl defaults cellProperties to
+                // ['Value'] only — full format needs explicit request for the others.
+                expect(mockCellService.executeMdxRaw).toHaveBeenCalledWith('SELECT...', expect.objectContaining({
+                    cellProperties: ['Value', 'Ordinal', 'Consolidated', 'RuleDerived', 'Updateable'],
+                }));
+            });
+
+            it('compact format does not request extra cellProperties', async () => {
+                mockCellService.executeMdxRaw = jest.fn().mockResolvedValue({ Cells: [{ Value: 1 }] });
+
+                await bulkService.exportDataToJSON('Sales', 'SELECT...', { format: 'compact' });
+
+                expect(mockCellService.executeMdxRaw).toHaveBeenCalledWith('SELECT...', expect.objectContaining({
+                    cellProperties: undefined,
+                }));
             });
 
             it('should skip zeros when option is set', async () => {
