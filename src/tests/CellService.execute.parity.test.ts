@@ -3,9 +3,9 @@
  *
  * Verifies that executeMdx, executeMdxRaw, executeView, executeViewRaw,
  * executeMdxCsv, executeViewCsv accept and forward the full tm1py
- * parameter surface to the underlying extract helpers, match tm1py's
- * default values, and reject useBlob combinations with tm1py's exact
- * error messages.
+ * parameter surface to the underlying extract helpers and match tm1py's
+ * default values. tm1py's useBlob CSV path is intentionally not exposed
+ * yet (see ExecuteMdxCsvOptions / ExecuteViewCsvOptions deferral note).
  */
 
 import { CellService } from '../services/CellService';
@@ -301,6 +301,7 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             jest.spyOn(cellService, 'createCellset').mockResolvedValue('cs1');
             const iterSpy = jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockResolvedValue('iter');
             const csvSpy = jest.spyOn(cellService, 'extractCellsetCsv').mockResolvedValue('csv');
+            jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
 
             const result = await cellService.executeMdxCsv('SELECT 1 ON 0 FROM [c]', {
                 useIterativeJson: true, sandboxName: 'sb',
@@ -311,36 +312,27 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             expect(result).toBe('iter');
         });
 
-        describe('useBlob validation gates (tm1py CellService.py:2602-2612)', () => {
-            test('include_attributes mutex', async () => {
-                await expect(cellService.executeMdxCsv('q', { useBlob: true, includeAttributes: true }))
-                    .rejects.toThrow("'include_attributes' must not be used in conjunction with 'use_blob'");
+        test('useIterativeJson cleans up cellset via _safeDeleteCellset (no leak)', async () => {
+            jest.spyOn(cellService, 'createCellset').mockResolvedValue('cs1');
+            jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockResolvedValue('iter');
+            const deleteSpy = jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
+
+            await cellService.executeMdxCsv('SELECT 1 ON 0 FROM [c]', {
+                useIterativeJson: true, sandboxName: 'sb',
             });
 
-            test('use_iterative_json mutex', async () => {
-                await expect(cellService.executeMdxCsv('q', { useBlob: true, useIterativeJson: true }))
-                    .rejects.toThrow("'use_iterative_json' must not be used in conjunction with 'use_blob'");
-            });
+            expect(deleteSpy).toHaveBeenCalledWith('cs1', 'sb');
+        });
 
-            test('use_compact_json mutex', async () => {
-                await expect(cellService.executeMdxCsv('q', { useBlob: true, useCompactJson: true }))
-                    .rejects.toThrow("'use_compact_json' must not be used in conjunction with 'use_blob'");
-            });
+        test('useIterativeJson cleans up cellset even when extract throws', async () => {
+            jest.spyOn(cellService, 'createCellset').mockResolvedValue('cs1');
+            jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockRejectedValue(new Error('boom'));
+            const deleteSpy = jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
 
-            test('csv_dialect mutex', async () => {
-                await expect(cellService.executeMdxCsv('q', { useBlob: true, csvDialect: {} as any }))
-                    .rejects.toThrow("'csv_dialect' must not be used in conjunction with 'use_blob'");
-            });
-
-            test('line_separator must be \\r\\n', async () => {
-                await expect(cellService.executeMdxCsv('q', { useBlob: true, lineSeparator: '\n' }))
-                    .rejects.toThrow("'line_separator' must be '\r\n' to leverage 'use_blob' feature");
-            });
-
-            test('all gates pass → throws not-yet-ported (documented parity gap)', async () => {
-                await expect(cellService.executeMdxCsv('q', { useBlob: true }))
-                    .rejects.toThrow('useBlob CSV path not yet ported to tm1npm');
-            });
+            await expect(cellService.executeMdxCsv('SELECT 1 ON 0 FROM [c]', {
+                useIterativeJson: true,
+            })).rejects.toThrow('boom');
+            expect(deleteSpy).toHaveBeenCalledWith('cs1', undefined);
         });
     });
 
@@ -370,6 +362,7 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('cs1');
             const iterSpy = jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockResolvedValue('iter');
             const csvSpy = jest.spyOn(cellService, 'extractCellsetCsv').mockResolvedValue('csv');
+            jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
 
             const result = await cellService.executeViewCsv('Cube', 'View', { useIterativeJson: true });
 
@@ -378,36 +371,24 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             expect(result).toBe('iter');
         });
 
-        describe('useBlob validation gates (tm1py CellService.py:2709-2719)', () => {
-            test('use_iterative_json mutex', async () => {
-                await expect(cellService.executeViewCsv('Cube', 'View', { useBlob: true, useIterativeJson: true }))
-                    .rejects.toThrow("'use_iterative_json' must not be used in conjunction with 'use_blob'");
-            });
+        test('useIterativeJson cleans up cellset via _safeDeleteCellset (no leak)', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('cs1');
+            jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockResolvedValue('iter');
+            const deleteSpy = jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
 
-            test('use_compact_json mutex', async () => {
-                await expect(cellService.executeViewCsv('Cube', 'View', { useBlob: true, useCompactJson: true }))
-                    .rejects.toThrow("'use_compact_json' must not be used in conjunction with 'use_blob'");
-            });
+            await cellService.executeViewCsv('Cube', 'View', { useIterativeJson: true, sandboxName: 'sb' });
 
-            test('csv_dialect mutex', async () => {
-                await expect(cellService.executeViewCsv('Cube', 'View', { useBlob: true, csvDialect: {} as any }))
-                    .rejects.toThrow("'csv_dialect' must not be used in conjunction with 'use_blob'");
-            });
+            expect(deleteSpy).toHaveBeenCalledWith('cs1', 'sb');
+        });
 
-            test('line_separator must be \\r\\n', async () => {
-                await expect(cellService.executeViewCsv('Cube', 'View', { useBlob: true, lineSeparator: '\n' }))
-                    .rejects.toThrow("'line_separator' must be '\r\n' to leverage 'use_blob' feature");
-            });
+        test('useIterativeJson cleans up cellset even when extract throws', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('cs1');
+            jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockRejectedValue(new Error('boom'));
+            const deleteSpy = jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
 
-            test('private must be false', async () => {
-                await expect(cellService.executeViewCsv('Cube', 'View', { useBlob: true, private: true }))
-                    .rejects.toThrow("'private' must be False to leverage 'use_blob' feature");
-            });
-
-            test('all gates pass → throws not-yet-ported', async () => {
-                await expect(cellService.executeViewCsv('Cube', 'View', { useBlob: true }))
-                    .rejects.toThrow('useBlob CSV path not yet ported to tm1npm');
-            });
+            await expect(cellService.executeViewCsv('Cube', 'View', { useIterativeJson: true }))
+                .rejects.toThrow('boom');
+            expect(deleteSpy).toHaveBeenCalledWith('cs1', undefined);
         });
     });
 });

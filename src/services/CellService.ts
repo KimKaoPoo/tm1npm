@@ -263,6 +263,10 @@ export interface ExecuteViewRawOptions extends Omit<ExecuteMdxRawOptions, 'inclu
 }
 
 // Options matching tm1py execute_mdx_csv (CellService.py:2562-2579).
+// tm1py's `use_blob` is intentionally NOT exposed yet — the blob CSV port
+// (`_execute_mdx_csv_use_blob`) is tracked as a follow-up; the option will
+// be added back when the underlying TI/blob path lands so the public
+// surface never advertises behaviour we don't actually implement.
 export interface ExecuteMdxCsvOptions {
     top?: number;
     skip?: number;
@@ -276,15 +280,16 @@ export interface ExecuteMdxCsvOptions {
     includeAttributes?: boolean;
     useIterativeJson?: boolean;
     useCompactJson?: boolean;
-    useBlob?: boolean;
     mdxHeaders?: boolean;
 }
 
 // Options matching tm1py execute_view_csv (CellService.py:2663-2682). Adds
-// private + arrangedAxes, drops includeAttributes (not in tm1py view_csv).
+// `private`, drops `includeAttributes` (not in tm1py view_csv). tm1py's
+// `use_blob` and `arranged_axes` are intentionally NOT exposed yet —
+// `arranged_axes` only affects the blob path in tm1py, so it travels with
+// the blob port; both will be added back together as a follow-up.
 export interface ExecuteViewCsvOptions extends Omit<ExecuteMdxCsvOptions, 'includeAttributes'> {
     private?: boolean;
-    arrangedAxes?: [string[], string[], string[]];
 }
 
 // tm1py uses CaseAndSpaceInsensitiveDict for measure-element lookups so callers can pass
@@ -741,9 +746,11 @@ export class CellService {
      * Note default `skipZeros=true` — different from executeMdx, matches
      * tm1py CSV semantics (CellService.py:2567).
      *
-     * useBlob validation gates match tm1py byte-for-byte (CellService.py:2602-2612).
-     * After all gates pass, throws "not yet ported" — documented parity gap
-     * approved for #65 scope; blob CSV path port is tracked as a follow-up.
+     * tm1py's `use_blob` is not exposed yet — see ExecuteMdxCsvOptions for
+     * the deferral note. extractCellsetCsv handles cellset cleanup itself
+     * (deleteCellset=true default); extractCellsetCsvIterJson does NOT, so
+     * the iter-json branch wraps its call in try/finally to avoid leaking
+     * cellsets on the TM1 server.
      */
     public async executeMdxCsv(
         mdx: string,
@@ -753,41 +760,26 @@ export class CellService {
         const lineSeparator = options.lineSeparator ?? '\r\n';
         const valueSeparator = options.valueSeparator ?? ',';
 
-        if (options.useBlob) {
-            if (options.includeAttributes) {
-                throw new Error("'include_attributes' must not be used in conjunction with 'use_blob'");
-            }
-            if (options.useIterativeJson) {
-                throw new Error("'use_iterative_json' must not be used in conjunction with 'use_blob'");
-            }
-            if (options.useCompactJson) {
-                throw new Error("'use_compact_json' must not be used in conjunction with 'use_blob'");
-            }
-            if (options.csvDialect) {
-                throw new Error("'csv_dialect' must not be used in conjunction with 'use_blob'");
-            }
-            if (lineSeparator !== '\r\n') {
-                throw new Error("'line_separator' must be '\r\n' to leverage 'use_blob' feature");
-            }
-            throw new Error('useBlob CSV path not yet ported to tm1npm — tracked separately');
-        }
-
         const cellsetId = await this.createCellset(mdx, options.sandboxName);
 
         if (options.useIterativeJson) {
-            return this.extractCellsetCsvIterJson(cellsetId, {
-                top: options.top,
-                skip: options.skip,
-                skipZeros,
-                skipConsolidatedCells: options.skipConsolidatedCells,
-                skipRuleDerivedCells: options.skipRuleDerivedCells,
-                csvDialect: options.csvDialect,
-                lineSeparator,
-                valueSeparator,
-                sandboxName: options.sandboxName,
-                includeAttributes: options.includeAttributes,
-                mdxHeaders: options.mdxHeaders,
-            });
+            try {
+                return await this.extractCellsetCsvIterJson(cellsetId, {
+                    top: options.top,
+                    skip: options.skip,
+                    skipZeros,
+                    skipConsolidatedCells: options.skipConsolidatedCells,
+                    skipRuleDerivedCells: options.skipRuleDerivedCells,
+                    csvDialect: options.csvDialect,
+                    lineSeparator,
+                    valueSeparator,
+                    sandboxName: options.sandboxName,
+                    includeAttributes: options.includeAttributes,
+                    mdxHeaders: options.mdxHeaders,
+                });
+            } finally {
+                await this._safeDeleteCellset(cellsetId, options.sandboxName);
+            }
         }
 
         return this.extractCellsetCsv(cellsetId, {
@@ -811,10 +803,11 @@ export class CellService {
      * (CellService.py:2663-2769): createCellsetFromView + extractCellsetCsv
      * (or extractCellsetCsvIterJson) with the full tm1py parameter surface.
      *
-     * useBlob validation gates match tm1py byte-for-byte
-     * (CellService.py:2709-2719) including the `private=False` requirement.
-     * After all gates pass, throws "not yet ported" — documented parity gap
-     * approved for #65 scope; blob CSV path port is tracked as a follow-up.
+     * tm1py's `use_blob` (+ its associated `arranged_axes` reorder) is not
+     * exposed yet — see ExecuteViewCsvOptions for the deferral note.
+     * extractCellsetCsvIterJson does not delete the cellset itself, so the
+     * iter-json branch wraps its call in try/finally to avoid leaking
+     * cellsets on the TM1 server.
      */
     public async executeViewCsv(
         cubeName: string,
@@ -825,41 +818,26 @@ export class CellService {
         const lineSeparator = options.lineSeparator ?? '\r\n';
         const valueSeparator = options.valueSeparator ?? ',';
 
-        if (options.useBlob) {
-            if (options.useIterativeJson) {
-                throw new Error("'use_iterative_json' must not be used in conjunction with 'use_blob'");
-            }
-            if (options.useCompactJson) {
-                throw new Error("'use_compact_json' must not be used in conjunction with 'use_blob'");
-            }
-            if (options.csvDialect) {
-                throw new Error("'csv_dialect' must not be used in conjunction with 'use_blob'");
-            }
-            if (lineSeparator !== '\r\n') {
-                throw new Error("'line_separator' must be '\r\n' to leverage 'use_blob' feature");
-            }
-            if (options.private) {
-                throw new Error("'private' must be False to leverage 'use_blob' feature");
-            }
-            throw new Error('useBlob CSV path not yet ported to tm1npm — tracked separately');
-        }
-
         const cellsetId = await this.createCellsetFromView(
             cubeName, viewName, options.private ?? false, options.sandboxName);
 
         if (options.useIterativeJson) {
-            return this.extractCellsetCsvIterJson(cellsetId, {
-                skipZeros,
-                top: options.top,
-                skip: options.skip,
-                skipConsolidatedCells: options.skipConsolidatedCells,
-                skipRuleDerivedCells: options.skipRuleDerivedCells,
-                csvDialect: options.csvDialect,
-                lineSeparator,
-                valueSeparator,
-                sandboxName: options.sandboxName,
-                mdxHeaders: options.mdxHeaders,
-            });
+            try {
+                return await this.extractCellsetCsvIterJson(cellsetId, {
+                    skipZeros,
+                    top: options.top,
+                    skip: options.skip,
+                    skipConsolidatedCells: options.skipConsolidatedCells,
+                    skipRuleDerivedCells: options.skipRuleDerivedCells,
+                    csvDialect: options.csvDialect,
+                    lineSeparator,
+                    valueSeparator,
+                    sandboxName: options.sandboxName,
+                    mdxHeaders: options.mdxHeaders,
+                });
+            } finally {
+                await this._safeDeleteCellset(cellsetId, options.sandboxName);
+            }
         }
 
         return this.extractCellsetCsv(cellsetId, {
@@ -3683,7 +3661,7 @@ export class CellService {
             // tm1py's execute_mdx forwards every option to execute_mdx_async; tm1npm's
             // executeMdxAsync currently only accepts {sandbox_name, cubeName}. Fail loud
             // if the caller set any other option in the async branch so option drop is
-            // never silent — mirrors the useBlob gate strategy.
+            // never silent — the public surface only advertises behaviour we actually do.
             const unsupported = (Object.keys(options) as Array<keyof ExecuteMdxOptions>).filter(
                 k => k !== 'maxWorkers' && k !== 'asyncAxis' && k !== 'sandboxName' && options[k] !== undefined
             );
