@@ -836,13 +836,17 @@ export class CellService {
     }
 
     /**
-     * Create a cellset for advanced operations
+     * Create a cellset for advanced operations. Mirrors tm1py's
+     * create_cellset (CellService.py): POSTs `/ExecuteMDX` and appends the
+     * TM1 write-side `!sandbox=` parameter (NOT the OData read-side
+     * `$sandbox`) with quote-doubling as the only escaping (parity with
+     * tm1py's add_url_parameters at Utils.py:1011-1030).
      */
     public async createCellset(mdx: string, sandbox_name?: string): Promise<string> {
         let url = '/ExecuteMDX';
 
         if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
+            url += `?!sandbox=${sandbox_name.replace(/'/g, "''")}`;
         }
 
         const body = { MDX: mdx };
@@ -851,13 +855,15 @@ export class CellService {
     }
 
     /**
-     * Delete a cellset
+     * Delete a cellset. Uses TM1's write-side `!sandbox=` parameter to match
+     * tm1py's add_url_parameters convention (no percent-encoding, only
+     * quote-doubling).
      */
     public async deleteCellset(cellsetId: string, sandbox_name?: string): Promise<void> {
         let url = `/Cellsets('${cellsetId}')`;
-        
+
         if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
+            url += `?!sandbox=${sandbox_name.replace(/'/g, "''")}`;
         }
 
         await this.rest.delete(url);
