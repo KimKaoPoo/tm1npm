@@ -229,6 +229,14 @@ export interface ExecuteMdxOptions {
     skipCellProperties?: boolean;
     useCompactJson?: boolean;
     skipSandboxDimension?: boolean;
+    /**
+     * When > 1, dispatches to `executeMdxAsync`. tm1py forwards every option
+     * via **kwargs; tm1npm's `executeMdxAsync` currently only consumes
+     * `sandboxName` (other options silently dropped to match tm1py's loose
+     * validation) and `cubeName` for tm1py-compatible tuple-key ordering.
+     * Since the public surface has no way to pass `cubeName`, tuple keys on
+     * the async path fall back to axis order — a tracked parity gap.
+     */
     maxWorkers?: number;
     asyncAxis?: number;
 }
@@ -655,13 +663,12 @@ export class CellService {
      * (CellService.py:2200-2276): createCellsetFromView + extractCellset
      * with the full tm1py parameter surface.
      *
-     * When `maxWorkers > 1`, dispatches to execute_view_async. tm1py's
-     * async branch (CellService.py:2241-2257) forwards top/skip/skip_x/
-     * element_unique_names/skip_cell_properties but drops cell_properties,
-     * use_compact_json, and kwargs. tm1npm's `execute_view_async` currently
-     * only accepts {private, sandbox_name} — a pre-existing narrower gap
-     * that is documented in execute_view_async itself and tracked
-     * separately, not introduced by this change.
+     * When `maxWorkers > 1`, dispatches to execute_view_async. tm1py's async
+     * branch (CellService.py:2241-2257) forwards a broad subset and drops
+     * cell_properties/use_compact_json/kwargs via Python's **kwargs semantics —
+     * never throws on unsupported options. tm1npm's execute_view_async only
+     * consumes {private, sandboxName}; other options are silently dropped to
+     * match tm1py's loose **kwargs validation.
      */
     public async executeView(
         cubeName: string,
@@ -670,21 +677,6 @@ export class CellService {
     ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
         const maxWorkers = options.maxWorkers ?? 1;
         if (maxWorkers > 1) {
-            // tm1py's execute_view forwards a broad subset (top/skip/skip_*/element_unique_names/
-            // skip_cell_properties/max_workers/async_axis) to execute_view_async, dropping
-            // cell_properties/use_compact_json. tm1npm's execute_view_async currently only
-            // accepts {private, sandbox_name}. Fail loud if the caller set anything else so
-            // option drop is never silent.
-            const unsupported = (Object.keys(options) as Array<keyof ExecuteViewOptions>).filter(
-                k => k !== 'maxWorkers' && k !== 'asyncAxis' && k !== 'sandboxName' && k !== 'private'
-                    && options[k] !== undefined
-            );
-            if (unsupported.length > 0) {
-                throw new Error(
-                    `executeView maxWorkers>1 path does not yet forward [${unsupported.join(', ')}] — ` +
-                    'tracked as a pre-existing execute_view_async parity gap'
-                );
-            }
             const asyncResult = await this.execute_view_async(cubeName, viewName, {
                 private: options.private,
                 sandbox_name: options.sandboxName,
@@ -748,9 +740,10 @@ export class CellService {
      *
      * tm1py's `use_blob` is not exposed yet — see ExecuteMdxCsvOptions for
      * the deferral note. extractCellsetCsv handles cellset cleanup itself
-     * (deleteCellset=true default); extractCellsetCsvIterJson does NOT, so
-     * the iter-json branch wraps its call in try/finally to avoid leaking
-     * cellsets on the TM1 server.
+     * (deleteCellset=true default); extractCellsetCsvIterJson does NOT and
+     * tm1py's extract_cellset_csv_iter_json is also not @tidy_cellset-
+     * decorated (CellService.py:4385) — the iter-json cellset leak is a
+     * tm1py bug we replicate per the strict-parity rule.
      */
     public async executeMdxCsv(
         mdx: string,
@@ -763,23 +756,19 @@ export class CellService {
         const cellsetId = await this.createCellset(mdx, options.sandboxName);
 
         if (options.useIterativeJson) {
-            try {
-                return await this.extractCellsetCsvIterJson(cellsetId, {
-                    top: options.top,
-                    skip: options.skip,
-                    skipZeros,
-                    skipConsolidatedCells: options.skipConsolidatedCells,
-                    skipRuleDerivedCells: options.skipRuleDerivedCells,
-                    csvDialect: options.csvDialect,
-                    lineSeparator,
-                    valueSeparator,
-                    sandboxName: options.sandboxName,
-                    includeAttributes: options.includeAttributes,
-                    mdxHeaders: options.mdxHeaders,
-                });
-            } finally {
-                await this._safeDeleteCellset(cellsetId, options.sandboxName);
-            }
+            return this.extractCellsetCsvIterJson(cellsetId, {
+                top: options.top,
+                skip: options.skip,
+                skipZeros,
+                skipConsolidatedCells: options.skipConsolidatedCells,
+                skipRuleDerivedCells: options.skipRuleDerivedCells,
+                csvDialect: options.csvDialect,
+                lineSeparator,
+                valueSeparator,
+                sandboxName: options.sandboxName,
+                includeAttributes: options.includeAttributes,
+                mdxHeaders: options.mdxHeaders,
+            });
         }
 
         return this.extractCellsetCsv(cellsetId, {
@@ -805,9 +794,10 @@ export class CellService {
      *
      * tm1py's `use_blob` (+ its associated `arranged_axes` reorder) is not
      * exposed yet — see ExecuteViewCsvOptions for the deferral note.
-     * extractCellsetCsvIterJson does not delete the cellset itself, so the
-     * iter-json branch wraps its call in try/finally to avoid leaking
-     * cellsets on the TM1 server.
+     * extractCellsetCsvIterJson does not delete the cellset; tm1py's
+     * extract_cellset_csv_iter_json is also not @tidy_cellset-decorated
+     * (CellService.py:4385) — the iter-json cellset leak is a tm1py bug we
+     * replicate per the strict-parity rule.
      */
     public async executeViewCsv(
         cubeName: string,
@@ -822,22 +812,18 @@ export class CellService {
             cubeName, viewName, options.private ?? false, options.sandboxName);
 
         if (options.useIterativeJson) {
-            try {
-                return await this.extractCellsetCsvIterJson(cellsetId, {
-                    skipZeros,
-                    top: options.top,
-                    skip: options.skip,
-                    skipConsolidatedCells: options.skipConsolidatedCells,
-                    skipRuleDerivedCells: options.skipRuleDerivedCells,
-                    csvDialect: options.csvDialect,
-                    lineSeparator,
-                    valueSeparator,
-                    sandboxName: options.sandboxName,
-                    mdxHeaders: options.mdxHeaders,
-                });
-            } finally {
-                await this._safeDeleteCellset(cellsetId, options.sandboxName);
-            }
+            return this.extractCellsetCsvIterJson(cellsetId, {
+                skipZeros,
+                top: options.top,
+                skip: options.skip,
+                skipConsolidatedCells: options.skipConsolidatedCells,
+                skipRuleDerivedCells: options.skipRuleDerivedCells,
+                csvDialect: options.csvDialect,
+                lineSeparator,
+                valueSeparator,
+                sandboxName: options.sandboxName,
+                mdxHeaders: options.mdxHeaders,
+            });
         }
 
         return this.extractCellsetCsv(cellsetId, {
@@ -3658,19 +3644,10 @@ export class CellService {
     ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
         const maxWorkers = options.maxWorkers ?? 1;
         if (maxWorkers > 1) {
-            // tm1py's execute_mdx forwards every option to execute_mdx_async; tm1npm's
-            // executeMdxAsync currently only accepts {sandbox_name, cubeName}. Fail loud
-            // if the caller set any other option in the async branch so option drop is
-            // never silent — the public surface only advertises behaviour we actually do.
-            const unsupported = (Object.keys(options) as Array<keyof ExecuteMdxOptions>).filter(
-                k => k !== 'maxWorkers' && k !== 'asyncAxis' && k !== 'sandboxName' && options[k] !== undefined
-            );
-            if (unsupported.length > 0) {
-                throw new Error(
-                    `executeMdx maxWorkers>1 path does not yet forward [${unsupported.join(', ')}] — ` +
-                    'tracked as a pre-existing executeMdxAsync parity gap'
-                );
-            }
+            // tm1py's execute_mdx forwards everything via **kwargs and lets the underlying
+            // call silently ignore options it doesn't use (CellService.py:2101-2119). Match
+            // that loose validation. tm1npm's executeMdxAsync currently only consumes
+            // sandboxName; other options are silently dropped per strict parity.
             const asyncResult = await this.executeMdxAsync(mdx, { sandbox_name: options.sandboxName });
             const dict = new CaseAndSpaceInsensitiveTuplesDict<any>();
             for (const [k, v] of asyncResult) dict.set(k, v);

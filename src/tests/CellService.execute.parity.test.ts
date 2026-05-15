@@ -85,27 +85,21 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             }));
         });
 
-        test('maxWorkers > 1 with supported-only options dispatches to executeMdxAsync', async () => {
+        test('maxWorkers > 1 dispatches to executeMdxAsync; unsupported options silently dropped (tm1py **kwargs parity)', async () => {
             const asyncSpy = jest.spyOn(cellService, 'executeMdxAsync')
                 .mockResolvedValue(new Map<string, any>([['a', 1]]));
             const extractSpy = jest.spyOn(cellService, 'extractCellset');
 
+            // tm1py forwards everything via **kwargs and silently ignores options the
+            // underlying call doesn't consume. tm1npm matches that loose validation —
+            // cellProperties is not forwarded but does not throw.
             const result = await cellService.executeMdx('SELECT 1 ON 0 FROM [c]', {
-                maxWorkers: 8, sandboxName: 'sb',
+                maxWorkers: 8, sandboxName: 'sb', cellProperties: ['Value'],
             });
 
             expect(asyncSpy).toHaveBeenCalledWith('SELECT 1 ON 0 FROM [c]', { sandbox_name: 'sb' });
             expect(extractSpy).not.toHaveBeenCalled();
             expect(result).toBeInstanceOf(CaseAndSpaceInsensitiveTuplesDict);
-        });
-
-        test('maxWorkers > 1 with unsupported options throws (no silent option drop)', async () => {
-            // tm1npm's executeMdxAsync currently only accepts {sandbox_name, cubeName};
-            // any other option set alongside maxWorkers>1 must fail loud.
-            await expect(cellService.executeMdx('SELECT 1 ON 0 FROM [c]', {
-                maxWorkers: 8,
-                cellProperties: ['Value'],
-            })).rejects.toThrow(/executeMdx maxWorkers>1 path does not yet forward/);
         });
 
         test('default skipZeros is false (parity with tm1py execute_mdx)', async () => {
@@ -185,30 +179,25 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             }));
         });
 
-        test('maxWorkers > 1 with supported-only options dispatches to execute_view_async', async () => {
+        test('maxWorkers > 1 dispatches to execute_view_async; unsupported options silently dropped (tm1py **kwargs parity)', async () => {
             const asyncSpy = jest.spyOn(cellService, 'execute_view_async')
                 .mockResolvedValue(new Map());
             const extractSpy = jest.spyOn(cellService, 'extractCellset');
 
+            // tm1py's execute_view dispatches via **kwargs and never throws on
+            // unsupported options. tm1npm matches that — cellProperties is not
+            // forwarded but does not throw.
             await cellService.executeView('Cube', 'View', {
                 maxWorkers: 8,
                 private: true,
                 sandboxName: 'sb',
+                cellProperties: ['Value'],
             });
 
             expect(asyncSpy).toHaveBeenCalledWith('Cube', 'View', {
                 private: true, sandbox_name: 'sb',
             });
             expect(extractSpy).not.toHaveBeenCalled();
-        });
-
-        test('maxWorkers > 1 with unsupported options throws (no silent option drop)', async () => {
-            // tm1npm's execute_view_async currently only accepts {private, sandbox_name};
-            // any other option set alongside maxWorkers>1 must fail loud.
-            await expect(cellService.executeView('Cube', 'View', {
-                maxWorkers: 8,
-                cellProperties: ['Value'],
-            })).rejects.toThrow(/executeView maxWorkers>1 path does not yet forward/);
         });
     });
 
@@ -312,7 +301,10 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             expect(result).toBe('iter');
         });
 
-        test('useIterativeJson cleans up cellset via _safeDeleteCellset (no leak)', async () => {
+        test('useIterativeJson does NOT clean up the cellset (replicates tm1py bug)', async () => {
+            // tm1py's extract_cellset_csv_iter_json is not @tidy_cellset-decorated
+            // (CellService.py:4385) and leaks the cellset on the iter-json path.
+            // Strict parity rule says replicate the bug — assert no cleanup occurs.
             jest.spyOn(cellService, 'createCellset').mockResolvedValue('cs1');
             jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockResolvedValue('iter');
             const deleteSpy = jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
@@ -321,18 +313,7 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
                 useIterativeJson: true, sandboxName: 'sb',
             });
 
-            expect(deleteSpy).toHaveBeenCalledWith('cs1', 'sb');
-        });
-
-        test('useIterativeJson cleans up cellset even when extract throws', async () => {
-            jest.spyOn(cellService, 'createCellset').mockResolvedValue('cs1');
-            jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockRejectedValue(new Error('boom'));
-            const deleteSpy = jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
-
-            await expect(cellService.executeMdxCsv('SELECT 1 ON 0 FROM [c]', {
-                useIterativeJson: true,
-            })).rejects.toThrow('boom');
-            expect(deleteSpy).toHaveBeenCalledWith('cs1', undefined);
+            expect(deleteSpy).not.toHaveBeenCalled();
         });
     });
 
@@ -362,7 +343,6 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('cs1');
             const iterSpy = jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockResolvedValue('iter');
             const csvSpy = jest.spyOn(cellService, 'extractCellsetCsv').mockResolvedValue('csv');
-            jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
 
             const result = await cellService.executeViewCsv('Cube', 'View', { useIterativeJson: true });
 
@@ -371,24 +351,16 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             expect(result).toBe('iter');
         });
 
-        test('useIterativeJson cleans up cellset via _safeDeleteCellset (no leak)', async () => {
+        test('useIterativeJson does NOT clean up the cellset (replicates tm1py bug)', async () => {
+            // Same parity rule as executeMdxCsv — tm1py's extract_cellset_csv_iter_json
+            // is not @tidy_cellset-decorated and leaks the cellset on this path.
             jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('cs1');
             jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockResolvedValue('iter');
             const deleteSpy = jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
 
             await cellService.executeViewCsv('Cube', 'View', { useIterativeJson: true, sandboxName: 'sb' });
 
-            expect(deleteSpy).toHaveBeenCalledWith('cs1', 'sb');
-        });
-
-        test('useIterativeJson cleans up cellset even when extract throws', async () => {
-            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('cs1');
-            jest.spyOn(cellService, 'extractCellsetCsvIterJson').mockRejectedValue(new Error('boom'));
-            const deleteSpy = jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
-
-            await expect(cellService.executeViewCsv('Cube', 'View', { useIterativeJson: true }))
-                .rejects.toThrow('boom');
-            expect(deleteSpy).toHaveBeenCalledWith('cs1', undefined);
+            expect(deleteSpy).not.toHaveBeenCalled();
         });
     });
 });
