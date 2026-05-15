@@ -662,9 +662,11 @@ export class CellService {
      * (CellService.py:2200-2276): createCellsetFromView + extractCellset
      * with the full tm1py parameter surface.
      *
-     * When `maxWorkers > 1`, dispatches to execute_view_async — tm1py forwards
-     * all 13 named parameters explicitly (CellService.py:2241-2257); tm1npm now
-     * forwards the equivalent options surface.
+     * When `maxWorkers > 1`, dispatches to execute_view_async. tm1py's
+     * execute_view (CellService.py:2241-2257) forwards 13 named parameters
+     * but DELIBERATELY OMITS cell_properties and use_compact_json (different
+     * from execute_mdx's async branch, which forwards both). Strict parity
+     * rule: replicate that quirk — drop the two fields before forwarding.
      */
     public async executeView(
         cubeName: string,
@@ -673,7 +675,9 @@ export class CellService {
     ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
         const maxWorkers = options.maxWorkers ?? 1;
         if (maxWorkers > 1) {
-            return this.execute_view_async(cubeName, viewName, options);
+            // Strip the two fields tm1py's async branch omits (CellService.py:2241-2257).
+            const { cellProperties: _cp, useCompactJson: _uc, ...asyncOptions } = options;
+            return this.execute_view_async(cubeName, viewName, asyncOptions);
         }
         const cellsetId = await this.createCellsetFromView(
             cubeName, viewName, options.private ?? false, options.sandboxName);

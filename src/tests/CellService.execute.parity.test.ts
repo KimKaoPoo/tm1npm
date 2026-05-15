@@ -187,18 +187,20 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             }));
         });
 
-        test('maxWorkers > 1 dispatches to execute_view_async with full options forwarded (tm1py parity)', async () => {
+        test('maxWorkers > 1 forwards 11 options to execute_view_async; drops cell_properties and use_compact_json (tm1py quirk)', async () => {
             const asyncSpy = jest.spyOn(cellService, 'execute_view_async')
                 .mockResolvedValue(new CaseAndSpaceInsensitiveTuplesDict<any>());
             const extractSpy = jest.spyOn(cellService, 'extractCellset');
 
-            // tm1py's execute_view with max_workers>1 forwards every named option
-            // (CellService.py:2241-2257). tm1npm now forwards the full ExecuteViewOptions.
+            // tm1py's execute_view (CellService.py:2241-2257) DELIBERATELY omits
+            // cell_properties and use_compact_json when forwarding to execute_view_async
+            // (different from execute_mdx, which forwards both). Strict parity = replicate.
             await cellService.executeView('Cube', 'View', {
                 maxWorkers: 8,
                 private: true,
                 sandboxName: 'sb',
                 cellProperties: ['Value'],
+                useCompactJson: true,
                 top: 100,
                 skipZeros: true,
             });
@@ -207,10 +209,12 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
                 maxWorkers: 8,
                 private: true,
                 sandboxName: 'sb',
-                cellProperties: ['Value'],
                 top: 100,
                 skipZeros: true,
             }));
+            const forwarded = asyncSpy.mock.calls[0][2]!;
+            expect(forwarded).not.toHaveProperty('cellProperties');
+            expect(forwarded).not.toHaveProperty('useCompactJson');
             expect(extractSpy).not.toHaveBeenCalled();
         });
     });
