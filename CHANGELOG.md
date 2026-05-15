@@ -2,6 +2,68 @@
 
 All notable changes to this project are documented here.
 
+## 2.3.0 — 2026-05-15
+
+### BREAKING CHANGES
+
+**Six `CellService` execute methods now match tm1py's signatures one-to-one**
+(see [#65](https://github.com/KimKaoPoo/tm1npm/issues/65)). Option keys
+adopt the camelCase form already used elsewhere in tm1npm; legacy snake_case
+keys on `MDXViewOptions` are no longer accepted by these methods.
+
+- **`executeMdx`** — was `executeMdx(mdx)`, returned the raw cellset POST
+  response. Now `executeMdx(mdx, options?: ExecuteMdxOptions)` and returns
+  `CaseAndSpaceInsensitiveTuplesDict<any>` (cellset created via
+  `createCellset`, extracted via `extractCellset`).
+  - Migration when raw cellset shape is needed: switch to
+    `executeMdxRaw(mdx, options)`, which returns the raw `Axes`/`Cells` dict.
+
+- **`executeMdxRaw`** — accepts the full `ExecuteMdxRawOptions` surface
+  (`cellProperties`, `elemProperties`, `memberProperties`, `top`, `skip`,
+  `skipContexts`, `skipZeros`, `skipConsolidatedCells`,
+  `skipRuleDerivedCells`, `sandboxName`, `includeHierarchies`,
+  `useCompactJson`). Replaces the previous narrow `MDXViewOptions` form.
+  - Migration: `executeMdxRaw(mdx, { sandbox_name: 'sb', skip_zeros: true })`
+    → `executeMdxRaw(mdx, { sandboxName: 'sb', skipZeros: true })`.
+
+- **`executeView` / `executeViewRaw`** — same shape changes as their MDX
+  counterparts. `executeView` returns `CaseAndSpaceInsensitiveTuplesDict`;
+  `executeViewRaw` returns the raw cellset. Underlying URL switched to
+  `/Cubes('c')/{Views|PrivateViews}('v')/tm1.Execute?!sandbox=...`
+  matching tm1py exactly (was `tm1.CreateCellset?$private=...&$sandbox=...`).
+  - Migration: rename snake_case option keys to camelCase; for raw `.Axes`/`.Cells`
+    consumption switch from `executeView` to `executeViewRaw`.
+
+- **`executeMdxCsv` / `executeViewCsv`** — accept the full CSV option
+  surface (`csvDialect`, `lineSeparator`, `valueSeparator`, `includeAttributes`
+  on MDX only, `useIterativeJson`, `useCompactJson`, `mdxHeaders`, plus the
+  shared `top`/`skip`/`skipZeros`/`skipConsolidatedCells`/`skipRuleDerivedCells`).
+  Default `skipZeros` flips from `undefined` to **`true`** (matches tm1py's CSV
+  semantics — different from the non-CSV execute methods which default to `false`).
+  - Migration: rename snake_case option keys; explicitly pass `skipZeros: false`
+    if zero-cell rows are required.
+
+- **`executeMdxAsync` / `execute_view_async`** — option surfaces widened to
+  match tm1py's `execute_mdx_async` / `execute_view_async` (15 / 13 named
+  parameters explicitly forwarded). When `executeMdx`/`executeView` are
+  called with `maxWorkers > 1`, all options are now threaded through to the
+  async path. Return type is `CaseAndSpaceInsensitiveTuplesDict<any>` to
+  match tm1py.
+
+### Deferred (tracked as follow-ups)
+
+- **`useBlob` on `executeMdxCsv` / `executeViewCsv`** — tm1py's
+  `_execute_mdx_csv_use_blob` / `_execute_view_csv_use_blob` TI/blob CSV
+  extract path is not yet ported. The option is intentionally **not exposed**
+  on the public surface to avoid advertising behaviour tm1npm doesn't deliver.
+  Tracked separately; will be added back together with the underlying port.
+- **`arranged_axes` on `executeViewCsv`** — only meaningful on tm1py's blob
+  branch; travels with the `useBlob` port.
+- **Parallel-chunked retrieval in async helpers** — tm1py uses
+  `extract_cellset_async` for parallel chunked fetching; tm1npm currently
+  uses the serial `extractCellset` path with full option-forwarding parity.
+  Network-parallelism port is a separate follow-up.
+
 ## 2.2.0 — 2026-05-02
 
 ### BREAKING CHANGES

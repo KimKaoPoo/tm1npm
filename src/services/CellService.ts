@@ -230,12 +230,11 @@ export interface ExecuteMdxOptions {
     useCompactJson?: boolean;
     skipSandboxDimension?: boolean;
     /**
-     * When > 1, dispatches to `executeMdxAsync`. tm1py forwards every option
-     * via **kwargs; tm1npm's `executeMdxAsync` currently only consumes
-     * `sandboxName` (other options silently dropped to match tm1py's loose
-     * validation) and `cubeName` for tm1py-compatible tuple-key ordering.
-     * Since the public surface has no way to pass `cubeName`, tuple keys on
-     * the async path fall back to axis order — a tracked parity gap.
+     * When > 1, dispatches to `executeMdxAsync`, which forwards the full
+     * option surface to extractCellset for tm1py parity. tm1py uses
+     * extract_cellset_async for parallel-chunked retrieval; tm1npm currently
+     * uses the serial extractCellset path — option semantics match, network
+     * parallelism is a tracked follow-up.
      */
     maxWorkers?: number;
     asyncAxis?: number;
@@ -663,12 +662,9 @@ export class CellService {
      * (CellService.py:2200-2276): createCellsetFromView + extractCellset
      * with the full tm1py parameter surface.
      *
-     * When `maxWorkers > 1`, dispatches to execute_view_async. tm1py's async
-     * branch (CellService.py:2241-2257) forwards a broad subset and drops
-     * cell_properties/use_compact_json/kwargs via Python's **kwargs semantics —
-     * never throws on unsupported options. tm1npm's execute_view_async only
-     * consumes {private, sandboxName}; other options are silently dropped to
-     * match tm1py's loose **kwargs validation.
+     * When `maxWorkers > 1`, dispatches to execute_view_async — tm1py forwards
+     * all 13 named parameters explicitly (CellService.py:2241-2257); tm1npm now
+     * forwards the equivalent options surface.
      */
     public async executeView(
         cubeName: string,
@@ -677,13 +673,7 @@ export class CellService {
     ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
         const maxWorkers = options.maxWorkers ?? 1;
         if (maxWorkers > 1) {
-            const asyncResult = await this.execute_view_async(cubeName, viewName, {
-                private: options.private,
-                sandbox_name: options.sandboxName,
-            });
-            const dict = new CaseAndSpaceInsensitiveTuplesDict<any>();
-            for (const [k, v] of asyncResult) dict.set(k, v);
-            return dict;
+            return this.execute_view_async(cubeName, viewName, options);
         }
         const cellsetId = await this.createCellsetFromView(
             cubeName, viewName, options.private ?? false, options.sandboxName);
@@ -1974,34 +1964,44 @@ export class CellService {
      * Execute view asynchronously
      */
     /**
-     * Execute view via cellset extraction (parity with tm1py.execute_view_async).
-     * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
+     * Execute view via cellset extraction (parity with tm1py.execute_view_async at
+     * CellService.py:2278-2336). Returns a CaseAndSpaceInsensitiveTuplesDict.
      *
-     * Documented parity gaps (tracked as follow-ups, not in scope of #65):
-     * - tm1py uses extract_cellset_async with parallel-chunked retrieval. Not yet ported;
-     *   this delegates to a serial extractCellset.
-     * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
-     *   not yet wired through extractCellset and are deliberately omitted from this signature
-     *   so misuse is a compile-time error.
-     * - Tuple-key parts are reordered by cube dimensions (parity with tm1py.sort_coordinates).
+     * Accepts the full tm1py-parity option surface and forwards it to extractCellset.
+     * tm1py uses extract_cellset_async (parallel-chunked); tm1npm uses the serial
+     * extractCellset path — same option-forwarding semantics, different network
+     * parallelism (the parallel-chunked port is a separate follow-up).
      */
     public async execute_view_async(
         cubeName: string,
         viewName: string,
-        options: { private?: boolean; sandbox_name?: string } = {}
-    ): Promise<Map<string, any>> {
+        options: ExecuteViewOptions & { sandbox_name?: string } = {}
+    ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
+        // sandbox_name (snake) kept as a back-compat alias for the legacy signature.
+        const sandboxName = options.sandboxName ?? options.sandbox_name;
         const cellsetId = await this.createCellsetFromView(
             cubeName,
             viewName,
-            options.private || false,
-            options.sandbox_name
+            options.private ?? false,
+            sandboxName
         );
         try {
-            const cellset = await this._extractCellsetForTupleDict(cellsetId, options.sandbox_name);
-            const cubeDims = await this.getDimensionNamesForWriting(cubeName);
-            return CellService._cellsetToTupleDict(cellset, cubeDims);
+            return await this.extractCellset(cellsetId, {
+                cellProperties: options.cellProperties,
+                top: options.top,
+                skip: options.skip,
+                skipContexts: options.skipContexts,
+                skipZeros: options.skipZeros,
+                skipConsolidatedCells: options.skipConsolidatedCells,
+                skipRuleDerivedCells: options.skipRuleDerivedCells,
+                deleteCellset: false,
+                sandboxName,
+                elementUniqueNames: options.elementUniqueNames,
+                skipCellProperties: options.skipCellProperties,
+                useCompactJson: options.useCompactJson,
+            });
         } finally {
-            await this._safeDeleteCellset(cellsetId, options.sandbox_name);
+            await this._safeDeleteCellset(cellsetId, sandboxName);
         }
     }
 
@@ -3633,10 +3633,9 @@ export class CellService {
      * (CellService.py:2065-2138): createCellset + extractCellset with the
      * full tm1py parameter surface.
      *
-     * When `maxWorkers > 1`, dispatches to the async path (parity with
-     * execute_mdx_async). tm1py forwards all options; tm1npm's
-     * `executeMdxAsync` currently only supports a subset — that gap is
-     * pre-existing and not introduced by this change.
+     * When `maxWorkers > 1`, dispatches to executeMdxAsync — tm1py forwards all
+     * 15 named parameters explicitly (CellService.py:2102-2119); tm1npm now
+     * forwards the equivalent options surface.
      */
     public async executeMdx(
         mdx: string,
@@ -3644,14 +3643,7 @@ export class CellService {
     ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
         const maxWorkers = options.maxWorkers ?? 1;
         if (maxWorkers > 1) {
-            // tm1py's execute_mdx forwards everything via **kwargs and lets the underlying
-            // call silently ignore options it doesn't use (CellService.py:2101-2119). Match
-            // that loose validation. tm1npm's executeMdxAsync currently only consumes
-            // sandboxName; other options are silently dropped per strict parity.
-            const asyncResult = await this.executeMdxAsync(mdx, { sandbox_name: options.sandboxName });
-            const dict = new CaseAndSpaceInsensitiveTuplesDict<any>();
-            for (const [k, v] of asyncResult) dict.set(k, v);
-            return dict;
+            return this.executeMdxAsync(mdx, options);
         }
         const cellsetId = await this.createCellset(mdx, options.sandboxName);
         return this.extractCellset(cellsetId, {
@@ -3816,32 +3808,39 @@ export class CellService {
     }
 
     /**
-     * Execute MDX via cellset extraction (parity with tm1py.execute_mdx_async).
-     * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
+     * Execute MDX via cellset extraction (parity with tm1py.execute_mdx_async at
+     * CellService.py:2140-2198). Returns a CaseAndSpaceInsensitiveTuplesDict.
      *
-     * Documented parity gaps (tracked as follow-ups, not in scope of #65):
-     * - tm1py uses extract_cellset_async with parallel-chunked retrieval. That helper is not
-     *   yet ported; this implementation delegates to a serial extractCellset.
-     * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
-     *   not yet wired through extractCellset. To prevent silent option-drop, those parameters
-     *   are deliberately omitted from this signature so misuse is a compile-time error rather
-     *   than a runtime no-op. Add them back when the underlying extractor supports them.
-     * - Optional `cubeName` lets the caller request tm1py-compatible tuple-key ordering by
-     *   cube dimensions. When omitted, parts are joined in axis order (tm1py-divergent).
+     * Accepts the full tm1py-parity option surface and forwards it to extractCellset.
+     * tm1py uses extract_cellset_async (parallel-chunked); tm1npm uses the serial
+     * extractCellset path — same option-forwarding semantics, different network
+     * parallelism (the parallel-chunked port is a separate follow-up).
      */
     public async executeMdxAsync(
         mdx: string,
-        options: { sandbox_name?: string; cubeName?: string } = {}
-    ): Promise<Map<string, any>> {
-        const cellsetId = await this.createCellset(mdx, options.sandbox_name);
+        options: ExecuteMdxOptions & { sandbox_name?: string; cubeName?: string } = {}
+    ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
+        // sandbox_name (snake) kept as a back-compat alias for the legacy signature.
+        const sandboxName = options.sandboxName ?? options.sandbox_name;
+        const cellsetId = await this.createCellset(mdx, sandboxName);
         try {
-            const cellset = await this._extractCellsetForTupleDict(cellsetId, options.sandbox_name);
-            const cubeDims = options.cubeName
-                ? await this.getDimensionNamesForWriting(options.cubeName)
-                : undefined;
-            return CellService._cellsetToTupleDict(cellset, cubeDims);
+            return await this.extractCellset(cellsetId, {
+                cellProperties: options.cellProperties,
+                top: options.top,
+                skip: options.skip,
+                skipContexts: options.skipContexts,
+                skipZeros: options.skipZeros,
+                skipConsolidatedCells: options.skipConsolidatedCells,
+                skipRuleDerivedCells: options.skipRuleDerivedCells,
+                deleteCellset: false,
+                sandboxName,
+                elementUniqueNames: options.elementUniqueNames,
+                skipCellProperties: options.skipCellProperties,
+                useCompactJson: options.useCompactJson,
+                skipSandboxDimension: options.skipSandboxDimension,
+            });
         } finally {
-            await this._safeDeleteCellset(cellsetId, options.sandbox_name);
+            await this._safeDeleteCellset(cellsetId, sandboxName);
         }
     }
 

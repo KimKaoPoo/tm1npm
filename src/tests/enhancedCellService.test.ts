@@ -527,58 +527,29 @@ describe('Enhanced CellService Tests', () => {
             console.log('✅ extractCellsetCsv special characters test passed');
         });
 
-        test('execute_view_async creates cellset from view, extracts, and returns Map keyed by UniqueName', async () => {
-            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
-            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({
-                Axes: [{
-                    Cardinality: 1,
-                    Hierarchies: [{ Dimension: { Name: 'Region' }, Name: 'Region' }],
-                    Tuples: [{ Members: [{ Name: 'London', UniqueName: '[Region].[Region].[London]' }] }],
-                }],
-                Cells: [{ Value: 100 }],
-            });
-            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Region']);
-            const deleteSpy = jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
+        // execute_view_async now delegates to createCellsetFromView + extractCellset
+        // (tm1py-parity option forwarding). Tests verify the wrapper contract; the
+        // tuple-key construction is owned by extractCellset and tested separately.
 
-            const result = await cellService.execute_view_async('SalesCube', 'TestView');
-
-            expect(result instanceof Map).toBe(true);
-            // Matches tm1py default element_unique_names=True
-            expect(result.get('[Region].[Region].[London]')).toBe(100);
-            expect(deleteSpy).toHaveBeenCalledWith('CSID-V', undefined);
-        });
-
-        test('execute_view_async reorders tuple parts by cube dimension order (parity with tm1py.sort_coordinates)', async () => {
-            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
-            // Axis 0 = Region; Axis 1 = Time. Cube dimensions = [Time, Region] — keys must come out as Time,Region.
-            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({
-                Axes: [
-                    {
-                        Cardinality: 1,
-                        Hierarchies: [{ Dimension: { Name: 'Region' } }],
-                        Tuples: [{ Members: [{ UniqueName: '[Region].[Region].[USA]' }] }],
-                    },
-                    {
-                        Cardinality: 1,
-                        Hierarchies: [{ Dimension: { Name: 'Time' } }],
-                        Tuples: [{ Members: [{ UniqueName: '[Time].[Time].[2024]' }] }],
-                    },
-                ],
-                Cells: [{ Value: 42 }],
-            });
-            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Time', 'Region']);
-            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
-
-            const result = await cellService.execute_view_async('SalesCube', 'TestView');
-
-            expect(result.get('[Time].[Time].[2024],[Region].[Region].[USA]')).toBe(42);
-        });
-
-        test('execute_view_async respects private/sandbox options', async () => {
+        test('execute_view_async creates cellset from view, calls extractCellset, returns TuplesDict', async () => {
             const createSpy = jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
-            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
-            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue([]);
-            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
+            const dict = new (require('../utils/Utils').CaseAndSpaceInsensitiveTuplesDict)();
+            dict.set('[Region].[Region].[London]', 100);
+            const extractSpy = jest.spyOn(cellService, 'extractCellset').mockResolvedValue(dict);
+            jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
+
+            const result = await cellService.execute_view_async('SalesCube', 'TestView');
+
+            expect(createSpy).toHaveBeenCalledWith('SalesCube', 'TestView', false, undefined);
+            expect(extractSpy).toHaveBeenCalledWith('CSID-V', expect.objectContaining({ deleteCellset: false }));
+            expect(result instanceof Map).toBe(true);
+            expect(result.get('[Region].[Region].[London]')).toBe(100);
+        });
+
+        test('execute_view_async respects private/sandbox options (legacy sandbox_name alias still works)', async () => {
+            const createSpy = jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            jest.spyOn(cellService, 'extractCellset').mockResolvedValue(new (require('../utils/Utils').CaseAndSpaceInsensitiveTuplesDict)());
+            jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
 
             await cellService.execute_view_async('SalesCube', 'TestView', {
                 private: true,
@@ -588,10 +559,27 @@ describe('Enhanced CellService Tests', () => {
             expect(createSpy).toHaveBeenCalledWith('SalesCube', 'TestView', true, 'TestSandbox');
         });
 
+        test('execute_view_async forwards top/skipZeros/cellProperties to extractCellset (tm1py parity)', async () => {
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
+            const extractSpy = jest.spyOn(cellService, 'extractCellset').mockResolvedValue(new (require('../utils/Utils').CaseAndSpaceInsensitiveTuplesDict)());
+            jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
+
+            await cellService.execute_view_async('SalesCube', 'TestView', {
+                top: 50,
+                skipZeros: true,
+                cellProperties: ['Value', 'Ordinal'],
+            });
+
+            expect(extractSpy).toHaveBeenCalledWith('CSID-V', expect.objectContaining({
+                top: 50,
+                skipZeros: true,
+                cellProperties: ['Value', 'Ordinal'],
+            }));
+        });
+
         test('cellset cleanup suppresses 404 only (parity with tm1py @tidy_cellset)', async () => {
             jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
-            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
-            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue([]);
+            jest.spyOn(cellService, 'extractCellset').mockResolvedValue(new (require('../utils/Utils').CaseAndSpaceInsensitiveTuplesDict)());
             const notFound: any = new Error('not found');
             notFound.statusCode = 404;
             jest.spyOn(cellService, 'deleteCellset').mockRejectedValueOnce(notFound);
@@ -602,34 +590,13 @@ describe('Enhanced CellService Tests', () => {
 
         test('cellset cleanup re-raises non-404 errors (parity with tm1py @tidy_cellset)', async () => {
             jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
-            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({ Axes: [], Cells: [] });
-            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue([]);
+            jest.spyOn(cellService, 'extractCellset').mockResolvedValue(new (require('../utils/Utils').CaseAndSpaceInsensitiveTuplesDict)());
             const serverError: any = new Error('server error');
             serverError.statusCode = 500;
             jest.spyOn(cellService, 'deleteCellset').mockRejectedValueOnce(serverError);
 
             await expect(cellService.execute_view_async('SalesCube', 'V'))
                 .rejects.toThrow('server error');
-        });
-
-        test('execute_view_async prefers Element.UniqueName when Member only carries Element shape', async () => {
-            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('CSID-V');
-            // Real TM1 cellset shape with $expand=Members($expand=Element($select=UniqueName)):
-            // Member has no top-level UniqueName, only Element.UniqueName.
-            jest.spyOn(cellService as any, '_extractCellsetForTupleDict').mockResolvedValue({
-                Axes: [{
-                    Cardinality: 1,
-                    Hierarchies: [{ Dimension: { Name: 'Region' } }],
-                    Tuples: [{ Members: [{ Name: 'London', Element: { UniqueName: '[Region].[Region].[London]' } }] }],
-                }],
-                Cells: [{ Value: 100 }],
-            });
-            jest.spyOn(cellService, 'getDimensionNamesForWriting').mockResolvedValue(['Region']);
-            jest.spyOn(cellService, 'deleteCellset').mockResolvedValue(undefined);
-
-            const result = await cellService.execute_view_async('SalesCube', 'TestView');
-
-            expect(result.get('[Region].[Region].[London]')).toBe(100);
         });
     });
 

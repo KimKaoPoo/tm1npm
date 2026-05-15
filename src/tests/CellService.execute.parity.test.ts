@@ -85,19 +85,27 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             }));
         });
 
-        test('maxWorkers > 1 dispatches to executeMdxAsync; unsupported options silently dropped (tm1py **kwargs parity)', async () => {
-            const asyncSpy = jest.spyOn(cellService, 'executeMdxAsync')
-                .mockResolvedValue(new Map<string, any>([['a', 1]]));
+        test('maxWorkers > 1 dispatches to executeMdxAsync with full options forwarded (tm1py parity)', async () => {
+            const dict = new CaseAndSpaceInsensitiveTuplesDict<any>();
+            dict.set('a', 1);
+            const asyncSpy = jest.spyOn(cellService, 'executeMdxAsync').mockResolvedValue(dict);
             const extractSpy = jest.spyOn(cellService, 'extractCellset');
 
-            // tm1py forwards everything via **kwargs and silently ignores options the
-            // underlying call doesn't consume. tm1npm matches that loose validation —
-            // cellProperties is not forwarded but does not throw.
+            // tm1py's execute_mdx with max_workers>1 forwards every named option to
+            // execute_mdx_async (CellService.py:2102-2119). tm1npm now forwards the
+            // full ExecuteMdxOptions surface.
             const result = await cellService.executeMdx('SELECT 1 ON 0 FROM [c]', {
                 maxWorkers: 8, sandboxName: 'sb', cellProperties: ['Value'],
+                top: 100, skipZeros: true,
             });
 
-            expect(asyncSpy).toHaveBeenCalledWith('SELECT 1 ON 0 FROM [c]', { sandbox_name: 'sb' });
+            expect(asyncSpy).toHaveBeenCalledWith('SELECT 1 ON 0 FROM [c]', expect.objectContaining({
+                maxWorkers: 8,
+                sandboxName: 'sb',
+                cellProperties: ['Value'],
+                top: 100,
+                skipZeros: true,
+            }));
             expect(extractSpy).not.toHaveBeenCalled();
             expect(result).toBeInstanceOf(CaseAndSpaceInsensitiveTuplesDict);
         });
@@ -179,24 +187,30 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             }));
         });
 
-        test('maxWorkers > 1 dispatches to execute_view_async; unsupported options silently dropped (tm1py **kwargs parity)', async () => {
+        test('maxWorkers > 1 dispatches to execute_view_async with full options forwarded (tm1py parity)', async () => {
             const asyncSpy = jest.spyOn(cellService, 'execute_view_async')
-                .mockResolvedValue(new Map());
+                .mockResolvedValue(new CaseAndSpaceInsensitiveTuplesDict<any>());
             const extractSpy = jest.spyOn(cellService, 'extractCellset');
 
-            // tm1py's execute_view dispatches via **kwargs and never throws on
-            // unsupported options. tm1npm matches that — cellProperties is not
-            // forwarded but does not throw.
+            // tm1py's execute_view with max_workers>1 forwards every named option
+            // (CellService.py:2241-2257). tm1npm now forwards the full ExecuteViewOptions.
             await cellService.executeView('Cube', 'View', {
                 maxWorkers: 8,
                 private: true,
                 sandboxName: 'sb',
                 cellProperties: ['Value'],
+                top: 100,
+                skipZeros: true,
             });
 
-            expect(asyncSpy).toHaveBeenCalledWith('Cube', 'View', {
-                private: true, sandbox_name: 'sb',
-            });
+            expect(asyncSpy).toHaveBeenCalledWith('Cube', 'View', expect.objectContaining({
+                maxWorkers: 8,
+                private: true,
+                sandboxName: 'sb',
+                cellProperties: ['Value'],
+                top: 100,
+                skipZeros: true,
+            }));
             expect(extractSpy).not.toHaveBeenCalled();
         });
     });
