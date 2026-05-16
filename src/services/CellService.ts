@@ -230,14 +230,18 @@ export interface ExecuteMdxOptions {
     useCompactJson?: boolean;
     skipSandboxDimension?: boolean;
     /**
-     * When > 1, dispatches to `executeMdxAsync`, which forwards the full
-     * option surface to extractCellset for tm1py parity. tm1py uses
-     * extract_cellset_async for parallel-chunked retrieval; tm1npm currently
-     * uses the serial extractCellset path — option semantics match, network
-     * parallelism is a tracked follow-up.
+     * When > 1, dispatches to `executeMdxAsync` / `execute_view_async`. The
+     * dispatch is real (the async helper accepts the full option surface);
+     * the network-parallelism semantic tm1py achieves via `extract_cellset_async`
+     * is not yet ported and the call reduces to a single serial GET.
+     *
+     * `asyncAxis` is intentionally NOT exposed on this surface: tm1py forwards
+     * it to extract_cellset_async, which tm1npm hasn't ported yet. The internal
+     * `extractCellsetAxesRawAsync` helper already implements axis-parallel
+     * fetching and accepts its own `asyncAxis` parameter; that helper will be
+     * wired in alongside the parallel-chunked port (tracked follow-up).
      */
     maxWorkers?: number;
-    asyncAxis?: number;
 }
 
 // Options matching tm1py execute_mdx_raw (CellService.py:2338-2353) one-to-one.
