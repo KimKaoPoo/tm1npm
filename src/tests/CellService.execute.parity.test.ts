@@ -164,6 +164,45 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
         });
     });
 
+    // ── createCellsetFromView URL escaping ───────────────────────────────
+
+    describe('createCellsetFromView URL parity (build_url_friendly_object_name)', () => {
+        test('escapes & in cube/view names (real-world names like "Sales & Revenue")', async () => {
+            const postSpy = jest.spyOn((cellService as any).rest, 'post')
+                .mockResolvedValue({ data: { ID: 'cs1' }, headers: {} });
+
+            await cellService.createCellsetFromView('Sales & Revenue', 'Top 5 & Bottom', false);
+
+            // tm1py's format_url runs cube/view names through build_url_friendly_object_name
+            // which encodes & as %26, # as %23, ? as %3F, % as %25. Plain quote-doubling
+            // would leave & unencoded and the URL would parse it as a query separator.
+            const url = postSpy.mock.calls[0][0];
+            expect(url).toBe("/Cubes('Sales %26 Revenue')/Views('Top 5 %26 Bottom')/tm1.Execute");
+        });
+
+        test('escapes single quotes via doubling (consistent with build_url_friendly_object_name)', async () => {
+            const postSpy = jest.spyOn((cellService as any).rest, 'post')
+                .mockResolvedValue({ data: { ID: 'cs1' }, headers: {} });
+
+            await cellService.createCellsetFromView("Sam's Cube", "Sam's View", true);
+
+            const url = postSpy.mock.calls[0][0];
+            expect(url).toBe("/Cubes('Sam''s Cube')/PrivateViews('Sam''s View')/tm1.Execute");
+        });
+
+        test('selects PrivateViews vs Views path segment based on isPrivate (no $private query param)', async () => {
+            const postSpy = jest.spyOn((cellService as any).rest, 'post')
+                .mockResolvedValue({ data: { ID: 'cs1' }, headers: {} });
+
+            await cellService.createCellsetFromView('Cube', 'View', true);
+            await cellService.createCellsetFromView('Cube', 'View', false);
+
+            expect(postSpy.mock.calls[0][0]).toContain("/PrivateViews('View')");
+            expect(postSpy.mock.calls[1][0]).toContain("/Views('View')");
+            expect(postSpy.mock.calls[0][0]).not.toContain('$private');
+        });
+    });
+
     // ── executeView ──────────────────────────────────────────────────────
 
     describe('executeView', () => {

@@ -14,7 +14,7 @@ import { MDXView } from '../objects/MDXView';
 import { Process } from '../objects/Process';
 import { TM1Exception, TM1pyWriteFailureException, TM1pyWritePartialFailureException } from '../exceptions/TM1Exception';
 import {
-    formatUrl, escapeODataValue, lowerAndDropSpaces, extractCompactJsonCellset, resemblesMdx, getCube,
+    formatUrl, escapeODataValue, buildUrlFriendlyObjectName, lowerAndDropSpaces, extractCompactJsonCellset, resemblesMdx, getCube,
     CaseAndSpaceInsensitiveDict,
     CaseAndSpaceInsensitiveTuplesDict,
     RawCellsetDict,
@@ -2156,13 +2156,16 @@ export class CellService {
     ): Promise<string> {
         // Mirror tm1py's create_cellset_from_view (CellService.py:4986-5005) exactly:
         //   /Cubes('{cube}')/{PrivateViews|Views}('{view}')/tm1.Execute?!sandbox=...
-        // The public/private discriminator is a URL segment (not a $private query
-        // param), the action is `tm1.Execute` (not `tm1.CreateCellset`), and the
-        // sandbox parameter uses TM1's write-side `!sandbox=` form with quote
-        // doubling as the only escaping (Utils.py add_url_parameters).
+        // tm1py builds the URL via format_url which runs every positional arg
+        // through build_url_friendly_object_name (Utils.py:271-289) — escapes
+        // ', %, #, ?, &. Plain quote-doubling is NOT sufficient for cube/view
+        // names: real-world names containing `&` (e.g. "Sales & Revenue") would
+        // otherwise produce a URL where `&` is parsed as a query separator.
+        // sandbox_name keeps the lighter quote-doubling escape because tm1py
+        // appends it via add_url_parameters (Utils.py:1011-1030), not format_url.
         const views = isPrivate ? 'PrivateViews' : 'Views';
-        const cube = escapeODataValue(cubeName);
-        const view = escapeODataValue(viewName);
+        const cube = buildUrlFriendlyObjectName(cubeName);
+        const view = buildUrlFriendlyObjectName(viewName);
         let url = `/Cubes('${cube}')/${views}('${view}')/tm1.Execute`;
         if (sandbox_name) url += `?!sandbox=${escapeODataValue(sandbox_name)}`;
 
