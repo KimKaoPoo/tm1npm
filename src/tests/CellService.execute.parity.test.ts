@@ -201,6 +201,30 @@ describe('CellService execute methods — tm1py parity (#65)', () => {
             expect(postSpy.mock.calls[1][0]).toContain("/Views('View')");
             expect(postSpy.mock.calls[0][0]).not.toContain('$private');
         });
+
+        test('execute_view_async signature does not accept useCompactJson (tm1py parity)', async () => {
+            // tm1py's execute_view_async (CellService.py:2278-2294) has no
+            // use_compact_json parameter — only execute_mdx_async forwards it.
+            // ExecuteViewAsyncOptions omits useCompactJson so TypeScript catches
+            // the mismatch at compile time. The line below is intentionally a
+            // ts-expect-error: removing it should make this test fail to compile.
+            // @ts-expect-error - useCompactJson must not be a valid option on execute_view_async
+            const callsWithRejected = () => cellService.execute_view_async('Cube', 'View', { useCompactJson: true });
+
+            // Runtime check: even if a caller bypasses TS (e.g. `as any`), the
+            // method does not pass useCompactJson through to extractCellset.
+            jest.spyOn(cellService, 'createCellsetFromView').mockResolvedValue('cs1');
+            const extractSpy = jest.spyOn(cellService, 'extractCellset')
+                .mockResolvedValue(new CaseAndSpaceInsensitiveTuplesDict<any>());
+            jest.spyOn(cellService, '_safeDeleteCellset').mockResolvedValue(undefined);
+
+            await cellService.execute_view_async('Cube', 'View', { useCompactJson: true } as any);
+            const forwarded = extractSpy.mock.calls[0][1]!;
+            expect(forwarded).not.toHaveProperty('useCompactJson');
+
+            // Reference the helper so it's not unused (the test value is the ts-expect-error above).
+            expect(typeof callsWithRejected).toBe('function');
+        });
     });
 
     // ── executeView ──────────────────────────────────────────────────────

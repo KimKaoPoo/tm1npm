@@ -269,6 +269,11 @@ export interface ExecuteViewRawOptions extends Omit<ExecuteMdxRawOptions, 'inclu
     private?: boolean;
 }
 
+// Options matching tm1py execute_view_async (CellService.py:2278-2294). tm1py
+// drops use_compact_json from this signature (only execute_mdx_async forwards
+// it) — strict parity = omit it here too so the type system enforces it.
+export interface ExecuteViewAsyncOptions extends Omit<ExecuteViewOptions, 'useCompactJson'> {}
+
 // Options matching tm1py execute_mdx_csv (CellService.py:2562-2579).
 // tm1py's `use_blob` is intentionally NOT exposed yet — the blob CSV port
 // (`_execute_mdx_csv_use_blob`) is tracked as a follow-up; the option will
@@ -1977,7 +1982,11 @@ export class CellService {
      * Execute view via cellset extraction (parity with tm1py.execute_view_async at
      * CellService.py:2278-2336). Returns a CaseAndSpaceInsensitiveTuplesDict.
      *
-     * Accepts the full tm1py-parity option surface and forwards it to extractCellset.
+     * Accepts the tm1py-parity option surface and forwards it to extractCellset.
+     * tm1py's execute_view_async signature has no `use_compact_json` — only
+     * execute_mdx_async accepts it. The `ExecuteViewAsyncOptions` type omits the
+     * field so callers get a TypeScript error if they pass it.
+     *
      * tm1py uses extract_cellset_async (parallel-chunked); tm1npm uses the serial
      * extractCellset path — same option-forwarding semantics, different network
      * parallelism (the parallel-chunked port is a separate follow-up).
@@ -1985,7 +1994,7 @@ export class CellService {
     public async execute_view_async(
         cubeName: string,
         viewName: string,
-        options: ExecuteViewOptions & { sandbox_name?: string } = {}
+        options: ExecuteViewAsyncOptions & { sandbox_name?: string } = {}
     ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
         // sandbox_name (snake) kept as a back-compat alias for the legacy signature.
         const sandboxName = options.sandboxName ?? options.sandbox_name;
@@ -2008,7 +2017,6 @@ export class CellService {
                 sandboxName,
                 elementUniqueNames: options.elementUniqueNames,
                 skipCellProperties: options.skipCellProperties,
-                useCompactJson: options.useCompactJson,
             });
         } finally {
             await this._safeDeleteCellset(cellsetId, sandboxName);
