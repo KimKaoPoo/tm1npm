@@ -168,11 +168,11 @@ describe('TM1Service Integration Tests', () => {
                 ) || cubeNames[0];
 
                 if (testCube) {
-                    const [privateViews, publicViews] = await tm1.cubes.views.getAllNames(testCube);
-                    const allViews = [...privateViews, ...publicViews];
+                    const [privateViewNames, publicViewNames] = await tm1.cubes.views.getAllNames(testCube);
+                    const allViewNames = [...privateViewNames, ...publicViewNames];
 
-                    if (allViews.length > 0) {
-                        const testView = allViews[0];
+                    if (allViewNames.length > 0) {
+                        const testView = allViewNames[0];
                         const viewResult = await tm1.cells.executeView(testCube, testView);
 
                         expect(viewResult).toBeDefined();
