@@ -132,63 +132,71 @@ export class ViewService extends ObjectService {
         return await this.rest.delete(url);
     }
 
-    public async getAll(cubeName: string): Promise<[NativeView[], MDXView[]]> {
-        /** Get all views from a cube
+    public async getAll(
+        cubeName: string,
+        includeElements: boolean = true
+    ): Promise<[View[], View[]]> {
+        /** Get all public and private views from cube.
          *
-         * :param cube_name: String, name of the cube
-         * :return: Tuple of List of instances of .NativeView and .MDXView
+         * :param cube_name: String, name of the cube.
+         * :param include_elements: false to return view details without elements, faster
+         * :return: 2 Lists of View instances: private views, public views
          */
-        const url = formatUrl("/Cubes('{}')/Views?$expand=*", cubeName);
-        const response = await this.rest.get(url);
-        
-        const nativeViews: NativeView[] = [];
-        const mdxViews: MDXView[] = [];
-        
-        for (const viewDict of response.data.value) {
-            if ("MDX" in viewDict) {
-                mdxViews.push(MDXView.fromDict(viewDict, cubeName));
-            } else {
-                const nativeView = await this.getNativeView(cubeName, viewDict.Name, false);
-                nativeViews.push(nativeView);
+        const elementFilter = includeElements ? "" : ";$top=0";
+        const privateViews: View[] = [];
+        const publicViews: View[] = [];
+
+        for (const viewType of ['PrivateViews', 'Views'] as const) {
+            const url = formatUrl(
+                "/Cubes('{}')/{}?$expand=" +
+                "tm1.NativeView/Rows/Subset($expand=Hierarchy($select=Name;" +
+                "$expand=Dimension($select=Name)),Elements($select=Name{});" +
+                "$select=Expression,UniqueName,Name, Alias),  " +
+                "tm1.NativeView/Columns/Subset($expand=Hierarchy($select=Name;" +
+                "$expand=Dimension($select=Name)),Elements($select=Name{});" +
+                "$select=Expression,UniqueName,Name,Alias), " +
+                "tm1.NativeView/Titles/Subset($expand=Hierarchy($select=Name;" +
+                "$expand=Dimension($select=Name)),Elements($select=Name{});" +
+                "$select=Expression,UniqueName,Name,Alias), " +
+                "tm1.NativeView/Titles/Selected($select=Name)",
+                cubeName, viewType, elementFilter, elementFilter, elementFilter);
+            const response = await this.rest.get(url);
+            for (const viewAsDict of response.data.value) {
+                const view: View =
+                    viewAsDict['@odata.type'] === '#ibm.tm1.api.v1.MDXView'
+                        ? MDXView.fromDict(viewAsDict, cubeName)
+                        : NativeView.fromDict(viewAsDict, cubeName);
+                if (viewType === 'PrivateViews') {
+                    privateViews.push(view);
+                } else {
+                    publicViews.push(view);
+                }
             }
         }
-        
-        return [nativeViews, mdxViews];
+        return [privateViews, publicViews];
     }
 
-    public async getAllNames(cubeName: string, isPrivate?: boolean): Promise<string[]> {
-        /** Get all view names from a cube
+    public async getAllNames(cubeName: string): Promise<[string[], string[]]> {
+        /** Get all view names from a cube.
          *
-         * :param cube_name: String, name of the cube  
-         * :param private: Boolean, private views only
-         * :return: List of view names
+         * :param cube_name: String, name of the cube
+         * :return: 2 Lists of view names: private views, public views
          */
-        let viewType = "Views";
-        if (isPrivate === true) {
-            viewType = "PrivateViews";
-        } else if (isPrivate === false) {
-            viewType = "Views";
+        const privateNames: string[] = [];
+        const publicNames: string[] = [];
+
+        for (const viewType of ['PrivateViews', 'Views'] as const) {
+            const url = formatUrl("/Cubes('{}')/{}?$select=Name", cubeName, viewType);
+            const response = await this.rest.get(url);
+            for (const view of response.data.value) {
+                if (viewType === 'PrivateViews') {
+                    privateNames.push(view.Name);
+                } else {
+                    publicNames.push(view.Name);
+                }
+            }
         }
-        
-        if (isPrivate === undefined) {
-            // Get both private and public view names
-            const privateUrl = formatUrl("/Cubes('{}')/PrivateViews?$select=Name", cubeName);
-            const publicUrl = formatUrl("/Cubes('{}')/Views?$select=Name", cubeName);
-            
-            const [privateResponse, publicResponse] = await Promise.all([
-                this.rest.get(privateUrl),
-                this.rest.get(publicUrl)
-            ]);
-            
-            const privateNames = privateResponse.data.value.map((v: any) => v.Name);
-            const publicNames = publicResponse.data.value.map((v: any) => v.Name);
-            
-            return [...privateNames, ...publicNames];
-        }
-        
-        const url = formatUrl("/Cubes('{}')/{}?$select=Name", cubeName, viewType);
-        const response = await this.rest.get(url);
-        return response.data.value.map((view: any) => view.Name);
+        return [privateNames, publicNames];
     }
 
     public async getMdxView(

@@ -190,7 +190,7 @@ describe('Comprehensive Service Tests with Mocking', () => {
         });
 
         test('should handle all view operations successfully', async () => {
-            // Test getAllNames - ViewService makes two calls for private and public views
+            // getAllNames returns [private, public] tuple — two GETs.
             mockRestService.get
                 .mockResolvedValueOnce(createMockResponse({
                     value: [{ Name: 'PrivateView1' }]
@@ -198,35 +198,39 @@ describe('Comprehensive Service Tests with Mocking', () => {
                 .mockResolvedValueOnce(createMockResponse({
                     value: [{ Name: 'PublicView1' }, { Name: 'PublicView2' }]
                 }));
-            
+
             const viewNames = await viewService.getAllNames('TestCube');
-            expect(viewNames).toEqual(['PrivateView1', 'PublicView1', 'PublicView2']);
-            
-            // Test getAll - simplified to avoid complex nested calls
-            mockRestService.get.mockResolvedValueOnce(createMockResponse({
-                value: [
-                    { Name: 'MDXView1', MDX: 'SELECT FROM [TestCube]' }, // Has MDX property
-                    { Name: 'NativeView1' } // Doesn't have MDX property
-                ]
-            }));
-            
-            // Mock the getNativeView call that will be made for the native view
-            mockRestService.get.mockResolvedValueOnce(createMockResponse({
-                Name: 'NativeView1',
-                Columns: [],
-                Rows: [],
-                Titles: []
-            }));
-            
-            const views = await viewService.getAll('TestCube');
-            expect(Array.isArray(views)).toBe(true);
-            expect(views.length).toBe(2); // Array of [nativeViews, mdxViews]
-            
+            expect(viewNames).toEqual([['PrivateView1'], ['PublicView1', 'PublicView2']]);
+
+            // getAll returns [private, public]; private empty, public has mixed MDX/Native.
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse({ value: [] }))
+                .mockResolvedValueOnce(createMockResponse({
+                    value: [
+                        {
+                            '@odata.type': '#ibm.tm1.api.v1.MDXView',
+                            Name: 'MDXView1',
+                            MDX: 'SELECT FROM [TestCube]'
+                        },
+                        {
+                            '@odata.type': '#ibm.tm1.api.v1.NativeView',
+                            Name: 'NativeView1',
+                            Columns: [],
+                            Rows: [],
+                            Titles: []
+                        }
+                    ]
+                }));
+
+            const [privateViews, publicViews] = await viewService.getAll('TestCube');
+            expect(privateViews).toEqual([]);
+            expect(publicViews).toHaveLength(2);
+
             // Test exists
             mockRestService.get.mockResolvedValueOnce(createMockResponse({ Name: 'View1' }));
             const exists = await viewService.exists('TestCube', 'View1', false);
             expect(exists).toBe(true);
-            
+
             console.log('✅ All ViewService operations working');
         });
     });
@@ -391,12 +395,13 @@ describe('Comprehensive Service Tests with Mocking', () => {
             
             const dimensions = await dimensionService.getAllNames();
             const cubes = await cubeService.getAll();
-            const views = await viewService.getAllNames('SalesCube');
-            
+            const [privateViewNames, publicViewNames] = await viewService.getAllNames('SalesCube');
+
             expect(dimensions.length).toBe(2);
             expect(cubes.length).toBe(1);
-            expect(views.length).toBe(3); // PrivateView + DefaultView + BudgetView
-            
+            expect(privateViewNames).toEqual(['PrivateView']);
+            expect(publicViewNames).toEqual(['DefaultView', 'BudgetView']);
+
             console.log('✅ Cross-service integration working');
         });
 
