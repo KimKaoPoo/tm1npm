@@ -7,11 +7,22 @@ import { RestService } from '../services/RestService';
 import { CellService } from '../services/CellService';
 
 // Mock getDimensionNamesForWriting globally — all CellService instances in these tests
-// need this since getValue/writeValue/write now require dimension names
+// need this since getValue/writeValue/write now require dimension names.
+// executeMdxRaw now uses createCellset + extractCellsetRaw + delete (tm1py parity);
+// short-circuit createCellset + safe-delete + extractCellsetRaw so existing tests
+// can drive the raw cellset shape via the per-test cellsetData variable.
+let __mdxAdvancedCellsetData: any = { Axes: [], Cells: [] };
 beforeEach(() => {
+    __mdxAdvancedCellsetData = { Axes: [], Cells: [] };
     jest.spyOn(CellService.prototype, 'getDimensionNamesForWriting').mockResolvedValue(['Period', 'Measure', 'Version']);
     jest.spyOn(CellService.prototype, 'executeMdxValues').mockResolvedValue([]);
+    jest.spyOn(CellService.prototype, 'createCellset').mockResolvedValue('cs1');
+    jest.spyOn(CellService.prototype, '_safeDeleteCellset' as any).mockResolvedValue(undefined);
+    jest.spyOn(CellService.prototype, 'extractCellsetRaw')
+        .mockImplementation(async () => __mdxAdvancedCellsetData);
 });
+
+const setMockCellset = (data: any) => { __mdxAdvancedCellsetData = data; };
 
 // Helper function to create mock AxiosResponse
 const createMockResponse = (data: any, status: number = 200) => ({
@@ -51,7 +62,7 @@ describe('Advanced MDX and Calculation Tests', () => {
                 WHERE ([Measure].[Revenue], [Region].[North America])
             `;
 
-            mockRestService.post.mockResolvedValue(createMockResponse({
+            setMockCellset({
                 Axes: [
                     {
                         Tuples: [
@@ -75,9 +86,9 @@ describe('Advanced MDX and Calculation Tests', () => {
                     { Ordinal: 4, Value: 92000, FormattedValue: '92,000' },
                     { Ordinal: 5, Value: 98000, FormattedValue: '98,000' }
                 ]
-            }));
+            });
 
-            const result = await cellService.executeMdx(complexMDX);
+            const result = await cellService.executeMdxRaw(complexMDX);
             
             expect(result.Cells).toBeDefined();
             expect(result.Cells.length).toBe(6);
@@ -107,7 +118,7 @@ describe('Advanced MDX and Calculation Tests', () => {
                 FROM [Sales]
             `;
 
-            mockRestService.post.mockResolvedValue(createMockResponse({
+            setMockCellset({
                 Axes: [
                     {
                         Tuples: [
@@ -131,9 +142,9 @@ describe('Advanced MDX and Calculation Tests', () => {
                     { Ordinal: 4, Value: 850000, FormattedValue: '850,000' },
                     { Ordinal: 5, Value: 0.08, FormattedValue: '8.0%' }
                 ]
-            }));
+            });
 
-            const result = await cellService.executeMdx(mdxWithCalculatedMember);
+            const result = await cellService.executeMdxRaw(mdxWithCalculatedMember);
             
             expect(result.Cells).toBeDefined();
             expect(result.Cells.length).toBe(6);
@@ -141,7 +152,7 @@ describe('Advanced MDX and Calculation Tests', () => {
             // Validate calculated member results
             const growthRateCell = result.Cells.find((cell: any) => cell.FormattedValue.includes('%'));
             expect(growthRateCell).toBeDefined();
-            expect(growthRateCell.FormattedValue).toMatch(/\d+\.\d+%/);
+            expect(growthRateCell!.FormattedValue).toMatch(/\d+\.\d+%/);
             
             console.log('✅ MDX with calculated members processed successfully');
         });
@@ -167,15 +178,15 @@ describe('Advanced MDX and Calculation Tests', () => {
             ];
 
             for (const mdx of advancedMDXFunctions) {
-                mockRestService.post.mockResolvedValue(createMockResponse({
+                setMockCellset({
                     Axes: [{ Tuples: [{ Members: [{ Name: 'TestMember' }] }] }],
                     Cells: [{ Ordinal: 0, Value: 12345, FormattedValue: '12,345' }]
-                }));
+                });
 
-                const result = await cellService.executeMdx(mdx);
+                const result = await cellService.executeMdxRaw(mdx);
                 expect(result.Cells).toBeDefined();
                 expect(result.Axes).toBeDefined();
-                
+
                 console.log(`✅ Advanced MDX function processed: ${mdx.substring(7, 25)}...`);
             }
         });
@@ -348,18 +359,18 @@ describe('Advanced MDX and Calculation Tests', () => {
                 FormattedValue: (Math.random() * 1000000).toFixed(2)
             }));
 
-            mockRestService.post.mockResolvedValue(createMockResponse({
+            setMockCellset({
                 Axes: [
                     { Tuples: Array(100).fill(null).map((_, i) => ({ Members: [{ Name: `Row${i}` }] })) },
                     { Tuples: Array(100).fill(null).map((_, i) => ({ Members: [{ Name: `Col${i}` }] })) }
                 ],
                 Cells: largeCellSet
-            }));
+            });
 
             const startTime = Date.now();
             const startMemory = process.memoryUsage().heapUsed;
             
-            const result = await cellService.executeMdx('SELECT [Large].Members ON COLUMNS FROM [BigCube]');
+            const result = await cellService.executeMdxRaw('SELECT [Large].Members ON COLUMNS FROM [BigCube]');
             
             const endTime = Date.now();
             const endMemory = process.memoryUsage().heapUsed;
@@ -395,26 +406,26 @@ describe('Advanced MDX and Calculation Tests', () => {
     describe('Error Recovery and Resilience', () => {
         test('should handle partial MDX execution failures', async () => {
             const cellService = new CellService(mockRestService);
-            
-            // Mock partial failure scenario
+
+            setMockCellset({
+                Axes: [{ Tuples: [{ Members: [{ Name: 'Element1' }] }] }],
+                Cells: [{ Ordinal: 0, Value: 100, FormattedValue: '100' }],
+                Messages: [{ Type: 'Warning', Text: 'Some data unavailable' }]
+            });
+
+            // Partial failure scenario — createCellset is globally stubbed in beforeEach,
+            // so override it here to fail on first attempt and succeed on second.
             let attemptCount = 0;
-            mockRestService.post.mockImplementation(() => {
+            (cellService.createCellset as jest.Mock).mockImplementation(() => {
                 attemptCount++;
                 if (attemptCount === 1) {
-                    // First attempt fails
                     return Promise.reject({ response: { status: 500, data: { error: 'Temporary failure' } } });
-                } else {
-                    // Second attempt succeeds with partial results
-                    return Promise.resolve(createMockResponse({
-                        Axes: [{ Tuples: [{ Members: [{ Name: 'Element1' }] }] }],
-                        Cells: [{ Ordinal: 0, Value: 100, FormattedValue: '100' }],
-                        Messages: [{ Type: 'Warning', Text: 'Some data unavailable' }]
-                    }));
                 }
+                return Promise.resolve('cs1');
             });
 
             try {
-                const result = await cellService.executeMdx('SELECT [Test].Members FROM [Cube]');
+                const result = await cellService.executeMdxRaw('SELECT [Test].Members FROM [Cube]');
                 expect(result.Cells.length).toBe(1);
                 expect(attemptCount).toBe(2); // Should have retried
                 console.log('✅ Partial failure handled with retry');

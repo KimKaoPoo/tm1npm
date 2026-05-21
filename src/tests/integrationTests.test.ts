@@ -131,15 +131,16 @@ describe('TM1Service Integration Tests', () => {
                     return;
                 }
 
-                // Execute the view
-                const cellsetResult = await tm1.cells.executeView('General Ledger', 'Default');
-                
+                // Execute the view via raw API to keep the ID/@odata.context assertions.
+                // executeView returns CaseAndSpaceInsensitiveTuplesDict per tm1py parity.
+                const cellsetResult = await tm1.cells.executeViewRaw('General Ledger', 'Default');
+
                 expect(cellsetResult).toBeDefined();
                 expect(cellsetResult).toHaveProperty('ID');
                 expect(typeof cellsetResult.ID).toBe('string');
-                expect(cellsetResult.ID.length).toBeGreaterThan(0);
+                expect((cellsetResult.ID as string).length).toBeGreaterThan(0);
                 expect(cellsetResult).toHaveProperty('@odata.context');
-                
+
                 console.log('✅ View executed successfully, Cellset ID:', cellsetResult.ID);
                 
             } catch (error) {

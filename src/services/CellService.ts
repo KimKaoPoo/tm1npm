@@ -14,7 +14,7 @@ import { MDXView } from '../objects/MDXView';
 import { Process } from '../objects/Process';
 import { TM1Exception, TM1pyWriteFailureException, TM1pyWritePartialFailureException } from '../exceptions/TM1Exception';
 import {
-    formatUrl, escapeODataValue, lowerAndDropSpaces, extractCompactJsonCellset, resemblesMdx, getCube,
+    formatUrl, escapeODataValue, buildUrlFriendlyObjectName, lowerAndDropSpaces, extractCompactJsonCellset, resemblesMdx, getCube,
     CaseAndSpaceInsensitiveDict,
     CaseAndSpaceInsensitiveTuplesDict,
     RawCellsetDict,
@@ -213,6 +213,99 @@ export interface MDXViewOptions {
      */
     use_compact_json?: boolean;
     mdx_headers?: boolean;
+}
+
+// Options matching tm1py execute_mdx (CellService.py:2065-2082) one-to-one.
+export interface ExecuteMdxOptions {
+    cellProperties?: string[];
+    top?: number;
+    skipContexts?: boolean;
+    skip?: number;
+    skipZeros?: boolean;
+    skipConsolidatedCells?: boolean;
+    skipRuleDerivedCells?: boolean;
+    sandboxName?: string;
+    elementUniqueNames?: boolean;
+    skipCellProperties?: boolean;
+    useCompactJson?: boolean;
+    skipSandboxDimension?: boolean;
+    /**
+     * When > 1, dispatches to `executeMdxAsync` / `execute_view_async`. The
+     * dispatch is real (the async helper accepts the full option surface);
+     * the network-parallelism semantic tm1py achieves via `extract_cellset_async`
+     * is not yet ported and the call reduces to a single serial GET.
+     *
+     * `asyncAxis` is intentionally NOT exposed on this surface: tm1py forwards
+     * it to extract_cellset_async, which tm1npm hasn't ported yet. The internal
+     * `extractCellsetAxesRawAsync` helper already implements axis-parallel
+     * fetching and accepts its own `asyncAxis` parameter; that helper will be
+     * wired in alongside the parallel-chunked port (tracked follow-up).
+     */
+    maxWorkers?: number;
+}
+
+// Options matching tm1py execute_mdx_raw (CellService.py:2338-2353) one-to-one.
+export interface ExecuteMdxRawOptions {
+    cellProperties?: string[];
+    elemProperties?: string[];
+    memberProperties?: string[];
+    top?: number;
+    skipContexts?: boolean;
+    skip?: number;
+    skipZeros?: boolean;
+    skipConsolidatedCells?: boolean;
+    skipRuleDerivedCells?: boolean;
+    sandboxName?: string;
+    includeHierarchies?: boolean;
+    useCompactJson?: boolean;
+}
+
+// Options matching tm1py execute_view (CellService.py:2200-2218). Note: NO
+// skipSandboxDimension — tm1py's execute_view does not accept it.
+export interface ExecuteViewOptions extends Omit<ExecuteMdxOptions, 'skipSandboxDimension'> {
+    private?: boolean;
+}
+
+// Options matching tm1py execute_view_raw (CellService.py:2391-2407).
+// tm1py's execute_view_raw does NOT accept `include_hierarchies` — that param
+// only exists on execute_mdx_raw. Omit it here for strict parity.
+export interface ExecuteViewRawOptions extends Omit<ExecuteMdxRawOptions, 'includeHierarchies'> {
+    private?: boolean;
+}
+
+// Options matching tm1py execute_view_async (CellService.py:2278-2294). tm1py
+// drops use_compact_json from this signature (only execute_mdx_async forwards
+// it) — strict parity = omit it here too so the type system enforces it.
+export interface ExecuteViewAsyncOptions extends Omit<ExecuteViewOptions, 'useCompactJson'> {}
+
+// Options matching tm1py execute_mdx_csv (CellService.py:2562-2579).
+// tm1py's `use_blob` is intentionally NOT exposed yet — the blob CSV port
+// (`_execute_mdx_csv_use_blob`) is tracked as a follow-up; the option will
+// be added back when the underlying TI/blob path lands so the public
+// surface never advertises behaviour we don't actually implement.
+export interface ExecuteMdxCsvOptions {
+    top?: number;
+    skip?: number;
+    skipZeros?: boolean;
+    skipConsolidatedCells?: boolean;
+    skipRuleDerivedCells?: boolean;
+    csvDialect?: CsvDialect;
+    lineSeparator?: string;
+    valueSeparator?: string;
+    sandboxName?: string;
+    includeAttributes?: boolean;
+    useIterativeJson?: boolean;
+    useCompactJson?: boolean;
+    mdxHeaders?: boolean;
+}
+
+// Options matching tm1py execute_view_csv (CellService.py:2663-2682). Adds
+// `private`, drops `includeAttributes` (not in tm1py view_csv). tm1py's
+// `use_blob` and `arranged_axes` are intentionally NOT exposed yet —
+// `arranged_axes` only affects the blob path in tm1py, so it travels with
+// the blob port; both will be added back together as a follow-up.
+export interface ExecuteViewCsvOptions extends Omit<ExecuteMdxCsvOptions, 'includeAttributes'> {
+    private?: boolean;
 }
 
 // tm1py uses CaseAndSpaceInsensitiveDict for measure-element lookups so callers can pass
@@ -573,29 +666,44 @@ export class CellService {
     }
 
     /**
-     * Execute a view and return the data
+     * Execute a view and return cells with their properties as a
+     * CaseAndSpaceInsensitiveTuplesDict. Mirrors tm1py's execute_view
+     * (CellService.py:2200-2276): createCellsetFromView + extractCellset
+     * with the full tm1py parameter surface.
+     *
+     * When `maxWorkers > 1`, dispatches to execute_view_async. tm1py's
+     * execute_view (CellService.py:2241-2257) forwards 13 named parameters
+     * but DELIBERATELY OMITS cell_properties and use_compact_json (different
+     * from execute_mdx's async branch, which forwards both). Strict parity
+     * rule: replicate that quirk — drop the two fields before forwarding.
      */
     public async executeView(
-        cubeName: string, 
-        viewName: string, 
-        options: MDXViewOptions = {}
-    ): Promise<any> {
-        let url = `/Cubes('${cubeName}')/Views('${viewName}')/tm1.Execute`;
-        
-        const params = new URLSearchParams();
-        if (options.private !== undefined) params.append('$private', options.private.toString());
-        if (options.sandbox_name) params.append('$sandbox', options.sandbox_name);
-        if (options.element_unique_names !== undefined) params.append('$element_unique_names', options.element_unique_names.toString());
-        if (options.skip_zeros !== undefined) params.append('$skip_zeros', options.skip_zeros.toString());
-        if (options.skip_consolidated !== undefined) params.append('$skip_consolidated', options.skip_consolidated.toString());
-        if (options.skip_rule_derived !== undefined) params.append('$skip_rule_derived', options.skip_rule_derived.toString());
-
-        if (params.toString()) {
-            url += `?${params.toString()}`;
+        cubeName: string,
+        viewName: string,
+        options: ExecuteViewOptions = {}
+    ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
+        const maxWorkers = options.maxWorkers ?? 1;
+        if (maxWorkers > 1) {
+            // Strip the two fields tm1py's async branch omits (CellService.py:2241-2257).
+            const { cellProperties: _cp, useCompactJson: _uc, ...asyncOptions } = options;
+            return this.execute_view_async(cubeName, viewName, asyncOptions);
         }
-
-        const response = await this.rest.post(url);
-        return response.data;
+        const cellsetId = await this.createCellsetFromView(
+            cubeName, viewName, options.private ?? false, options.sandboxName);
+        return this.extractCellset(cellsetId, {
+            cellProperties: options.cellProperties,
+            top: options.top,
+            skip: options.skip,
+            skipContexts: options.skipContexts,
+            skipZeros: options.skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            deleteCellset: true,
+            sandboxName: options.sandboxName,
+            elementUniqueNames: options.elementUniqueNames,
+            skipCellProperties: options.skipCellProperties,
+            useCompactJson: options.useCompactJson,
+        });
     }
 
     /**
@@ -626,60 +734,128 @@ export class CellService {
     }
 
     /**
-     * Execute MDX and return CSV data
+     * Execute MDX and return CSV. Mirrors tm1py's execute_mdx_csv
+     * (CellService.py:2562-2661): createCellset + extractCellsetCsv (or
+     * extractCellsetCsvIterJson) with the full tm1py parameter surface.
+     *
+     * Note default `skipZeros=true` — different from executeMdx, matches
+     * tm1py CSV semantics (CellService.py:2567).
+     *
+     * tm1py's `use_blob` is not exposed yet — see ExecuteMdxCsvOptions for
+     * the deferral note. extractCellsetCsv handles cellset cleanup itself
+     * (deleteCellset=true default); extractCellsetCsvIterJson does NOT and
+     * tm1py's extract_cellset_csv_iter_json is also not @tidy_cellset-
+     * decorated (CellService.py:4385) — the iter-json cellset leak is a
+     * tm1py bug we replicate per the strict-parity rule.
      */
     public async executeMdxCsv(
-        mdx: string, 
-        options: MDXViewOptions = {}
+        mdx: string,
+        options: ExecuteMdxCsvOptions = {}
     ): Promise<string> {
-        let url = '/ExecuteMDXCSV';
-        
-        const params = new URLSearchParams();
-        if (options.sandbox_name) params.append('$sandbox', options.sandbox_name);
-        if (options.element_unique_names !== undefined) params.append('$element_unique_names', options.element_unique_names.toString());
-        if (options.skip_zeros !== undefined) params.append('$skip_zeros', options.skip_zeros.toString());
+        const skipZeros = options.skipZeros !== false;
+        const lineSeparator = options.lineSeparator ?? '\r\n';
+        const valueSeparator = options.valueSeparator ?? ',';
 
-        if (params.toString()) {
-            url += `?${params.toString()}`;
+        const cellsetId = await this.createCellset(mdx, options.sandboxName);
+
+        if (options.useIterativeJson) {
+            return this.extractCellsetCsvIterJson(cellsetId, {
+                top: options.top,
+                skip: options.skip,
+                skipZeros,
+                skipConsolidatedCells: options.skipConsolidatedCells,
+                skipRuleDerivedCells: options.skipRuleDerivedCells,
+                csvDialect: options.csvDialect,
+                lineSeparator,
+                valueSeparator,
+                sandboxName: options.sandboxName,
+                includeAttributes: options.includeAttributes,
+                mdxHeaders: options.mdxHeaders,
+            });
         }
 
-        const body = { MDX: mdx };
-        const response = await this.rest.post(url, body);
-        return response.data;
+        return this.extractCellsetCsv(cellsetId, {
+            top: options.top,
+            skip: options.skip,
+            skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            csvDialect: options.csvDialect,
+            lineSeparator,
+            valueSeparator,
+            sandboxName: options.sandboxName,
+            includeAttributes: options.includeAttributes,
+            useCompactJson: options.useCompactJson,
+            mdxHeaders: options.mdxHeaders,
+        });
     }
 
     /**
-     * Execute view and return CSV data
+     * Execute a view and return CSV. Mirrors tm1py's execute_view_csv
+     * (CellService.py:2663-2769): createCellsetFromView + extractCellsetCsv
+     * (or extractCellsetCsvIterJson) with the full tm1py parameter surface.
+     *
+     * tm1py's `use_blob` (+ its associated `arranged_axes` reorder) is not
+     * exposed yet — see ExecuteViewCsvOptions for the deferral note.
+     * extractCellsetCsvIterJson does not delete the cellset; tm1py's
+     * extract_cellset_csv_iter_json is also not @tidy_cellset-decorated
+     * (CellService.py:4385) — the iter-json cellset leak is a tm1py bug we
+     * replicate per the strict-parity rule.
      */
     public async executeViewCsv(
-        cubeName: string, 
-        viewName: string, 
-        options: MDXViewOptions = {}
+        cubeName: string,
+        viewName: string,
+        options: ExecuteViewCsvOptions = {}
     ): Promise<string> {
-        let url = `/Cubes('${cubeName}')/Views('${viewName}')/tm1.ExecuteCSV`;
-        
-        const params = new URLSearchParams();
-        if (options.private !== undefined) params.append('$private', options.private.toString());
-        if (options.sandbox_name) params.append('$sandbox', options.sandbox_name);
-        if (options.element_unique_names !== undefined) params.append('$element_unique_names', options.element_unique_names.toString());
-        if (options.skip_zeros !== undefined) params.append('$skip_zeros', options.skip_zeros.toString());
+        const skipZeros = options.skipZeros !== false;
+        const lineSeparator = options.lineSeparator ?? '\r\n';
+        const valueSeparator = options.valueSeparator ?? ',';
 
-        if (params.toString()) {
-            url += `?${params.toString()}`;
+        const cellsetId = await this.createCellsetFromView(
+            cubeName, viewName, options.private ?? false, options.sandboxName);
+
+        if (options.useIterativeJson) {
+            return this.extractCellsetCsvIterJson(cellsetId, {
+                skipZeros,
+                top: options.top,
+                skip: options.skip,
+                skipConsolidatedCells: options.skipConsolidatedCells,
+                skipRuleDerivedCells: options.skipRuleDerivedCells,
+                csvDialect: options.csvDialect,
+                lineSeparator,
+                valueSeparator,
+                sandboxName: options.sandboxName,
+                mdxHeaders: options.mdxHeaders,
+            });
         }
 
-        const response = await this.rest.post(url);
-        return response.data;
+        return this.extractCellsetCsv(cellsetId, {
+            skipZeros,
+            top: options.top,
+            skip: options.skip,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            csvDialect: options.csvDialect,
+            lineSeparator,
+            valueSeparator,
+            sandboxName: options.sandboxName,
+            useCompactJson: options.useCompactJson,
+            mdxHeaders: options.mdxHeaders,
+        });
     }
 
     /**
-     * Create a cellset for advanced operations
+     * Create a cellset for advanced operations. Mirrors tm1py's
+     * create_cellset (CellService.py): POSTs `/ExecuteMDX` and appends the
+     * TM1 write-side `!sandbox=` parameter (NOT the OData read-side
+     * `$sandbox`) with quote-doubling as the only escaping (parity with
+     * tm1py's add_url_parameters at Utils.py:1011-1030).
      */
     public async createCellset(mdx: string, sandbox_name?: string): Promise<string> {
         let url = '/ExecuteMDX';
 
         if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
+            url += `?!sandbox=${sandbox_name.replace(/'/g, "''")}`;
         }
 
         const body = { MDX: mdx };
@@ -688,13 +864,15 @@ export class CellService {
     }
 
     /**
-     * Delete a cellset
+     * Delete a cellset. Uses TM1's write-side `!sandbox=` parameter to match
+     * tm1py's add_url_parameters convention (no percent-encoding, only
+     * quote-doubling).
      */
     public async deleteCellset(cellsetId: string, sandbox_name?: string): Promise<void> {
         let url = `/Cellsets('${cellsetId}')`;
-        
+
         if (sandbox_name) {
-            url += `?$sandbox=${sandbox_name}`;
+            url += `?!sandbox=${sandbox_name.replace(/'/g, "''")}`;
         }
 
         await this.rest.delete(url);
@@ -1561,28 +1739,47 @@ export class CellService {
     }
 
     /**
-     * Execute MDX query and return raw TM1 response
+     * Execute MDX and return the raw cellset data. Mirrors tm1py's
+     * execute_mdx_raw (CellService.py:2338-2389): createCellset +
+     * extractCellsetRaw with the full tm1py parameter surface.
      */
     public async executeMdxRaw(
         mdx: string,
-        options: MDXViewOptions = {}
-    ): Promise<any> {
-        let url = '/ExecuteMDX';
+        options: ExecuteMdxRawOptions = {}
+    ): Promise<RawCellsetDict> {
+        const cellsetId = await this.createCellset(mdx, options.sandboxName);
+        return this.extractCellsetRaw(cellsetId, {
+            cellProperties: options.cellProperties,
+            elemProperties: options.elemProperties,
+            memberProperties: options.memberProperties,
+            top: options.top,
+            skip: options.skip,
+            deleteCellset: true,
+            skipContexts: options.skipContexts,
+            skipZeros: options.skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            sandboxName: options.sandboxName,
+            includeHierarchies: options.includeHierarchies,
+            useCompactJson: options.useCompactJson,
+        });
+    }
 
-        const params = new URLSearchParams();
-        if (options.sandbox_name) params.append('$sandbox', options.sandbox_name);
-        if (options.element_unique_names !== undefined) params.append('$element_unique_names', options.element_unique_names.toString());
-        if (options.skip_zeros !== undefined) params.append('$skip_zeros', options.skip_zeros.toString());
-        if (options.skip_consolidated !== undefined) params.append('$skip_consolidated', options.skip_consolidated.toString());
-        if (options.skip_rule_derived !== undefined) params.append('$skip_rule_derived', options.skip_rule_derived.toString());
-
-        if (params.toString()) {
-            url += `?${params.toString()}`;
-        }
-
-        const body = { MDX: mdx };
-        const response = await this.rest.post(url, body);
-        return response.data;
+    // Translate legacy MDXViewOptions to the new ExecuteMdxRawOptions shape so
+    // out-of-scope methods (executeMdxValues, executeMdxRowsAndValues, etc.) keep
+    // their existing public surface while delegating to the rewritten raw helpers.
+    // MDXViewOptions fields not present in tm1py's execute_mdx_raw signature
+    // (element_unique_names, use_iterative_json, use_blob, csv_dialect, mdx_headers)
+    // are intentionally dropped — they don't apply to the raw path. element_unique_names
+    // in particular was already a no-op pre-PR (the value path reads m.Name regardless).
+    private static _mdxViewToRawOptions(options: MDXViewOptions): ExecuteMdxRawOptions {
+        return {
+            sandboxName: options.sandbox_name,
+            skipZeros: options.skip_zeros,
+            skipConsolidatedCells: options.skip_consolidated,
+            skipRuleDerivedCells: options.skip_rule_derived,
+            useCompactJson: options.use_compact_json,
+        };
     }
 
     /**
@@ -1592,7 +1789,7 @@ export class CellService {
         mdx: string,
         options: MDXViewOptions = {}
     ): Promise<any[]> {
-        const cellset = await this.executeMdxRaw(mdx, options);
+        const cellset = await this.executeMdxRaw(mdx, CellService._mdxViewToRawOptions(options));
         return cellset.Cells ? cellset.Cells.map((cell: any) => cell.Value) : [];
     }
 
@@ -1603,7 +1800,7 @@ export class CellService {
         mdx: string,
         options: MDXViewOptions = {}
     ): Promise<{ rows: any[][], values: any[] }> {
-        const cellset = await this.executeMdxRaw(mdx, options);
+        const cellset = await this.executeMdxRaw(mdx, CellService._mdxViewToRawOptions(options));
 
         const rows: any[][] = [];
         const values: any[] = [];
@@ -1678,29 +1875,44 @@ export class CellService {
     }
 
     /**
-     * Execute view and return raw TM1 response
+     * Execute a view and return the raw cellset data. Mirrors tm1py's
+     * execute_view_raw (CellService.py:2391-2446): createCellsetFromView +
+     * extractCellsetRaw with the full tm1py parameter surface.
      */
     public async executeViewRaw(
         cubeName: string,
         viewName: string,
-        options: MDXViewOptions = {}
-    ): Promise<any> {
-        let url = `/Cubes('${cubeName}')/Views('${viewName}')/tm1.Execute`;
+        options: ExecuteViewRawOptions = {}
+    ): Promise<RawCellsetDict> {
+        const cellsetId = await this.createCellsetFromView(
+            cubeName, viewName, options.private ?? false, options.sandboxName);
+        // tm1py's execute_view_raw does NOT forward include_hierarchies (only
+        // execute_mdx_raw does). Omit it here too for strict parity.
+        return this.extractCellsetRaw(cellsetId, {
+            cellProperties: options.cellProperties,
+            elemProperties: options.elemProperties,
+            memberProperties: options.memberProperties,
+            top: options.top,
+            skip: options.skip,
+            skipContexts: options.skipContexts,
+            skipZeros: options.skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            deleteCellset: true,
+            sandboxName: options.sandboxName,
+            useCompactJson: options.useCompactJson,
+        });
+    }
 
-        const params = new URLSearchParams();
-        if (options.private !== undefined) params.append('$private', options.private.toString());
-        if (options.sandbox_name) params.append('$sandbox', options.sandbox_name);
-        if (options.element_unique_names !== undefined) params.append('$element_unique_names', options.element_unique_names.toString());
-        if (options.skip_zeros !== undefined) params.append('$skip_zeros', options.skip_zeros.toString());
-        if (options.skip_consolidated !== undefined) params.append('$skip_consolidated', options.skip_consolidated.toString());
-        if (options.skip_rule_derived !== undefined) params.append('$skip_rule_derived', options.skip_rule_derived.toString());
-
-        if (params.toString()) {
-            url += `?${params.toString()}`;
-        }
-
-        const response = await this.rest.post(url);
-        return response.data;
+    private static _mdxViewToViewRawOptions(options: MDXViewOptions): ExecuteViewRawOptions {
+        return {
+            private: options.private,
+            sandboxName: options.sandbox_name,
+            skipZeros: options.skip_zeros,
+            skipConsolidatedCells: options.skip_consolidated,
+            skipRuleDerivedCells: options.skip_rule_derived,
+            useCompactJson: options.use_compact_json,
+        };
     }
 
     /**
@@ -1711,7 +1923,7 @@ export class CellService {
         viewName: string,
         options: MDXViewOptions = {}
     ): Promise<any[]> {
-        const cellset = await this.executeViewRaw(cubeName, viewName, options);
+        const cellset = await this.executeViewRaw(cubeName, viewName, CellService._mdxViewToViewRawOptions(options));
         return cellset.Cells ? cellset.Cells.map((cell: any) => cell.Value) : [];
     }
 
@@ -1723,7 +1935,7 @@ export class CellService {
         viewName: string,
         options: MDXViewOptions = {}
     ): Promise<{ rows: any[][], values: any[] }> {
-        const cellset = await this.executeViewRaw(cubeName, viewName, options);
+        const cellset = await this.executeViewRaw(cubeName, viewName, CellService._mdxViewToViewRawOptions(options));
 
         const rows: any[][] = [];
         const values: any[] = [];
@@ -1771,37 +1983,47 @@ export class CellService {
      * Execute view asynchronously
      */
     /**
-     * Execute view via cellset extraction (parity with tm1py.execute_view_async).
-     * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
+     * Execute view via cellset extraction (parity with tm1py.execute_view_async at
+     * CellService.py:2278-2336). Returns a CaseAndSpaceInsensitiveTuplesDict.
      *
-     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
-     * - tm1py uses extract_cellset_async with parallel-chunked retrieval. Not yet ported;
-     *   this delegates to a serial extractCellset.
-     * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
-     *   not yet wired through extractCellset and are deliberately omitted from this signature
-     *   so misuse is a compile-time error.
-     * - Tuple-key parts are reordered by cube dimensions (parity with tm1py.sort_coordinates).
-     * - Calls createCellsetFromView, which is itself pre-existing on main and currently
-     *   targets a fabricated /tm1.CreateCellset endpoint (out of #69 scope; tracked
-     *   separately for a future fix to use /Cubes/{}/Views/{}/tm1.Execute per tm1py).
+     * Accepts the tm1py-parity option surface and forwards it to extractCellset.
+     * tm1py's execute_view_async signature has no `use_compact_json` — only
+     * execute_mdx_async accepts it. The `ExecuteViewAsyncOptions` type omits the
+     * field so callers get a TypeScript error if they pass it.
+     *
+     * tm1py uses extract_cellset_async (parallel-chunked); tm1npm uses the serial
+     * extractCellset path — same option-forwarding semantics, different network
+     * parallelism (the parallel-chunked port is a separate follow-up).
      */
     public async execute_view_async(
         cubeName: string,
         viewName: string,
-        options: { private?: boolean; sandbox_name?: string } = {}
-    ): Promise<Map<string, any>> {
+        options: ExecuteViewAsyncOptions & { sandbox_name?: string } = {}
+    ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
+        // sandbox_name (snake) kept as a back-compat alias for the legacy signature.
+        const sandboxName = options.sandboxName ?? options.sandbox_name;
         const cellsetId = await this.createCellsetFromView(
             cubeName,
             viewName,
-            options.private || false,
-            options.sandbox_name
+            options.private ?? false,
+            sandboxName
         );
         try {
-            const cellset = await this._extractCellsetForTupleDict(cellsetId, options.sandbox_name);
-            const cubeDims = await this.getDimensionNamesForWriting(cubeName);
-            return CellService._cellsetToTupleDict(cellset, cubeDims);
+            return await this.extractCellset(cellsetId, {
+                cellProperties: options.cellProperties,
+                top: options.top,
+                skip: options.skip,
+                skipContexts: options.skipContexts,
+                skipZeros: options.skipZeros,
+                skipConsolidatedCells: options.skipConsolidatedCells,
+                skipRuleDerivedCells: options.skipRuleDerivedCells,
+                deleteCellset: false,
+                sandboxName,
+                elementUniqueNames: options.elementUniqueNames,
+                skipCellProperties: options.skipCellProperties,
+            });
         } finally {
-            await this._safeDeleteCellset(cellsetId, options.sandbox_name);
+            await this._safeDeleteCellset(cellsetId, sandboxName);
         }
     }
 
@@ -1812,7 +2034,7 @@ export class CellService {
         mdx: string,
         options: MDXViewOptions = {}
     ): Promise<DataFrame> {
-        const cellset = await this.executeMdxRaw(mdx, options);
+        const cellset = await this.executeMdxRaw(mdx, CellService._mdxViewToRawOptions(options));
         return this.buildDataFrameFromCellset(cellset);
     }
 
@@ -1824,7 +2046,7 @@ export class CellService {
         viewName: string,
         options: MDXViewOptions = {}
     ): Promise<DataFrame> {
-        const cellset = await this.executeViewRaw(cubeName, viewName, options);
+        const cellset = await this.executeViewRaw(cubeName, viewName, CellService._mdxViewToViewRawOptions(options));
         return this.buildDataFrameFromCellset(cellset);
     }
 
@@ -1886,7 +2108,7 @@ export class CellService {
         mdx: string,
         options: MDXViewOptions = {}
     ): Promise<DataFrame> {
-        const cellset = await this.executeMdxRaw(mdx, options);
+        const cellset = await this.executeMdxRaw(mdx, CellService._mdxViewToRawOptions(options));
         return this.buildPivotDataFrameFromCellset(cellset);
     }
 
@@ -1898,7 +2120,7 @@ export class CellService {
         viewName: string,
         options: MDXViewOptions = {}
     ): Promise<DataFrame> {
-        const cellset = await this.executeViewRaw(cubeName, viewName, options);
+        const cellset = await this.executeViewRaw(cubeName, viewName, CellService._mdxViewToViewRawOptions(options));
         return this.buildPivotDataFrameFromCellset(cellset);
     }
 
@@ -1944,15 +2166,20 @@ export class CellService {
         isPrivate: boolean = false,
         sandbox_name?: string
     ): Promise<string> {
-        let url = `/Cubes('${cubeName}')/Views('${viewName}')/tm1.CreateCellset`;
-
-        const params = new URLSearchParams();
-        if (isPrivate) params.append('$private', 'true');
-        if (sandbox_name) params.append('$sandbox', sandbox_name);
-
-        if (params.toString()) {
-            url += `?${params.toString()}`;
-        }
+        // Mirror tm1py's create_cellset_from_view (CellService.py:4986-5005) exactly:
+        //   /Cubes('{cube}')/{PrivateViews|Views}('{view}')/tm1.Execute?!sandbox=...
+        // tm1py builds the URL via format_url which runs every positional arg
+        // through build_url_friendly_object_name (Utils.py:271-289) — escapes
+        // ', %, #, ?, &. Plain quote-doubling is NOT sufficient for cube/view
+        // names: real-world names containing `&` (e.g. "Sales & Revenue") would
+        // otherwise produce a URL where `&` is parsed as a query separator.
+        // sandbox_name keeps the lighter quote-doubling escape because tm1py
+        // appends it via add_url_parameters (Utils.py:1011-1030), not format_url.
+        const views = isPrivate ? 'PrivateViews' : 'Views';
+        const cube = buildUrlFriendlyObjectName(cubeName);
+        const view = buildUrlFriendlyObjectName(viewName);
+        let url = `/Cubes('${cube}')/${views}('${view}')/tm1.Execute`;
+        if (sandbox_name) url += `?!sandbox=${escapeODataValue(sandbox_name)}`;
 
         const response = await this.rest.post(url);
 
@@ -3116,7 +3343,7 @@ export class CellService {
         mdx: string,
         options: MDXViewOptions = {}
     ): Promise<any> {
-        const cellset = await this.executeMdxRaw(mdx, options);
+        const cellset = await this.executeMdxRaw(mdx, CellService._mdxViewToRawOptions(options));
         return this.formatForDygraph(cellset);
     }
 
@@ -3128,7 +3355,7 @@ export class CellService {
         viewName: string,
         options: MDXViewOptions = {}
     ): Promise<any> {
-        const cellset = await this.executeViewRaw(cubeName, viewName, options);
+        const cellset = await this.executeViewRaw(cubeName, viewName, CellService._mdxViewToViewRawOptions(options));
         return this.formatForDygraph(cellset);
     }
 
@@ -3139,7 +3366,7 @@ export class CellService {
         mdx: string,
         options: MDXViewOptions = {}
     ): Promise<any[][]> {
-        const cellset = await this.executeMdxRaw(mdx, options);
+        const cellset = await this.executeMdxRaw(mdx, CellService._mdxViewToRawOptions(options));
         return this.formatForUiArray(cellset);
     }
 
@@ -3151,7 +3378,7 @@ export class CellService {
         viewName: string,
         options: MDXViewOptions = {}
     ): Promise<any[][]> {
-        const cellset = await this.executeViewRaw(cubeName, viewName, options);
+        const cellset = await this.executeViewRaw(cubeName, viewName, CellService._mdxViewToViewRawOptions(options));
         return this.formatForUiArray(cellset);
     }
 
@@ -3262,13 +3489,9 @@ export class CellService {
         sandboxName?: string,
         options: { skipZeros?: boolean } = {}
     ): Promise<{ [key: string]: any }> {
-        // skip_consolidated_cells / skip_rule_derived_cells are not yet wired through
-        // executeMdxCsv to TM1's URL params, so they are deliberately omitted from this
-        // signature (compile-time enforcement matches the pattern used by executeMdxAsync /
-        // execute_view_async). Add them back when executeMdxCsv accepts them.
         const csv = await this.executeMdxCsv(mdx, {
-            sandbox_name: sandboxName,
-            skip_zeros: options.skipZeros !== false,
+            sandboxName,
+            skipZeros: options.skipZeros !== false,
         });
         if (!csv) return {};
         const lines = csv.split(/\r?\n/).filter(l => l.length > 0);
@@ -3430,13 +3653,39 @@ export class CellService {
     }
 
     /**
-     * Execute an MDX query
+     * Execute MDX and return cells with their properties as a
+     * CaseAndSpaceInsensitiveTuplesDict. Mirrors tm1py's execute_mdx
+     * (CellService.py:2065-2138): createCellset + extractCellset with the
+     * full tm1py parameter surface.
+     *
+     * When `maxWorkers > 1`, dispatches to executeMdxAsync — tm1py forwards all
+     * 15 named parameters explicitly (CellService.py:2102-2119); tm1npm now
+     * forwards the equivalent options surface.
      */
-    public async executeMdx(mdx: string): Promise<any> {
-        const url = '/ExecuteMDX';
-        const body = { MDX: mdx };
-        const response = await this.rest.post(url, body);
-        return response.data;
+    public async executeMdx(
+        mdx: string,
+        options: ExecuteMdxOptions = {}
+    ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
+        const maxWorkers = options.maxWorkers ?? 1;
+        if (maxWorkers > 1) {
+            return this.executeMdxAsync(mdx, options);
+        }
+        const cellsetId = await this.createCellset(mdx, options.sandboxName);
+        return this.extractCellset(cellsetId, {
+            cellProperties: options.cellProperties,
+            top: options.top,
+            skip: options.skip,
+            skipContexts: options.skipContexts,
+            skipZeros: options.skipZeros,
+            skipConsolidatedCells: options.skipConsolidatedCells,
+            skipRuleDerivedCells: options.skipRuleDerivedCells,
+            deleteCellset: true,
+            sandboxName: options.sandboxName,
+            elementUniqueNames: options.elementUniqueNames,
+            skipCellProperties: options.skipCellProperties,
+            useCompactJson: options.useCompactJson,
+            skipSandboxDimension: options.skipSandboxDimension,
+        });
     }
 
     /**
@@ -3584,32 +3833,39 @@ export class CellService {
     }
 
     /**
-     * Execute MDX via cellset extraction (parity with tm1py.execute_mdx_async).
-     * Returns a Map keyed by comma-joined element unique-names (or Names if UniqueName missing).
+     * Execute MDX via cellset extraction (parity with tm1py.execute_mdx_async at
+     * CellService.py:2140-2198). Returns a CaseAndSpaceInsensitiveTuplesDict.
      *
-     * Documented parity gaps (see IMPLEMENTATION_PLAN.md):
-     * - tm1py uses extract_cellset_async with parallel-chunked retrieval. That helper is not
-     *   yet ported; this implementation delegates to a serial extractCellset.
-     * - tm1py's options (cell_properties, top, skip, skip_*, element_unique_names, etc.) are
-     *   not yet wired through extractCellset. To prevent silent option-drop, those parameters
-     *   are deliberately omitted from this signature so misuse is a compile-time error rather
-     *   than a runtime no-op. Add them back when the underlying extractor supports them.
-     * - Optional `cubeName` lets the caller request tm1py-compatible tuple-key ordering by
-     *   cube dimensions. When omitted, parts are joined in axis order (tm1py-divergent).
+     * Accepts the full tm1py-parity option surface and forwards it to extractCellset.
+     * tm1py uses extract_cellset_async (parallel-chunked); tm1npm uses the serial
+     * extractCellset path — same option-forwarding semantics, different network
+     * parallelism (the parallel-chunked port is a separate follow-up).
      */
     public async executeMdxAsync(
         mdx: string,
-        options: { sandbox_name?: string; cubeName?: string } = {}
-    ): Promise<Map<string, any>> {
-        const cellsetId = await this.createCellset(mdx, options.sandbox_name);
+        options: ExecuteMdxOptions & { sandbox_name?: string; cubeName?: string } = {}
+    ): Promise<CaseAndSpaceInsensitiveTuplesDict<any>> {
+        // sandbox_name (snake) kept as a back-compat alias for the legacy signature.
+        const sandboxName = options.sandboxName ?? options.sandbox_name;
+        const cellsetId = await this.createCellset(mdx, sandboxName);
         try {
-            const cellset = await this._extractCellsetForTupleDict(cellsetId, options.sandbox_name);
-            const cubeDims = options.cubeName
-                ? await this.getDimensionNamesForWriting(options.cubeName)
-                : undefined;
-            return CellService._cellsetToTupleDict(cellset, cubeDims);
+            return await this.extractCellset(cellsetId, {
+                cellProperties: options.cellProperties,
+                top: options.top,
+                skip: options.skip,
+                skipContexts: options.skipContexts,
+                skipZeros: options.skipZeros,
+                skipConsolidatedCells: options.skipConsolidatedCells,
+                skipRuleDerivedCells: options.skipRuleDerivedCells,
+                deleteCellset: false,
+                sandboxName,
+                elementUniqueNames: options.elementUniqueNames,
+                skipCellProperties: options.skipCellProperties,
+                useCompactJson: options.useCompactJson,
+                skipSandboxDimension: options.skipSandboxDimension,
+            });
         } finally {
-            await this._safeDeleteCellset(cellsetId, options.sandbox_name);
+            await this._safeDeleteCellset(cellsetId, sandboxName);
         }
     }
 
