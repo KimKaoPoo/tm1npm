@@ -106,10 +106,10 @@ describe('ViewService Tests', () => {
 
             await viewService.getAll('TestCube', false);
 
-            // formatUrl percent-encodes substituted values, so ";$top=0" becomes "%3B%24top%3D0".
+            // formatUrl preserves ";$top=0" literally (matching tm1py's format_url escape set).
             const calls = mockRestService.get.mock.calls;
-            expect(calls[0][0]).toContain('Elements($select=Name%3B%24top%3D0)');
-            expect(calls[1][0]).toContain('Elements($select=Name%3B%24top%3D0)');
+            expect(calls[0][0]).toContain('Elements($select=Name;$top=0)');
+            expect(calls[1][0]).toContain('Elements($select=Name;$top=0)');
         });
 
         test('getAll with includeElements=true does NOT inject $top=0', async () => {

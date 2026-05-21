@@ -142,6 +142,8 @@ export class ViewService extends ObjectService {
          * :param include_elements: false to return view details without elements, faster
          * :return: 2 Lists of View instances: private views, public views
          */
+        // Inline elementFilter into the template literally so formatUrl's encodeURIComponent
+        // does not percent-encode ";$top=0" into "%3B%24top%3D0" — tm1py's format_url keeps it literal.
         const elementFilter = includeElements ? "" : ";$top=0";
         const privateViews: View[] = [];
         const publicViews: View[] = [];
@@ -150,16 +152,16 @@ export class ViewService extends ObjectService {
             const url = formatUrl(
                 "/Cubes('{}')/{}?$expand=" +
                 "tm1.NativeView/Rows/Subset($expand=Hierarchy($select=Name;" +
-                "$expand=Dimension($select=Name)),Elements($select=Name{});" +
+                "$expand=Dimension($select=Name)),Elements($select=Name" + elementFilter + ");" +
                 "$select=Expression,UniqueName,Name, Alias),  " +
                 "tm1.NativeView/Columns/Subset($expand=Hierarchy($select=Name;" +
-                "$expand=Dimension($select=Name)),Elements($select=Name{});" +
+                "$expand=Dimension($select=Name)),Elements($select=Name" + elementFilter + ");" +
                 "$select=Expression,UniqueName,Name,Alias), " +
                 "tm1.NativeView/Titles/Subset($expand=Hierarchy($select=Name;" +
-                "$expand=Dimension($select=Name)),Elements($select=Name{});" +
+                "$expand=Dimension($select=Name)),Elements($select=Name" + elementFilter + ");" +
                 "$select=Expression,UniqueName,Name,Alias), " +
                 "tm1.NativeView/Titles/Selected($select=Name)",
-                cubeName, viewType, elementFilter, elementFilter, elementFilter);
+                cubeName, viewType);
             const response = await this.rest.get(url);
             for (const viewAsDict of response.data.value) {
                 const view: View =
