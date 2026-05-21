@@ -124,6 +124,18 @@ describe('ViewService Tests', () => {
             expect(calls[0][0]).toContain('Elements($select=Name)');
         });
 
+        test('getAll throws when @odata.type discriminator is missing (tm1py parity)', async () => {
+            // tm1py does view_as_dict["@odata.type"] which raises KeyError if absent.
+            // tm1npm must throw too rather than silently falling back to NativeView.
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse({ value: [] }))
+                .mockResolvedValueOnce(createMockResponse({
+                    value: [{ Name: 'NoDiscriminator', MDX: 'SELECT FROM [TestCube]' }]
+                }));
+
+            await expect(viewService.getAll('TestCube')).rejects.toThrow("'@odata.type'");
+        });
+
         test('getAll handles mixed MDX/Native in both buckets and preserves order', async () => {
             mockRestService.get
                 .mockResolvedValueOnce(createMockResponse({

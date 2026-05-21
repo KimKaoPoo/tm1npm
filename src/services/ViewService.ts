@@ -164,6 +164,11 @@ export class ViewService extends ObjectService {
                 cubeName, viewType);
             const response = await this.rest.get(url);
             for (const viewAsDict of response.data.value) {
+                // tm1py does view_as_dict["@odata.type"] — Python raises KeyError on missing key.
+                // Mirror that loud failure instead of silently treating undefined as NativeView.
+                if (!('@odata.type' in viewAsDict)) {
+                    throw new Error("'@odata.type'");
+                }
                 const view: View =
                     viewAsDict['@odata.type'] === '#ibm.tm1.api.v1.MDXView'
                         ? MDXView.fromDict(viewAsDict, cubeName)
