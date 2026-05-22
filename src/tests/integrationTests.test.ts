@@ -97,11 +97,10 @@ describe('TM1Service Integration Tests', () => {
             }
 
             try {
-                const viewNames = await tm1.cubes.views.getAllNames('General Ledger');
-                expect(viewNames).toBeDefined();
-                expect(Array.isArray(viewNames)).toBe(true);
-                expect(viewNames.length).toBeGreaterThan(0);
-                expect(viewNames).toContain('Default');
+                const [privateViewNames, publicViewNames] = await tm1.cubes.views.getAllNames('General Ledger');
+                const allViewNames = [...privateViewNames, ...publicViewNames];
+                expect(allViewNames.length).toBeGreaterThan(0);
+                expect(allViewNames).toContain('Default');
             } catch (error) {
                 // If General Ledger doesn't exist, test should still pass
                 console.log('General Ledger cube may not exist in this TM1 instance');
@@ -125,8 +124,9 @@ describe('TM1Service Integration Tests', () => {
                     return;
                 }
 
-                const viewNames = await tm1.cubes.views.getAllNames('General Ledger');
-                if (!viewNames.includes('Default')) {
+                const [privateViewNames, publicViewNames] = await tm1.cubes.views.getAllNames('General Ledger');
+                const allViewNames = [...privateViewNames, ...publicViewNames];
+                if (!allViewNames.includes('Default')) {
                     console.log('Default view not available, skipping view execution test');
                     return;
                 }
@@ -168,14 +168,13 @@ describe('TM1Service Integration Tests', () => {
                 ) || cubeNames[0];
 
                 if (testCube) {
-                    const views = await tm1.cubes.views.getAllNames(testCube);
-                    expect(views).toBeDefined();
-                    expect(Array.isArray(views)).toBe(true);
-                    
-                    if (views.length > 0) {
-                        const testView = views[0];
+                    const [privateViewNames, publicViewNames] = await tm1.cubes.views.getAllNames(testCube);
+                    const allViewNames = [...privateViewNames, ...publicViewNames];
+
+                    if (allViewNames.length > 0) {
+                        const testView = allViewNames[0];
                         const viewResult = await tm1.cells.executeView(testCube, testView);
-                        
+
                         expect(viewResult).toBeDefined();
                         expect(viewResult).toHaveProperty('ID');
                         console.log(`✅ Alternative cube test: ${testCube} -> ${testView}`);

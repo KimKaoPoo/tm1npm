@@ -40,8 +40,7 @@ describe('ViewService Tests', () => {
     });
 
     describe('View Retrieval Operations', () => {
-        test('should get all view names for cube', async () => {
-            // Mock both private and public view calls
+        test('should get all view names for cube as [private, public] tuple', async () => {
             mockRestService.get
                 .mockResolvedValueOnce(createMockResponse({
                     value: [{ Name: 'PrivateView1' }]
@@ -50,40 +49,137 @@ describe('ViewService Tests', () => {
                     value: [{ Name: 'PublicView1' }, { Name: 'PublicView2' }]
                 }));
 
-            const viewNames = await viewService.getAllNames('TestCube');
-            
-            expect(Array.isArray(viewNames)).toBe(true);
-            expect(viewNames.length).toBe(3);
-            expect(viewNames).toEqual(['PrivateView1', 'PublicView1', 'PublicView2']);
-            
-            console.log('✅ View names retrieved successfully');
+            const [privateNames, publicNames] = await viewService.getAllNames('TestCube');
+
+            expect(privateNames).toEqual(['PrivateView1']);
+            expect(publicNames).toEqual(['PublicView1', 'PublicView2']);
+
+            const calls = mockRestService.get.mock.calls;
+            expect(calls).toHaveLength(2);
+            expect(calls[0][0]).toBe("/Cubes('TestCube')/PrivateViews?$select=Name");
+            expect(calls[1][0]).toBe("/Cubes('TestCube')/Views?$select=Name");
+
+            console.log('✅ View names retrieved as [private, public] tuple');
         });
 
-        test('should get all views for cube', async () => {
-            // Mock the main views call - first call for getAll
-            mockRestService.get.mockResolvedValueOnce(createMockResponse({
-                value: [
-                    { Name: 'MDXView1', MDX: 'SELECT FROM [TestCube]' }, // Has MDX property
-                    { Name: 'NativeView1' } // Doesn't have MDX property  
-                ]
-            }));
+        test('should get all views for cube as [private, public] tuple with @odata.type discriminator', async () => {
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse({ value: [] }))
+                .mockResolvedValueOnce(createMockResponse({
+                    value: [
+                        {
+                            '@odata.type': '#ibm.tm1.api.v1.MDXView',
+                            Name: 'MDXView1',
+                            MDX: 'SELECT FROM [TestCube]'
+                        },
+                        {
+                            '@odata.type': '#ibm.tm1.api.v1.NativeView',
+                            Name: 'NativeView1',
+                            Columns: [],
+                            Rows: [],
+                            Titles: []
+                        }
+                    ]
+                }));
 
-            // Mock the getNativeView call that will be made for the native view
-            mockRestService.get.mockResolvedValueOnce(createMockResponse({
-                Name: 'NativeView1',
-                Columns: [],
-                Rows: [],
-                Titles: []
-            }));
+            const [privateViews, publicViews] = await viewService.getAll('TestCube');
 
-            const views = await viewService.getAll('TestCube');
-            
-            expect(Array.isArray(views)).toBe(true);
-            expect(views.length).toBe(2); // Returns [nativeViews, mdxViews]
-            expect(views[0]).toEqual(expect.any(Array)); // nativeViews array
-            expect(views[1]).toEqual(expect.any(Array)); // mdxViews array
-            
-            console.log('✅ All views retrieved successfully');
+            expect(privateViews).toEqual([]);
+            expect(publicViews).toHaveLength(2);
+            expect(publicViews[0]).toBeInstanceOf(MDXView);
+            expect(publicViews[1]).toBeInstanceOf(NativeView);
+
+            const calls = mockRestService.get.mock.calls;
+            expect(calls).toHaveLength(2);
+            expect(calls[0][0]).toContain("/Cubes('TestCube')/PrivateViews?$expand=");
+            expect(calls[0][0]).toContain('tm1.NativeView/Rows/Subset($expand=');
+            expect(calls[0][0]).not.toContain('?$expand=*');
+            expect(calls[1][0]).toContain("/Cubes('TestCube')/Views?$expand=");
+
+            console.log('✅ All views retrieved as [private, public] tuple');
+        });
+
+        test('getAll honors includeElements=false by injecting $top=0', async () => {
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse({ value: [] }))
+                .mockResolvedValueOnce(createMockResponse({ value: [] }));
+
+            await viewService.getAll('TestCube', false);
+
+            // formatUrl preserves ";$top=0" literally (matching tm1py's format_url escape set).
+            const calls = mockRestService.get.mock.calls;
+            expect(calls[0][0]).toContain('Elements($select=Name;$top=0)');
+            expect(calls[1][0]).toContain('Elements($select=Name;$top=0)');
+        });
+
+        test('getAll with includeElements=true does NOT inject $top=0', async () => {
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse({ value: [] }))
+                .mockResolvedValueOnce(createMockResponse({ value: [] }));
+
+            await viewService.getAll('TestCube');
+
+            const calls = mockRestService.get.mock.calls;
+            expect(calls[0][0]).not.toContain('top%3D0');
+            expect(calls[0][0]).toContain('Elements($select=Name)');
+        });
+
+        test('getAll throws when @odata.type discriminator is missing (tm1py parity)', async () => {
+            // tm1py does view_as_dict["@odata.type"] which raises KeyError if absent.
+            // tm1npm must throw too rather than silently falling back to NativeView.
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse({ value: [] }))
+                .mockResolvedValueOnce(createMockResponse({
+                    value: [{ Name: 'NoDiscriminator', MDX: 'SELECT FROM [TestCube]' }]
+                }));
+
+            await expect(viewService.getAll('TestCube')).rejects.toThrow("'@odata.type'");
+        });
+
+        test('getAll handles mixed MDX/Native in both buckets and preserves order', async () => {
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse({
+                    value: [
+                        {
+                            '@odata.type': '#ibm.tm1.api.v1.MDXView',
+                            Name: 'PrivMDX',
+                            MDX: 'SELECT FROM [TestCube]'
+                        },
+                        {
+                            '@odata.type': '#ibm.tm1.api.v1.NativeView',
+                            Name: 'PrivNative',
+                            Columns: [], Rows: [], Titles: []
+                        }
+                    ]
+                }))
+                .mockResolvedValueOnce(createMockResponse({
+                    value: [
+                        {
+                            '@odata.type': '#ibm.tm1.api.v1.NativeView',
+                            Name: 'PubNative',
+                            Columns: [], Rows: [], Titles: []
+                        },
+                        {
+                            '@odata.type': '#ibm.tm1.api.v1.MDXView',
+                            Name: 'PubMDX',
+                            MDX: 'SELECT FROM [TestCube]'
+                        }
+                    ]
+                }));
+
+            const [privateViews, publicViews] = await viewService.getAll('TestCube');
+
+            expect(privateViews).toHaveLength(2);
+            expect(privateViews[0]).toBeInstanceOf(MDXView);
+            expect(privateViews[0].name).toBe('PrivMDX');
+            expect(privateViews[1]).toBeInstanceOf(NativeView);
+            expect(privateViews[1].name).toBe('PrivNative');
+
+            expect(publicViews).toHaveLength(2);
+            expect(publicViews[0]).toBeInstanceOf(NativeView);
+            expect(publicViews[0].name).toBe('PubNative');
+            expect(publicViews[1]).toBeInstanceOf(MDXView);
+            expect(publicViews[1].name).toBe('PubMDX');
         });
 
         test('should check if view exists', async () => {
@@ -214,11 +310,34 @@ describe('ViewService Tests', () => {
                 .mockResolvedValueOnce(createMockResponse({ value: [] }));
 
             const views = await viewService.getAllNames('EmptyCube');
-            
-            expect(Array.isArray(views)).toBe(true);
-            expect(views.length).toBe(0);
-            
+
+            expect(views).toEqual([[], []]);
+
             console.log('✅ Empty view list handling working');
+        });
+
+        test('should handle asymmetric empty (only public has views)', async () => {
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse({ value: [] }))
+                .mockResolvedValueOnce(createMockResponse({
+                    value: [{ Name: 'V1' }, { Name: 'V2' }]
+                }));
+
+            const [privateNames, publicNames] = await viewService.getAllNames('Cube');
+            expect(privateNames).toEqual([]);
+            expect(publicNames).toEqual(['V1', 'V2']);
+        });
+
+        test('should handle asymmetric empty (only private has views)', async () => {
+            mockRestService.get
+                .mockResolvedValueOnce(createMockResponse({
+                    value: [{ Name: 'V1' }]
+                }))
+                .mockResolvedValueOnce(createMockResponse({ value: [] }));
+
+            const [privateNames, publicNames] = await viewService.getAllNames('Cube');
+            expect(privateNames).toEqual(['V1']);
+            expect(publicNames).toEqual([]);
         });
 
         test('should handle concurrent operations', async () => {
@@ -254,12 +373,12 @@ describe('ViewService Tests', () => {
                 .mockResolvedValueOnce(createMockResponse({ value: largeViewList.slice(500) }));
 
             const startTime = Date.now();
-            const result = await viewService.getAllNames('LargeCube');
+            const [privateNames, publicNames] = await viewService.getAllNames('LargeCube');
             const endTime = Date.now();
 
-            expect(result.length).toBe(1000);
+            expect(privateNames.length + publicNames.length).toBe(1000);
             expect(endTime - startTime).toBeLessThan(1000); // Should be fast with mocking
-            
+
             console.log('✅ Large dataset handling efficient');
         });
     });
@@ -281,10 +400,11 @@ describe('ViewService Tests', () => {
             const names1 = await viewService.getAllNames('TestCube');
             const names2 = await viewService.getAllNames('TestCube');
 
-            // Note: getAllNames returns combined private+public, so results will be ['View1', 'View2', 'View1', 'View2']
-            expect(names1.length).toBeGreaterThan(0);
-            expect(names2.length).toBeGreaterThan(0);
-            
+            // getAllNames returns [private, public]; same mock for both calls,
+            // so each bucket should contain ['View1','View2'] for both invocations.
+            expect(names1).toEqual([['View1', 'View2'], ['View1', 'View2']]);
+            expect(names2).toEqual([['View1', 'View2'], ['View1', 'View2']]);
+
             console.log('✅ Data consistency maintained');
         });
 
