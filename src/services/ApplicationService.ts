@@ -82,30 +82,32 @@ export class ApplicationService extends ObjectService {
             case ApplicationTypes.CUBE: {
                 const response = await this.rest.get(baseUrl + "?$expand=Cube($select=Name)");
                 const cubeName = response.data?.Cube?.Name || response.data?.Name || name;
-                return new CubeApplication(path, response.data?.Name || name, cubeName);
+                return new CubeApplication(path, name, cubeName);
             }
             case ApplicationTypes.CHORE: {
                 const response = await this.rest.get(baseUrl + "?$expand=Chore($select=Name)");
                 const choreName = response.data?.Chore?.Name || response.data?.Name || name;
-                return new ChoreApplication(path, response.data?.Name || name, choreName);
+                return new ChoreApplication(path, name, choreName);
             }
             case ApplicationTypes.DIMENSION: {
                 const response = await this.rest.get(baseUrl + "?$expand=Dimension($select=Name)");
                 const dimensionName = response.data?.Dimension?.Name || response.data?.Name || name;
-                return new DimensionApplication(path, response.data?.Name || name, dimensionName);
+                return new DimensionApplication(path, name, dimensionName);
             }
             case ApplicationTypes.FOLDER: {
                 await this.rest.get(baseUrl);
                 return new FolderApplication(path, name);
             }
             case ApplicationTypes.LINK: {
+                // tm1py issues a bare GET first (raises if the link is missing), then the $expand call
+                await this.rest.get(baseUrl);
                 const response = await this.rest.get(baseUrl + "?$expand=*");
-                return new LinkApplication(path, response.data?.Name || name, response.data?.URL || '');
+                return new LinkApplication(path, name, response.data?.URL || '');
             }
             case ApplicationTypes.PROCESS: {
                 const response = await this.rest.get(baseUrl + "?$expand=Process($select=Name)");
                 const processName = response.data?.Process?.Name || response.data?.Name || name;
-                return new ProcessApplication(path, response.data?.Name || name, processName);
+                return new ProcessApplication(path, name, processName);
             }
             case ApplicationTypes.SUBSET: {
                 const response = await this.rest.get(
@@ -114,7 +116,7 @@ export class ApplicationService extends ObjectService {
                 const subset = response.data?.Subset;
                 return new SubsetApplication(
                     path,
-                    response.data?.Name || name,
+                    name,
                     subset?.Hierarchy?.Dimension?.Name || '',
                     subset?.Hierarchy?.Name || '',
                     subset?.Name || ''
@@ -127,7 +129,7 @@ export class ApplicationService extends ObjectService {
                 const view = response.data?.View;
                 return new ViewApplication(
                     path,
-                    response.data?.Name || name,
+                    name,
                     view?.Cube?.Name || '',
                     view?.Name || ''
                 );
@@ -183,7 +185,7 @@ export class ApplicationService extends ObjectService {
 
         const response = await this.rest.post(collectionUrl, application.body);
 
-        if (application instanceof DocumentApplication && application.content) {
+        if (application instanceof DocumentApplication) {
             const extension = this.isLegacyVersion() ? '.blob' : '';
             const documentUrl = formatUrl(
                 baseUrl + '/' + contents + "('{}{}')/Document/Content",
