@@ -32,10 +32,6 @@ export interface DiscoverItem {
 export class ApplicationService extends ObjectService {
     private privatePathCache: Map<string, number> = new Map();
 
-    constructor(rest: RestService) {
-        super(rest);
-    }
-
     public clearPrivatePathCache(): void {
         this.privatePathCache.clear();
     }
@@ -559,7 +555,7 @@ export class ApplicationService extends ObjectService {
             return '';
         }
 
-        const boundary = privateBoundary === undefined ? segments.length : privateBoundary;
+        const boundary = privateBoundary ?? segments.length;
 
         if (boundary >= segments.length) {
             return segments.map(s => formatUrl("/Contents('{}')", s)).join('');
