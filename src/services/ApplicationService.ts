@@ -19,15 +19,25 @@ import {
 import { formatUrl, verifyVersion } from '../utils/Utils';
 import { TM1RestException } from '../exceptions/TM1Exception';
 
+export interface DiscoverItem {
+    '@odata.type': string;
+    type: string;
+    id: string;
+    name: string;
+    path: string;
+    is_private: boolean;
+    children?: DiscoverItem[];
+}
+
 export class ApplicationService extends ObjectService {
-    private pathCache: Map<string, number> = new Map();
+    private privatePathCache: Map<string, number> = new Map();
 
     constructor(rest: RestService) {
         super(rest);
     }
 
-    public clearPathCache(): void {
-        this.pathCache.clear();
+    public clearPrivatePathCache(): void {
+        this.privatePathCache.clear();
     }
 
     public async getAllPublicRootNames(): Promise<string[]> {
@@ -42,18 +52,15 @@ export class ApplicationService extends ObjectService {
         return response.data.value.map((application: any) => application.Name);
     }
 
-    public async getNames(path: string, isPrivate: boolean = false, useCache: boolean = false): Promise<string[]> {
-        if (isPrivate) {
-            const resolved = await this._resolvePath(path, true, useCache);
-            // Leaf collection is always PrivateContents when isPrivate — even if parent path is public
-            const url = resolved.baseUrl + '/PrivateContents';
-            const response = await this.rest.get(url);
-            return response.data.value.map((application: any) => application.Name);
-        }
-        const contents = this.getContentsCollection(isPrivate);
-        const mid = this.buildPathSegments(path);
-        const baseUrl = "/Contents('Applications')" + mid + "/" + contents;
-        const response = await this.rest.get(baseUrl);
+    public async getNames(
+        path: string,
+        isPrivate: boolean = false,
+        useCache: boolean = false
+    ): Promise<string[]> {
+        const { baseUrl, inPrivateContext } = await this._resolvePath(path, isPrivate, useCache);
+        const contents = (isPrivate || inPrivateContext) ? 'PrivateContents' : 'Contents';
+        const url = baseUrl + '/' + contents;
+        const response = await this.rest.get(url);
         return response.data.value.map((application: any) => application.Name);
     }
 
@@ -67,17 +74,13 @@ export class ApplicationService extends ObjectService {
         const appType = this.parseApplicationType(applicationType);
 
         if (appType === ApplicationTypes.DOCUMENT) {
-            return await this.getDocument(path, name, isPrivate);
+            return await this.getDocument(path, name, isPrivate, useCache);
         }
 
         const requestName = this.withLegacySuffix(name, appType);
-        let baseUrl: string;
-        if (isPrivate) {
-            const resolved = await this._resolvePath(path, true, useCache);
-            baseUrl = formatUrl(resolved.baseUrl + "/PrivateContents('{}')", requestName);
-        } else {
-            baseUrl = this.buildApplicationUrl(path, isPrivate, requestName);
-        }
+        const { baseUrl: resolvedBase, inPrivateContext } = await this._resolvePath(path, isPrivate, useCache);
+        const contents = (isPrivate || inPrivateContext) ? 'PrivateContents' : 'Contents';
+        const baseUrl = formatUrl(resolvedBase + '/' + contents + "('{}')", requestName);
 
         switch (appType) {
             case ApplicationTypes.CUBE: {
@@ -138,17 +141,22 @@ export class ApplicationService extends ObjectService {
         }
     }
 
-    public async getDocument(path: string, name: string, isPrivate: boolean = false): Promise<DocumentApplication> {
+    public async getDocument(
+        path: string,
+        name: string,
+        isPrivate: boolean = false,
+        useCache: boolean = false
+    ): Promise<DocumentApplication> {
         const requestName = this.withLegacySuffix(name, ApplicationTypes.DOCUMENT);
-        const mid = this.buildPathSegments(path);
-        const contents = this.getContentsCollection(isPrivate);
+        const { baseUrl, inPrivateContext } = await this._resolvePath(path, isPrivate, useCache);
+        const contents = (isPrivate || inPrivateContext) ? 'PrivateContents' : 'Contents';
 
         const contentUrl = formatUrl(
-            "/Contents('Applications')" + mid + "/" + contents + "('{}')/Document/Content",
+            baseUrl + '/' + contents + "('{}')/Document/Content",
             requestName
         );
         const metadataUrl = formatUrl(
-            "/Contents('Applications')" + mid + "/" + contents + "('{}')/Document",
+            baseUrl + '/' + contents + "('{}')/Document",
             requestName
         );
 
@@ -168,20 +176,25 @@ export class ApplicationService extends ObjectService {
         );
     }
 
-    public async create(application: Application, isPrivate: boolean = false): Promise<AxiosResponse> {
-        const contents = this.getContentsCollection(isPrivate);
-        const mid = this.buildPathSegments(application.path);
-        const url = "/Contents('Applications')" + mid + "/" + contents;
+    public async create(
+        application: Application,
+        isPrivate: boolean = false,
+        useCache: boolean = false
+    ): Promise<AxiosResponse> {
+        const { baseUrl, inPrivateContext } = await this._resolvePath(application.path, isPrivate, useCache);
+        const contents = (isPrivate || inPrivateContext) ? 'PrivateContents' : 'Contents';
+        const collectionUrl = baseUrl + '/' + contents;
 
-        const response = await this.rest.post(url, application.body);
+        const response = await this.rest.post(collectionUrl, application.body);
 
         if (application instanceof DocumentApplication && application.content) {
-            const requestName = this.withLegacySuffix(application.name, ApplicationTypes.DOCUMENT);
-            const contentUrl = formatUrl(
-                "/Contents('Applications')" + mid + "/" + contents + "('{}')/Document/Content",
-                requestName
+            const extension = this.isLegacyVersion() ? '.blob' : '';
+            const documentUrl = formatUrl(
+                baseUrl + '/' + contents + "('{}{}')/Document/Content",
+                application.name,
+                extension
             );
-            await this.rest.put(contentUrl, application.content, {
+            await this.rest.put(documentUrl, application.content, {
                 headers: this.binaryHttpHeader
             });
         }
@@ -189,28 +202,27 @@ export class ApplicationService extends ObjectService {
         return response;
     }
 
-    public async update(application: Application, isPrivate: boolean = false): Promise<AxiosResponse> {
-        const contents = this.getContentsCollection(isPrivate);
-        const mid = this.buildPathSegments(application.path);
-        const requestName = this.withLegacySuffix(application.name, application.applicationType);
+    public async update(
+        application: Application,
+        isPrivate: boolean = false,
+        useCache: boolean = false
+    ): Promise<AxiosResponse> {
+        const { baseUrl, inPrivateContext } = await this._resolvePath(application.path, isPrivate, useCache);
+        const contents = (isPrivate || inPrivateContext) ? 'PrivateContents' : 'Contents';
 
         if (application instanceof DocumentApplication) {
-            if (!application.content) {
-                throw new Error('Document application requires content for update');
-            }
+            const extension = this.isLegacyVersion() ? '.blob' : '';
             const url = formatUrl(
-                "/Contents('Applications')" + mid + "/" + contents + "('{}')/Document/Content",
-                requestName
+                baseUrl + '/' + contents + "('{}{}')/Document/Content",
+                application.name,
+                extension
             );
-            return await this.rest.post(url, application.content, {
+            return await this.rest.patch(url, application.content, {
                 headers: this.binaryHttpHeader
             });
         }
 
-        const url = formatUrl(
-            "/Contents('Applications')" + mid + "/" + contents + "('{}')",
-            requestName
-        );
+        const url = baseUrl + '/' + contents;
         return await this.rest.post(url, application.body);
     }
 
@@ -218,13 +230,14 @@ export class ApplicationService extends ObjectService {
         path: string,
         applicationType: ApplicationTypes,
         name: string,
-        isPrivate: boolean = false
+        isPrivate: boolean = false,
+        useCache: boolean = false
     ): Promise<AxiosResponse> {
-        const contents = this.getContentsCollection(isPrivate);
-        const mid = this.buildPathSegments(path);
         const requestName = this.withLegacySuffix(name, applicationType);
+        const { baseUrl, inPrivateContext } = await this._resolvePath(path, isPrivate, useCache);
+        const contents = (isPrivate || inPrivateContext) ? 'PrivateContents' : 'Contents';
         const url = formatUrl(
-            "/Contents('Applications')" + mid + "/" + contents + "('{}')",
+            baseUrl + '/' + contents + "('{}')",
             requestName
         );
         return await this.rest.delete(url);
@@ -235,13 +248,14 @@ export class ApplicationService extends ObjectService {
         applicationType: ApplicationTypes,
         currentName: string,
         newName: string,
-        isPrivate: boolean = false
+        isPrivate: boolean = false,
+        useCache: boolean = false
     ): Promise<AxiosResponse> {
-        const contents = this.getContentsCollection(isPrivate);
-        const mid = this.buildPathSegments(path);
         const requestName = this.withLegacySuffix(currentName, applicationType);
+        const { baseUrl, inPrivateContext } = await this._resolvePath(path, isPrivate, useCache);
+        const contents = (isPrivate || inPrivateContext) ? 'PrivateContents' : 'Contents';
         const url = formatUrl(
-            "/Contents('Applications')" + mid + "/" + contents + "('{}')/tm1.Move",
+            baseUrl + '/' + contents + "('{}')/tm1.Move",
             requestName
         );
         const payload = { Name: newName };
@@ -256,121 +270,246 @@ export class ApplicationService extends ObjectService {
         useCache: boolean = false
     ): Promise<boolean> {
         const requestName = this.withLegacySuffix(name, applicationType);
-        if (isPrivate) {
-            try {
-                const resolved = await this._resolvePath(path, true, useCache);
-                const url = formatUrl(resolved.baseUrl + "/PrivateContents('{}')", requestName);
-                return await this._exists(url);
-            } catch (error: any) {
-                // Path-not-found from _resolvePath means item doesn't exist
-                if (error instanceof Error && error.message.includes('not found')) {
-                    return false;
-                }
-                if (error instanceof TM1RestException && error.statusCode === 404) {
-                    return false;
-                }
-                throw error;
-            }
+        const base = "/Contents('Applications')";
+
+        if (!isPrivate) {
+            const segments = path.trim() ? path.split('/') : [];
+            const mid = this._buildPathUrl(segments, segments.length);
+            const url = base + mid + "/Contents('" + requestName + "')";
+            return await this._exists(url);
         }
-        const contents = this.getContentsCollection(isPrivate);
-        const mid = this.buildPathSegments(path);
-        const url = formatUrl(
-            "/Contents('Applications')" + mid + "/" + contents + "('{}')",
-            requestName
-        );
+
+        const segments = path.trim() ? path.split('/') : [];
+
+        if (segments.length === 0) {
+            const url = base + "/PrivateContents('" + requestName + "')";
+            return await this._exists(url);
+        }
+
+        const cacheKey = segments.join('/');
+
+        if (useCache && this.privatePathCache.has(cacheKey)) {
+            const boundary = this.privatePathCache.get(cacheKey)!;
+            const mid = this._buildPathUrl(segments, boundary);
+            const inPrivateContext = boundary < segments.length;
+            const contents = inPrivateContext ? 'PrivateContents' : 'Contents';
+            const url = base + mid + '/' + contents + "('" + requestName + "')";
+            return await this._exists(url);
+        }
+
+        const midPublic = this._buildPathUrl(segments, segments.length);
+        const urlPublic = base + midPublic + "/PrivateContents('" + requestName + "')";
+        if (await this._exists(urlPublic)) {
+            if (useCache) {
+                this.privatePathCache.set(cacheKey, segments.length);
+            }
+            return true;
+        }
+
+        const boundary = await this._findPrivateBoundary(segments);
+        if (boundary === -1) {
+            return false;
+        }
+
+        if (useCache) {
+            this.privatePathCache.set(cacheKey, boundary);
+        }
+
+        const mid = this._buildPathUrl(segments, boundary);
+        const contents = boundary < segments.length ? 'PrivateContents' : 'PrivateContents';
+        const url = base + mid + '/' + contents + "('" + requestName + "')";
         return await this._exists(url);
     }
 
-    public async updateOrCreate(application: Application, isPrivate: boolean = false): Promise<AxiosResponse> {
-        const exists = await this.exists(application.path, application.applicationType, application.name, isPrivate);
+    public async updateOrCreate(
+        application: Application,
+        isPrivate: boolean = false,
+        useCache: boolean = false
+    ): Promise<AxiosResponse> {
+        const exists = await this.exists(
+            application.path,
+            application.applicationType,
+            application.name,
+            isPrivate,
+            useCache
+        );
         if (exists) {
-            return await this.update(application, isPrivate);
+            return await this.update(application, isPrivate, useCache);
         }
-        return await this.create(application, isPrivate);
+        return await this.create(application, isPrivate, useCache);
     }
 
     public async updateOrCreateDocumentFromFile(
         path: string,
         name: string,
         filePath: string,
-        isPrivate: boolean = false
+        isPrivate: boolean = false,
+        useCache: boolean = false
     ): Promise<AxiosResponse> {
-        const exists = await this.exists(path, ApplicationTypes.DOCUMENT, name, isPrivate);
+        const exists = await this.exists(path, ApplicationTypes.DOCUMENT, name, isPrivate, useCache);
         if (exists) {
-            return await this.updateDocumentFromFile(filePath, path, name, isPrivate);
+            return await this.updateDocumentFromFile(filePath, path, name, isPrivate, useCache);
         }
-        return await this.createDocumentFromFile(filePath, path, name, isPrivate);
+        return await this.createDocumentFromFile(filePath, path, name, isPrivate, useCache);
     }
 
     public async createDocumentFromFile(
         filePath: string,
         applicationPath: string,
         applicationName: string,
-        isPrivate: boolean = false
+        isPrivate: boolean = false,
+        useCache: boolean = false
     ): Promise<AxiosResponse> {
         const content = await fs.readFile(filePath);
         const document = new DocumentApplication(applicationPath, applicationName, content);
-        return await this.create(document, isPrivate);
+        return await this.create(document, isPrivate, useCache);
     }
 
     public async updateDocumentFromFile(
         filePath: string,
         applicationPath: string,
         applicationName: string,
-        isPrivate: boolean = false
+        isPrivate: boolean = false,
+        useCache: boolean = false
     ): Promise<AxiosResponse> {
         const content = await fs.readFile(filePath);
         const document = new DocumentApplication(applicationPath, applicationName, content);
-        return await this.update(document, isPrivate);
+        return await this.update(document, isPrivate, useCache);
     }
 
-    // NOTE: `flat` parameter is accepted for tm1py signature parity but output is always flat.
-    // Nested (tree) mode is not yet implemented.
     public async discover(
         path: string = '',
         includePrivate: boolean = false,
         recursive: boolean = false,
-        _flat: boolean = false
-    ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
-        return this._discoverAtPath(path, includePrivate, recursive, false);
+        flat: boolean = false
+    ): Promise<DiscoverItem[]> {
+        const results: DiscoverItem[] = [];
+
+        let inPrivateContext = false;
+        if (path.trim() && includePrivate) {
+            const resolved = await this._resolvePath(path, true, false);
+            inPrivateContext = resolved.inPrivateContext;
+        }
+
+        const items = await this._discoverAtPath(
+            path,
+            includePrivate,
+            recursive,
+            flat,
+            inPrivateContext,
+            results
+        );
+
+        return flat ? results : items;
     }
 
     private async _discoverAtPath(
         path: string,
         includePrivate: boolean,
         recursive: boolean,
-        inPrivateContext: boolean
-    ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
-        const results: Array<{ type: string; name: string; path: string; is_private: boolean }> = [];
+        flat: boolean,
+        inPrivateContext: boolean,
+        results: DiscoverItem[]
+    ): Promise<DiscoverItem[]> {
+        const items: DiscoverItem[] = [];
 
-        if (!inPrivateContext) {
-            const publicItems = await this._getContentsRaw(path, false, false);
-            const processed = await this._processItems(
-                publicItems, path, false, includePrivate, recursive, false
+        if (inPrivateContext) {
+            const rawItems = await this._getContentsRaw(path, true, true);
+            await this._processItems(
+                rawItems, path, true, true,
+                includePrivate, recursive, flat, results, items
             );
-            results.push(...processed);
+        } else {
+            const rawPublic = await this._getContentsRaw(path, false, false);
+            await this._processItems(
+                rawPublic, path, false, false,
+                includePrivate, recursive, flat, results, items
+            );
+
+            if (includePrivate) {
+                const rawPrivate = await this._getContentsRaw(path, true, false);
+                await this._processItems(
+                    rawPrivate, path, true, false,
+                    includePrivate, recursive, flat, results, items
+                );
+            }
         }
 
-        if (includePrivate || inPrivateContext) {
-            const privateItems = await this._getContentsRaw(path, true, inPrivateContext);
-            const processed = await this._processItems(
-                privateItems, path, true, includePrivate, recursive, true
-            );
-            results.push(...processed);
-        }
-
-        return results;
+        return flat ? results : items;
     }
 
-    private async _getContentsRaw(path: string, isPrivate: boolean, inPrivateContext: boolean): Promise<any[]> {
+    private async _processItems(
+        rawItems: any[],
+        path: string,
+        isPrivate: boolean,
+        inPrivateContext: boolean,
+        includePrivate: boolean,
+        recursive: boolean,
+        flat: boolean,
+        results: DiscoverItem[],
+        items: DiscoverItem[]
+    ): Promise<void> {
+        for (const raw of rawItems) {
+            const odataType = raw['@odata.type'] || '';
+            const itemType = this._extractTypeFromOdata(odataType);
+            const itemName = raw.Name || '';
+            const itemId = raw.ID || '';
+            const itemPath = path ? `${path}/${itemName}` : itemName;
+
+            const item: DiscoverItem = {
+                '@odata.type': odataType,
+                type: itemType,
+                id: itemId,
+                name: itemName,
+                path: itemPath,
+                is_private: isPrivate || inPrivateContext
+            };
+
+            if (recursive && itemType === 'Folder') {
+                const newCtx = isPrivate || inPrivateContext;
+                const children = await this._discoverAtPath(
+                    itemPath, includePrivate, recursive, flat, newCtx, results
+                );
+                if (!flat) {
+                    item.children = children;
+                }
+            }
+
+            if (flat) {
+                results.push(item);
+            } else {
+                items.push(item);
+            }
+        }
+    }
+
+    private async _getContentsRaw(
+        path: string,
+        isPrivate: boolean,
+        inPrivateContext: boolean
+    ): Promise<any[]> {
+        const base = "/Contents('Applications')";
+        let url: string;
+
+        if (!path.trim()) {
+            url = base + (isPrivate ? '/PrivateContents' : '/Contents');
+        } else {
+            const segments = path.split('/');
+            let mid: string;
+            if (inPrivateContext || isPrivate) {
+                const boundary = await this._findPrivateBoundary(segments);
+                if (boundary === -1) {
+                    return [];
+                }
+                mid = this._buildPathUrl(segments, boundary);
+            } else {
+                mid = this._buildPathUrl(segments, segments.length);
+            }
+            const collection = (isPrivate || inPrivateContext) ? 'PrivateContents' : 'Contents';
+            url = base + mid + '/' + collection;
+        }
+
         try {
-            // Path segments: use PrivateContents only if we're already inside a private folder tree.
-            // Leaf collection: PrivateContents if isPrivate or inPrivateContext, else Contents.
-            const mid = inPrivateContext
-                ? this.buildPrivatePathSegments(path)
-                : this.buildPathSegments(path);
-            const collection = (inPrivateContext || isPrivate) ? 'PrivateContents' : 'Contents';
-            const url = "/Contents('Applications')" + mid + "/" + collection;
             const response = await this.rest.get(url);
             return response.data?.value || [];
         } catch (error: any) {
@@ -381,97 +520,57 @@ export class ApplicationService extends ObjectService {
         }
     }
 
-    private async _processItems(
-        items: any[],
-        path: string,
-        isPrivate: boolean,
-        includePrivate: boolean,
-        recursive: boolean,
-        inPrivateContext: boolean
-    ): Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>> {
-        const results: Array<{ type: string; name: string; path: string; is_private: boolean }> = [];
-
-        const folderPromises: Array<Promise<Array<{ type: string; name: string; path: string; is_private: boolean }>>> = [];
-
-        for (const item of items) {
-            const odataType = item['@odata.type'] || '';
-            const typeName = this._extractTypeFromOdata(odataType);
-            const itemName = item.Name || '';
-            const itemPath = path ? `${path}/${itemName}` : itemName;
-
-            results.push({
-                type: typeName,
-                name: itemName,
-                path: itemPath,
-                is_private: isPrivate || inPrivateContext
-            });
-
-            if (recursive && typeName === 'Folder') {
-                folderPromises.push(
-                    this._discoverAtPath(
-                        itemPath, includePrivate, recursive, inPrivateContext || isPrivate
-                    )
-                );
-            }
-        }
-
-        const folderResults = await Promise.all(folderPromises);
-        for (const subItems of folderResults) {
-            results.push(...subItems);
-        }
-
-        return results;
-    }
-
     private _extractTypeFromOdata(odataType: string): string {
-        if (!odataType) return 'Unknown';
-        const parts = odataType.split('.');
-        const raw = parts[parts.length - 1] || 'Unknown';
-        // TM1 returns types like 'FolderApplication', 'CubeApplication' — strip suffix
-        // so folder check works consistently
-        return raw.replace(/Application$/, '') || raw;
+        if (odataType && odataType.includes('.')) {
+            const parts = odataType.split('.');
+            return parts[parts.length - 1];
+        }
+        return odataType || 'Unknown';
     }
 
     private async _findPrivateBoundary(segments: string[]): Promise<number> {
-        let publicUrl = "/Contents('Applications')";
+        let prefix = "/Contents('Applications')";
         for (let i = 0; i < segments.length; i++) {
-            const testUrl = publicUrl + formatUrl("/Contents('{}')", segments[i]) + "?$top=0";
+            const publicUrl = prefix + formatUrl("/Contents('{}')", segments[i]) + "?$top=0";
             try {
-                await this.rest.get(testUrl);
-                publicUrl += formatUrl("/Contents('{}')", segments[i]);
+                await this.rest.get(publicUrl);
+                prefix += formatUrl("/Contents('{}')", segments[i]);
             } catch (error: any) {
-                if (error instanceof TM1RestException && error.statusCode === 404) {
-                    const privateTestUrl = publicUrl + formatUrl("/PrivateContents('{}')", segments[i]) + "?$top=0";
-                    try {
-                        await this.rest.get(privateTestUrl);
-                        return i;
-                    } catch (innerError: any) {
-                        if (innerError instanceof TM1RestException && innerError.statusCode === 404) {
-                            return -1;
-                        }
-                        throw innerError;
-                    }
+                if (!(error instanceof TM1RestException && error.statusCode === 404)) {
+                    throw error;
                 }
-                throw error;
+                const privateUrl = prefix + formatUrl("/PrivateContents('{}')", segments[i]) + "?$top=0";
+                try {
+                    await this.rest.get(privateUrl);
+                    return i;
+                } catch (innerError: any) {
+                    if (innerError instanceof TM1RestException && innerError.statusCode === 404) {
+                        return -1;
+                    }
+                    throw innerError;
+                }
             }
         }
         return segments.length;
     }
 
     private _buildPathUrl(segments: string[], privateBoundary?: number): string {
-        if (!segments.length) return '';
-
-        let url = '';
-        const boundary = privateBoundary ?? segments.length;
-
-        for (let i = 0; i < segments.length; i++) {
-            if (i < boundary) {
-                url += formatUrl("/Contents('{}')", segments[i]);
-            } else {
-                url += formatUrl("/PrivateContents('{}')", segments[i]);
-            }
+        if (segments.length === 0) {
+            return '';
         }
-        return url;
+
+        const boundary = privateBoundary === undefined ? segments.length : privateBoundary;
+
+        if (boundary >= segments.length) {
+            return segments.map(s => formatUrl("/Contents('{}')", s)).join('');
+        }
+        if (boundary <= 0) {
+            return segments.map(s => formatUrl("/PrivateContents('{}')", s)).join('');
+        }
+
+        const publicPart = segments.slice(0, boundary).map(s => formatUrl("/Contents('{}')", s)).join('');
+        const privatePart = segments.slice(boundary).map(s => formatUrl("/PrivateContents('{}')", s)).join('');
+        return publicPart + privatePart;
     }
 
     private async _resolvePath(
@@ -479,71 +578,71 @@ export class ApplicationService extends ObjectService {
         isPrivate: boolean = false,
         useCache: boolean = false
     ): Promise<{ baseUrl: string; inPrivateContext: boolean }> {
-        if (!path || !path.trim()) {
-            return { baseUrl: "/Contents('Applications')", inPrivateContext: isPrivate };
+        const base = "/Contents('Applications')";
+
+        if (!path.trim()) {
+            return { baseUrl: base, inPrivateContext: false };
         }
 
-        const segments = path.split('/').filter(s => s.trim().length > 0);
+        const segments = path.split('/');
 
         if (!isPrivate) {
-            const mid = segments.map(s => formatUrl("/Contents('{}')", s)).join('');
-            return { baseUrl: "/Contents('Applications')" + mid, inPrivateContext: false };
+            const mid = this._buildPathUrl(segments, segments.length);
+            return { baseUrl: base + mid, inPrivateContext: false };
         }
 
-        const cacheKey = path;
-        if (useCache && this.pathCache.has(cacheKey)) {
-            const boundary = this.pathCache.get(cacheKey)!;
+        const cacheKey = segments.join('/');
+
+        if (useCache && this.privatePathCache.has(cacheKey)) {
+            const boundary = this.privatePathCache.get(cacheKey)!;
             const mid = this._buildPathUrl(segments, boundary);
             return {
-                baseUrl: "/Contents('Applications')" + mid,
+                baseUrl: base + mid,
                 inPrivateContext: boundary < segments.length
             };
         }
 
-        // Try all-public first (optimistic)
+        const midPublic = this._buildPathUrl(segments, segments.length);
+        const urlPublic = base + midPublic;
         try {
-            const publicUrl = "/Contents('Applications')" +
-                segments.map(s => formatUrl("/Contents('{}')", s)).join('') + "?$top=0";
-            await this.rest.get(publicUrl);
-            if (useCache) this.pathCache.set(cacheKey, segments.length);
-            return {
-                baseUrl: "/Contents('Applications')" +
-                    segments.map(s => formatUrl("/Contents('{}')", s)).join(''),
-                inPrivateContext: false
-            };
+            await this.rest.get(urlPublic + '?$top=0');
+            if (useCache) {
+                this.privatePathCache.set(cacheKey, segments.length);
+            }
+            return { baseUrl: urlPublic, inPrivateContext: false };
         } catch (error: any) {
             if (!(error instanceof TM1RestException && error.statusCode === 404)) {
                 throw error;
             }
         }
 
-        // Try all-private
+        const midPrivate = this._buildPathUrl(segments, 0);
+        const urlPrivate = base + midPrivate;
         try {
-            const privateUrl = "/Contents('Applications')" +
-                segments.map(s => formatUrl("/PrivateContents('{}')", s)).join('') + "?$top=0";
-            await this.rest.get(privateUrl);
-            if (useCache) this.pathCache.set(cacheKey, 0);
-            return {
-                baseUrl: "/Contents('Applications')" +
-                    segments.map(s => formatUrl("/PrivateContents('{}')", s)).join(''),
-                inPrivateContext: true
-            };
+            await this.rest.get(urlPrivate + '?$top=0');
+            if (useCache) {
+                this.privatePathCache.set(cacheKey, 0);
+            }
+            return { baseUrl: urlPrivate, inPrivateContext: true };
         } catch (error: any) {
             if (!(error instanceof TM1RestException && error.statusCode === 404)) {
                 throw error;
             }
         }
 
-        // Iterative boundary search
         const boundary = await this._findPrivateBoundary(segments);
+
         if (boundary === -1) {
-            throw new Error(`Application path not found: ${path}`);
+            return { baseUrl: urlPublic, inPrivateContext: false };
         }
 
-        if (useCache) this.pathCache.set(cacheKey, boundary);
+        if (useCache) {
+            this.privatePathCache.set(cacheKey, boundary);
+        }
+
         const mid = this._buildPathUrl(segments, boundary);
         return {
-            baseUrl: "/Contents('Applications')" + mid,
+            baseUrl: base + mid,
             inPrivateContext: boundary < segments.length
         };
     }
@@ -557,41 +656,6 @@ export class ApplicationService extends ObjectService {
             throw new Error(`Invalid application type: ${applicationType}`);
         }
         return applicationType;
-    }
-
-    private buildPathSegments(path: string): string {
-        if (!path || !path.trim()) {
-            return '';
-        }
-        return path
-            .split('/')
-            .filter(segment => segment.trim().length > 0)
-            .map(segment => formatUrl("/Contents('{}')", segment))
-            .join('');
-    }
-
-    private buildPrivatePathSegments(path: string): string {
-        if (!path || !path.trim()) {
-            return '';
-        }
-        return path
-            .split('/')
-            .filter(segment => segment.trim().length > 0)
-            .map(segment => formatUrl("/PrivateContents('{}')", segment))
-            .join('');
-    }
-
-    private getContentsCollection(isPrivate: boolean): string {
-        return isPrivate ? 'PrivateContents' : 'Contents';
-    }
-
-    private buildApplicationUrl(path: string, isPrivate: boolean, name: string): string {
-        const contents = this.getContentsCollection(isPrivate);
-        const mid = this.buildPathSegments(path);
-        return formatUrl(
-            "/Contents('Applications')" + mid + "/" + contents + "('{}')",
-            name
-        );
     }
 
     private withLegacySuffix(name: string, applicationType: ApplicationTypes): string {
