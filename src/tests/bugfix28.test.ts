@@ -125,16 +125,18 @@ describe('Bug #11 - ApplicationService update() uses POST not PATCH', () => {
         expect(mockRest.patch).not.toHaveBeenCalled();
     });
 
-    test('update() should use POST on the correct URL', async () => {
+    test('update() should POST to the collection URL (tm1py parity)', async () => {
+        // tm1py POSTs the application body to the collection URL (no item name),
+        // letting OData upsert semantics handle the update. The earlier implementation
+        // POSTed to the specific item URL — that diverged from tm1py.
         const app = new CubeApplication('Planning', 'TestApp', 'SalesCube');
         mockRest.post.mockResolvedValue(createMockResponse({}, 200));
 
         await appService.update(app);
 
         const calledUrl = mockRest.post.mock.calls[0][0] as string;
-        expect(calledUrl).toContain("/Contents('Applications')");
-        expect(calledUrl).toContain("/Contents('Planning')");
-        expect(calledUrl).toContain("/Contents('TestApp')");
+        expect(calledUrl).toBe("/Contents('Applications')/Contents('Planning')/Contents");
+        expect(calledUrl).not.toContain("Contents('TestApp')");
     });
 });
 

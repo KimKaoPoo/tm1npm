@@ -43,8 +43,8 @@ describe('ApplicationService — Issue #38 new methods', () => {
                 if (url.includes('Contents') && !url.includes('PrivateContents')) {
                     return createMockResponse({
                         value: [
-                            { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'SalesCube' },
-                            { '@odata.type': '#ibm.tm1.api.v1.FolderApplication', Name: 'Reports' }
+                            { '@odata.type': '#ibm.tm1.api.v1.Cube', Name: 'SalesCube' },
+                            { '@odata.type': '#ibm.tm1.api.v1.Folder', Name: 'Reports' }
                         ]
                     });
                 }
@@ -66,13 +66,13 @@ describe('ApplicationService — Issue #38 new methods', () => {
                 if (url.includes('PrivateContents')) {
                     return createMockResponse({
                         value: [
-                            { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'PrivateReport' }
+                            { '@odata.type': '#ibm.tm1.api.v1.Cube', Name: 'PrivateReport' }
                         ]
                     });
                 }
                 return createMockResponse({
                     value: [
-                        { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'PublicCube' }
+                        { '@odata.type': '#ibm.tm1.api.v1.Cube', Name: 'PublicCube' }
                     ]
                 });
             });
@@ -93,7 +93,7 @@ describe('ApplicationService — Issue #38 new methods', () => {
                 if (url === "/Contents('Applications')/Contents") {
                     return createMockResponse({
                         value: [
-                            { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'PublicCube' }
+                            { '@odata.type': '#ibm.tm1.api.v1.Cube', Name: 'PublicCube' }
                         ]
                     });
                 }
@@ -101,7 +101,7 @@ describe('ApplicationService — Issue #38 new methods', () => {
                 if (url === "/Contents('Applications')/PrivateContents") {
                     return createMockResponse({
                         value: [
-                            { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'PrivateInPublicRoot' }
+                            { '@odata.type': '#ibm.tm1.api.v1.Cube', Name: 'PrivateInPublicRoot' }
                         ]
                     });
                 }
@@ -118,8 +118,8 @@ describe('ApplicationService — Issue #38 new methods', () => {
         });
 
         test('should recurse into folders when recursive=true', async () => {
-            // TM1 returns @odata.type like '#ibm.tm1.api.v1.FolderApplication'.
-            // _extractTypeFromOdata strips 'Application' suffix → 'Folder', which triggers recursion.
+            // tm1py returns the last dotted segment unchanged (no 'Application' strip),
+            // so the server's @odata.type for a folder is '#ibm.tm1.api.v1.Folder' and 'Folder' triggers recursion.
             mockRestService.get.mockImplementation(async (url: string) => {
                 if (url.includes('PrivateContents')) {
                     return createMockResponse({ value: [] });
@@ -128,7 +128,7 @@ describe('ApplicationService — Issue #38 new methods', () => {
                 if (url.match(/Contents\('Applications'\)\/Contents$/)) {
                     return createMockResponse({
                         value: [
-                            { '@odata.type': '#ibm.tm1.api.v1.FolderApplication', Name: 'Reports' }
+                            { '@odata.type': '#ibm.tm1.api.v1.Folder', Name: 'Reports' }
                         ]
                     });
                 }
@@ -136,14 +136,15 @@ describe('ApplicationService — Issue #38 new methods', () => {
                 if (url.includes("Contents('Reports')/Contents")) {
                     return createMockResponse({
                         value: [
-                            { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'SalesReport' }
+                            { '@odata.type': '#ibm.tm1.api.v1.Cube', Name: 'SalesReport' }
                         ]
                     });
                 }
                 return createMockResponse({ value: [] });
             });
 
-            const results = await applicationService.discover('', false, true);
+            // flat=true so SalesReport appears at top level of the result list
+            const results = await applicationService.discover('', false, true, true);
 
             const names = results.map(r => r.name);
             expect(names).toContain('Reports');
@@ -152,30 +153,39 @@ describe('ApplicationService — Issue #38 new methods', () => {
 
         test('should use PrivateContents for nested paths in private context', async () => {
             mockRestService.get.mockImplementation(async (url: string) => {
-                // Root private contents returns a folder
+                // Root public contents — empty
+                if (url === "/Contents('Applications')/Contents") {
+                    return createMockResponse({ value: [] });
+                }
+                // Root private contents — returns one private folder
                 if (url === "/Contents('Applications')/PrivateContents") {
                     return createMockResponse({
                         value: [
-                            { '@odata.type': '#ibm.tm1.api.v1.FolderApplication', Name: 'PrivateFolder' }
+                            { '@odata.type': '#ibm.tm1.api.v1.Folder', Name: 'PrivateFolder' }
                         ]
                     });
                 }
-                // Nested private folder contents — must use PrivateContents, not Contents
-                if (url.includes("PrivateContents('PrivateFolder')/PrivateContents")) {
+                // _findPrivateBoundary public probe for PrivateFolder → 404 (it is private, not public)
+                if (url === "/Contents('Applications')/Contents('PrivateFolder')?$top=0") {
+                    throw new TM1RestException('Not found', 404, { status: 404 });
+                }
+                // _findPrivateBoundary private probe for PrivateFolder → exists
+                if (url === "/Contents('Applications')/PrivateContents('PrivateFolder')?$top=0") {
+                    return createMockResponse({ value: [] });
+                }
+                // Nested private folder contents — PrivateContents leaf with PrivateContents segment
+                if (url === "/Contents('Applications')/PrivateContents('PrivateFolder')/PrivateContents") {
                     return createMockResponse({
                         value: [
-                            { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'DeepCube' }
+                            { '@odata.type': '#ibm.tm1.api.v1.Cube', Name: 'DeepCube' }
                         ]
                     });
-                }
-                // If the code incorrectly uses Contents for nested private paths, this will 404
-                if (url.includes("Contents('PrivateFolder')/Contents")) {
-                    throw new TM1RestException('Not found', 404, { status: 404 });
                 }
                 return createMockResponse({ value: [] });
             });
 
-            const results = await applicationService.discover('', true, true);
+            // flat=true so DeepCube appears at top level of the result list
+            const results = await applicationService.discover('', true, true, true);
 
             const names = results.map(r => r.name);
             expect(names).toContain('PrivateFolder');
@@ -199,7 +209,7 @@ describe('ApplicationService — Issue #38 new methods', () => {
                 }
                 return createMockResponse({
                     value: [
-                        { '@odata.type': '#ibm.tm1.api.v1.CubeApplication', Name: 'MyCube' }
+                        { '@odata.type': '#ibm.tm1.api.v1.Cube', Name: 'MyCube' }
                     ]
                 });
             });
