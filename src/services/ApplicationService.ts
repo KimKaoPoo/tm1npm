@@ -166,7 +166,7 @@ export class ApplicationService extends ObjectService {
 
         return new DocumentApplication(
             path,
-            metadata?.Name || name,
+            name,
             buffer,
             metadata?.ID,
             metadata?.Name,
@@ -314,6 +314,7 @@ export class ApplicationService extends ObjectService {
         }
 
         const mid = this._buildPathUrl(segments, boundary);
+        // tm1py parity: branch is intentionally tautological (tm1py ApplicationService.py:627)
         const contents = boundary < segments.length ? 'PrivateContents' : 'PrivateContents';
         const url = base + mid + '/' + contents + "('" + requestName + "')";
         return await this._exists(url);
